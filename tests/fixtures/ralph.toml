@@ -1,0 +1,38 @@
+version = 1
+repository = "lmpaul/buyr"
+base_branch = "main"
+remote = "origin"
+trusted_authors = ["lmpaul"]
+
+[labels]
+needs_triage = "needs-triage"
+needs_info = "needs-info"
+ready_for_agent = "ready-for-agent"
+ready_for_human = "ready-for-human"
+wontfix = "wontfix"
+human_review = "human-review"
+implemented = "implemented"
+
+[models.implementation]
+engine = "codex"
+name = "gpt-5.6-terra"
+display_name = "Terra"
+reasoning_effort = "medium"
+
+[models.review]
+engine = "codex"
+name = "gpt-5.6-sol"
+display_name = "Sol"
+reasoning_effort = "high"
+
+[models.correction]
+engine = "codex"
+name = "gpt-5.6-terra"
+display_name = "Terra"
+reasoning_effort = "medium"
+
+[verification]
+local_checks = true
+ci_checks = true
+quality_module = ".github/scripts/quality.py"
+quality_manifest = ".github/quality-gates.json"

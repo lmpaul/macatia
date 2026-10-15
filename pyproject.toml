@@ -1,0 +1,20 @@
+[project]
+name = "ralph-kit"
+dynamic = ["version"]
+description = "Run coding agents through a parent GitHub issue, one sub-issue at a time."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+ralph-kit = "ralph_kit.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/ralph_kit/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/ralph_kit"]

@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["outcome", "summary", "findings"],
+  "properties": {
+    "outcome": {
+      "type": "string",
+      "description": "committed: requested work is complete with new commits; no_changes: complete without new commits; needs_correction: unresolved fixable gaps remain; blocked: a prerequisite or human decision is missing; failed: execution cannot continue safely.",
+      "enum": ["committed", "no_changes", "needs_correction", "blocked", "failed"]
+    },
+    "summary": {
+      "type": "string",
+      "description": "Short session report. Completed changes, successful checks, and statements about actions not performed belong here, not in findings.",
+      "minLength": 1
+    },
+    "findings": {
+      "type": "array",
+      "description": "Unresolved actionable problems only. Must be empty for committed or no_changes, and nonempty for needs_correction. Include each remaining problem and its issue requirement. Never include completed changes, passed checks, or statements about actions not performed.",
+      "items": { "type": "string", "minLength": 1 }
+    }
+  }
+}
