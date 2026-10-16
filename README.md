@@ -56,7 +56,7 @@ evidence to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 ```sh
 git clone git@github.com:lmpaul/ralph-kit.git && cd ralph-kit
 uv tool install -e .                          # `ralph-kit` now runs this checkout
-python3 -m unittest discover -s tests         # offline tests (~5 min)
+uv run python -m unittest discover -s tests   # offline tests (~5 min), with dependencies
 ```
 
 Tests use temporary Git repositories and fake GitHub/Codex/Claude commands; they
@@ -277,6 +277,10 @@ and clean worktree, GitHub access/repository/trusted account/write permission/la
 the packaged result schema, the implement skill for each engine, and the enabled quality policy.
 It inspects local commands and CI names without executing them. Disabled checks
 may keep placeholder entries; when both are disabled the policy is not loaded.
+Results are grouped by section with what was found; each failure shows the fix
+(often a command to run), and checks that depend on a missing tool are reported
+as not verified instead of failing. Colors are dropped when the output is not a
+terminal (or with `NO_COLOR`).
 A nonzero exit code means a blocking check failed. GitHub requests are read-only;
 no agent, project check, CI run, push, issue or PR mutation occurs. The configured
 quality module is imported: it must be trusted and have no import-time side effects.

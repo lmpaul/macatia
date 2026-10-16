@@ -336,9 +336,9 @@ def render(values: dict) -> str:
 
 def check_prerequisites(command: CommandRunner, which: Callable[[str], str | None]) -> None:
     """Stop before any question when detection could not work; ralph-kit check repeats these on other machines."""
-    problems = [problem for _, problem in prerequisites(which) if problem]
+    problems = [f"{item.problem} → {item.fix}" for item in prerequisites(which) if item.problem]
     if which("gh") and command("gh", "auth", "status") is None:
-        problems.append("gh non authentifié : lancer `gh auth login`")
+        problems.append("gh non authentifié → gh auth login")
     if problems:
         raise InitError("prérequis manquants\n" + "\n".join(f"  ✗ {problem}" for problem in problems))
 

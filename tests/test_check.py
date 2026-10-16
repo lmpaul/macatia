@@ -150,6 +150,22 @@ class ReadinessTests(unittest.TestCase):
         (self.root / ".agents/skills/implement/SKILL.md").unlink()
         self.assertEqual(self.run_check()[0], 1)
 
+    def test_missing_gh_skips_github_checks(self):
+        code, output = self.run_check(missing="gh")
+        self.assertEqual(code, 1)
+        self.assertFalse([args for args in self.commands if args[0] == "gh"])
+        self.assertIn("installer GitHub CLI", output)
+        self.assertEqual(output.count("non vérifié : gh absent"), 5)
+        self.assertIn("1 bloquant", output)
+
+    def test_failures_show_the_fix(self):
+        self.labels.remove("implemented")
+        self.labels.remove("wontfix")
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("2 manquants : implemented, wontfix", output)
+        self.assertIn('for label in implemented wontfix; do gh label create "$label"; done', " ".join(output.split()))
+
     def test_command_failure_does_not_echo_cli_output(self):
         import subprocess
 
