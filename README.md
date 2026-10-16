@@ -38,8 +38,12 @@ Commit `ralph.toml` and run on a clean, dedicated branch (never the base branch)
 `init` reads the GitHub repository, default branch, remote and current `gh`
 account, and enables local and CI checks when `.github/scripts/quality.py` and
 `.github/quality-gates.json` exist. It asks only for what it could not detect,
-plus the agent engine, models and reasoning efforts. Without a terminal (agents,
-CI) it asks nothing and leaves placeholders that `ralph-kit check` reports.
+plus the agent engine, models and reasoning efforts. Only installed agent CLIs
+are offered. Codex models and their supported efforts come from your account's
+catalog (`codex debug models`, with a free-text fallback); Claude Code has no
+model listing, so `init` offers its documented aliases (`fable`, `opus`,
+`sonnet`, `haiku`), which always follow the latest version. Without a terminal
+(agents, CI) it asks nothing and leaves placeholders that `ralph-kit check` reports.
 `--config path/to/other.toml` selects another configuration. Ralph writes run
 evidence to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 

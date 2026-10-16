@@ -26,6 +26,13 @@ class InitTests(unittest.TestCase):
             ),
             ("git", "remote"): "origin",
             ("gh", "api", "user", "--jq", ".login"): "octocat",
+            ("codex", "debug", "models"): json.dumps({"models": [
+                {"slug": "codex-hidden", "visibility": "hide", "priority": 1, "supported_reasoning_levels": []},
+                {"slug": "codex-small", "description": "Fast", "visibility": "list", "priority": 9,
+                 "supported_reasoning_levels": [{"effort": "low"}, {"effort": "medium"}]},
+                {"slug": "codex-large", "description": "Smart", "visibility": "list", "priority": 2,
+                 "supported_reasoning_levels": [{"effort": "medium"}, {"effort": "high"}, {"effort": "ultra"}]},
+            ]}),
         }
         self.installed = {"claude", "codex"}
         self.output = io.StringIO()
@@ -74,9 +81,8 @@ class InitTests(unittest.TestCase):
             "",                           # base branch: default main
             "2",                          # remote: upstream
             "alice, bob, alice",          # trusted authors, deduplicated
-            "",                           # engine: installed codex is the default
-            "", "high",                   # implementation model and effort
-            "custom-review", "",          # review model and default effort
+            "", "high",                   # implementation: first listed model, then effort
+            "3", "custom-review", "",     # review: "autre", free name, default effort
         ])
         self.assertEqual(config.repository, "acme/widget")
         self.assertIn("format attendu", self.output.getvalue())
@@ -84,9 +90,42 @@ class InitTests(unittest.TestCase):
         self.assertEqual(config.remote, "upstream")
         self.assertEqual(config.trusted_authors, {"alice", "bob"})
         self.assertEqual(config.models["implementation"].engine, "codex")
-        self.assertEqual(config.models["implementation"].name, "gpt-5.6-terra")
+        self.assertEqual(config.models["implementation"].name, "codex-large")
         self.assertEqual(config.models["implementation"].reasoning_effort, "high")
         self.assertEqual(config.models["review"].name, "custom-review")
+
+    def test_only_installed_engines_are_offered(self):
+        self.installed = {"claude"}
+        self.run_init(answers=[""] * 4)
+        self.assertIn("Claude Code (seul CLI installé)", self.output.getvalue())
+        self.assertNotIn("codex", self.output.getvalue())
+
+    def test_no_agent_cli_stops_before_writing(self):
+        self.installed = set()
+        with self.assertRaisesRegex(init.InitError, "aucun CLI d'agent"):
+            self.run_init(answers=[])
+        self.assertFalse((self.root / "ralph.toml").exists())
+
+    def test_codex_catalog_drives_models_and_efforts(self):
+        self.installed = {"codex"}
+        config = self.run_init(answers=["", "", "2", ""])
+        output = self.output.getvalue()
+        self.assertNotIn("codex-hidden", output)
+        self.assertLess(output.index("codex-large"), output.index("codex-small"))
+        self.assertEqual(config.models["implementation"].name, "codex-large")
+        self.assertEqual(config.models["implementation"].reasoning_effort, "medium")
+        self.assertEqual(config.models["review"].name, "codex-small")
+        # codex-small only supports low and medium, so the "high" review default falls back.
+        self.assertEqual(config.models["review"].reasoning_effort, "medium")
+        self.assertNotIn("ultra", output.split("codex-small", 2)[-1])
+
+    def test_unavailable_codex_catalog_falls_back_to_free_text(self):
+        self.installed = {"codex"}
+        del self.responses[("codex", "debug", "models")]
+        config = self.run_init(answers=["my-model", "", "my-reviewer", ""])
+        self.assertIn("liste des modèles Codex indisponible", self.output.getvalue())
+        self.assertEqual(config.models["implementation"].name, "my-model")
+        self.assertEqual(config.models["review"].name, "my-reviewer")
 
     def test_without_terminal_missing_values_stay_placeholders(self):
         del self.responses[("gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef")]

@@ -24,15 +24,20 @@ LABELS = {
     "human_review": "human-review",
     "implemented": "implemented",
 }
-ENGINES = ("claude", "codex")
-DEFAULT_MODELS = {
-    "claude": {"implementation": "sonnet", "review": "opus"},
-    "codex": {"implementation": "gpt-5.6-terra", "review": "gpt-5.6-sol"},
-}
+ENGINES = {"claude": "Claude Code", "codex": "Codex"}
+# Claude Code has no command listing models; its documented aliases follow the latest version.
+CLAUDE_MODELS = [
+    ("fable", "Fable, pour les tâches les plus dures et les plus longues"),
+    ("opus", "dernier Opus, raisonnement complexe"),
+    ("sonnet", "dernier Sonnet, code au quotidien"),
+    ("haiku", "dernier Haiku, rapide et économique"),
+]
+DEFAULT_MODELS = {"claude": {"implementation": "sonnet", "review": "opus"}}
 EFFORTS = {
     "claude": sorted(CLAUDE_REASONING_EFFORTS, key=["low", "medium", "high", "xhigh", "max"].index),
     "codex": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
 }
+OTHER = "autre"
 PLACEHOLDERS = {
     "repository": "VOTRE_ORG/VOTRE_REPO",
     "author": "VOTRE_COMPTE_GITHUB",
@@ -140,6 +145,49 @@ def _detect_repository(command: CommandRunner) -> tuple[str | None, str | None]:
     return details.get("nameWithOwner") or None, branch
 
 
+def codex_catalog(command: CommandRunner) -> list[dict]:
+    """Models listed by Codex for this account, best first; [] when the debug command is unavailable."""
+    output = command("codex", "debug", "models")
+    try:
+        models = json.loads(output)["models"] if output else []
+        listed = [
+            {
+                "name": model["slug"],
+                "description": model.get("description") or "",
+                "efforts": [level["effort"] for level in model.get("supported_reasoning_levels") or []],
+                "priority": model.get("priority", 0),
+            }
+            for model in models
+            if model.get("visibility") == "list"
+        ]
+    except (TypeError, KeyError, ValueError):
+        return []
+    return sorted(listed, key=lambda model: model["priority"])
+
+
+def _choose_model(prompter: Prompter, engine: str, catalog: list[dict], role: str, question: str) -> str:
+    if engine == "claude":
+        options = CLAUDE_MODELS
+        default = DEFAULT_MODELS["claude"][role]
+    else:
+        options = [(model["name"], model["description"]) for model in catalog]
+        default = options[0][0] if options else None
+    if not options:
+        return prompter.text(f"{question} — liste des modèles Codex indisponible", placeholder=PLACEHOLDERS[role])
+    if not prompter.interactive:
+        return PLACEHOLDERS[role]
+    name = prompter.choice(question, [*options, (OTHER, "saisir un nom de modèle complet")], default)
+    if name == OTHER:
+        name = prompter.text("Nom du modèle", placeholder=PLACEHOLDERS[role])
+    return name
+
+
+def _model_efforts(engine: str, catalog: list[dict], name: str) -> list[str]:
+    model = next((model for model in catalog if model["name"] == name), None)
+    supported = [effort for effort in model["efforts"] if effort in EFFORTS[engine]] if model else []
+    return supported or EFFORTS[engine]
+
+
 def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, which: Callable[[str], str | None]) -> dict:
     say = prompter.say
     say("🔎 Détection depuis git et gh…")
@@ -193,23 +241,30 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         say(f"  ℹ Pas de {QUALITY_MODULE} + {QUALITY_MANIFEST} : contrôles locaux et CI désactivés")
 
     installed = [engine for engine in ENGINES if which(engine)]
-    engine = prompter.choice(
-        "Moteur des agents",
-        [(name, "installé" if name in installed else "absent du PATH") for name in ENGINES],
-        installed[0] if installed else ENGINES[0],
-    )
-    efforts = [(effort, "") for effort in EFFORTS[engine]]
+    if not installed:
+        raise InitError("aucun CLI d'agent trouvé dans le PATH : installer claude (Claude Code) ou codex")
+    if len(installed) == 1:
+        engine = installed[0]
+        say(f"  ✓ Moteur des agents : {ENGINES[engine]} (seul CLI installé)")
+    else:
+        engine = prompter.choice("Moteur des agents", [(name, ENGINES[name]) for name in installed], installed[0])
+    catalog = codex_catalog(command) if engine == "codex" else []
     models = {}
     for role, question, effort in (
         ("implementation", "Modèle pour l'implémentation et les corrections", "medium"),
         ("review", "Modèle pour la review indépendante (ralph-kit run --review)", "high"),
     ):
-        name = prompter.text(question, default=DEFAULT_MODELS[engine][role], placeholder=PLACEHOLDERS[role])
+        name = _choose_model(prompter, engine, catalog, role, question)
+        efforts = _model_efforts(engine, catalog, name)
         models[role] = {
             "engine": engine,
             "name": name,
             "display_name": name,
-            "reasoning_effort": prompter.choice(f"Effort de raisonnement pour {name}", efforts, effort),
+            "reasoning_effort": prompter.choice(
+                f"Effort de raisonnement pour {name}",
+                [(level, "") for level in efforts],
+                effort if effort in efforts else efforts[len(efforts) // 2],
+            ),
         }
     models["correction"] = dict(models["implementation"])
 
