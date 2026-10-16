@@ -26,7 +26,7 @@ Pin a release with `git+https://github.com/lmpaul/ralph-kit@v0.1.0`.
 From the repository root:
 
 ```sh
-ralph-kit init                 # writes ./ralph.toml with placeholders
+ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
 ralph-kit check                # read-only readiness check
 ralph-kit run 123              # implement the sub-issues of parent issue #123
 ralph-kit run 123 10           # same, with at most 10 agent sessions
@@ -34,6 +34,12 @@ ralph-kit run --review 123     # adds an independent review session per child
 ```
 
 Commit `ralph.toml` and run on a clean, dedicated branch (never the base branch).
+
+`init` reads the GitHub repository, default branch, remote and current `gh`
+account, and enables local and CI checks when `.github/scripts/quality.py` and
+`.github/quality-gates.json` exist. It asks only for what it could not detect,
+plus the agent engine, models and reasoning efforts. Without a terminal (agents,
+CI) it asks nothing and leaves placeholders that `ralph-kit check` reports.
 `--config path/to/other.toml` selects another configuration. Ralph writes run
 evidence to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 
