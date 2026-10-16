@@ -19,7 +19,7 @@ uv tool install git+https://github.com/lmpaul/ralph-kit # installs `ralph-kit` o
 uv tool upgrade ralph-kit                               # pick up new versions
 ```
 
-Pin a release with `git+https://github.com/lmpaul/ralph-kit@v0.1.0`.
+Pin a release with `git+https://github.com/lmpaul/ralph-kit@v0.2.0`.
 
 ## Use in a repository
 
