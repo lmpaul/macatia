@@ -108,6 +108,22 @@ class InitTests(unittest.TestCase):
             self.run_init(answers=[])
         self.assertFalse((self.root / "ralph.toml").exists())
 
+    def test_choices_use_the_arrow_selector_when_available(self):
+        asked = []
+
+        def select(question, options, default):
+            asked.append((question, [value for value, _ in options], default))
+            return options[-1][0] if question.startswith("Effort") else default
+
+        prompter = init.Prompter(interactive=True, read=lambda prompt: "", output=self.output, select=select)
+        path = init.run(self.root, prompter, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
+        config = load_config(path, self.root)
+        self.assertEqual(asked[0], ("Moteur des agents", ["claude", "codex"], "claude"))
+        self.assertEqual(asked[1][1], ["fable", "opus", "sonnet", "haiku", init.OTHER])
+        self.assertEqual(len(asked), 5)
+        self.assertEqual(config.models["implementation"].reasoning_effort, "max")
+        self.assertNotIn("Choix [", self.output.getvalue())
+
     def test_missing_tools_stop_before_any_probe(self):
         self.tools = {"git"}
         self.installed = set()

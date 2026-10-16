@@ -25,7 +25,8 @@ def init(argv: list[str]) -> int:
     if unknown := [argument for argument in argv if argument != "--force"]:
         print(f"ralph-kit init: unknown arguments: {' '.join(unknown)}", file=sys.stderr)
         return 2
-    prompter = setup.Prompter(interactive=sys.stdin.isatty())
+    interactive = sys.stdin.isatty()
+    prompter = setup.Prompter(interactive=interactive, select=setup.arrow_select if interactive and sys.stdout.isatty() else None)
     try:
         setup.run(pathlib.Path.cwd().resolve(), prompter, force=force)
     except setup.InitAborted as error:

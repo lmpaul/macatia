@@ -46,6 +46,7 @@ PLACEHOLDERS = {
 }
 
 CommandRunner = Callable[..., "str | None"]
+Selector = Callable[[str, "list[tuple[str, str]]", str], str]
 
 
 class InitError(RuntimeError):
@@ -54,6 +55,17 @@ class InitError(RuntimeError):
 
 class InitAborted(RuntimeError):
     """The user interrupted the questions; nothing was written."""
+
+
+def arrow_select(question: str, options: list[tuple[str, str]], default: str) -> str:
+    """Pick an option with the arrow keys; needs a real terminal on stdin and stdout."""
+    import questionary
+
+    choices = [questionary.Choice(f"{value}  ({label})" if label else value, value=value) for value, label in options]
+    try:
+        return questionary.select(question, choices, default=default, instruction="(flèches ↑↓, Entrée pour valider)").unsafe_ask()
+    except KeyboardInterrupt:
+        raise InitAborted("init annulé, aucun fichier écrit") from None
 
 
 def run_command(*args: str, cwd: pathlib.Path) -> str | None:
@@ -68,10 +80,17 @@ def run_command(*args: str, cwd: pathlib.Path) -> str | None:
 class Prompter:
     """Ask questions on a terminal; without one, keep defaults and placeholders."""
 
-    def __init__(self, interactive: bool, read: Callable[[str], str] = input, output: TextIO = sys.stdout):
+    def __init__(
+        self,
+        interactive: bool,
+        read: Callable[[str], str] = input,
+        output: TextIO = sys.stdout,
+        select: Selector | None = None,
+    ):
         self.interactive = interactive
         self.read = read
         self.output = output
+        self.select = select
 
     def say(self, message: str) -> None:
         print(message, file=self.output)
@@ -85,6 +104,9 @@ class Prompter:
     def choice(self, question: str, options: list[tuple[str, str]], default: str) -> str:
         if not self.interactive:
             return default
+        if self.select:
+            return self.select(question, options, default)
+        # Numbered fallback when no arrow-key selector is available.
         values = [value for value, _ in options]
         self.say(f"\n? {question}")
         for index, (value, label) in enumerate(options, start=1):
