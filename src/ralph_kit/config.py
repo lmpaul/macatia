@@ -37,6 +37,10 @@ class RalphConfigError(RuntimeError):
     """The TOML exists but cannot safely configure a Ralph run."""
 
 
+class MissingConfigError(RalphConfigError):
+    """No configuration file yet: the repository has not been set up with ralph-kit init."""
+
+
 @dataclass(frozen=True)
 class AgentProfile:
     name: str
@@ -96,6 +100,9 @@ def _load_toml(path: pathlib.Path) -> Any:
     try:
         with path.open("rb") as configuration_file:
             return tomllib.load(configuration_file)
+    except FileNotFoundError:
+        shown = path.relative_to(pathlib.Path.cwd()) if path.is_relative_to(pathlib.Path.cwd()) else path
+        raise MissingConfigError(f"{shown} not found: run `ralph-kit init` first to set up this repository") from None
     except OSError as error:
         raise RalphConfigError(f"could not read Ralph configuration {path}: {error}") from error
     except tomllib.TOMLDecodeError as error:

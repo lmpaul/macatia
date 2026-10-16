@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import pathlib
 import sys
 import shutil
@@ -92,7 +93,7 @@ class ReadinessTests(unittest.TestCase):
 
     def test_disabled_local_placeholders_are_ignored(self):
         self.flags(False, True)
-        self.policy.write_text(self.policy.read_text().replace('"python3"', '"REMPLACER_COMMANDE"'))
+        self.policy.write_text(self.policy.read_text().replace('"python3"', '"REPLACE_COMMAND"'))
         # CI commands must still be configured when CI is active.
         manifest = json.loads(self.policy.read_text())
         manifest["ci"]["checks"]["project"]["command"] = ["python3"]
@@ -101,15 +102,15 @@ class ReadinessTests(unittest.TestCase):
 
     def test_disabled_ci_placeholders_are_ignored(self):
         self.flags(True, False)
-        self.policy.write_text(self.policy.read_text().replace("Project CI", "REMPLACER_CHECK"))
+        self.policy.write_text(self.policy.read_text().replace("Project CI", "REPLACE_CHECK"))
         self.assertEqual(self.run_check()[0], 0)
 
     def test_active_placeholders_block(self):
-        self.policy.write_text(self.policy.read_text().replace('"python3"', '"REMPLACER_COMMANDE"'))
+        self.policy.write_text(self.policy.read_text().replace('"python3"', '"REPLACE_COMMAND"'))
         self.assertEqual(self.run_check()[0], 1)
 
     def test_unconfigured_kit_stops_before_commands(self):
-        self.config.write_text(self.config.read_text().replace("chosen-model", "MODELE_A_CHOISIR"))
+        self.config.write_text(self.config.read_text().replace("chosen-model", "CHOOSE_MODEL"))
         self.assertEqual(self.run_check()[0], 1)
         self.assertEqual(self.commands, [])
 
@@ -149,6 +150,44 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(self.run_check()[0], 0)
         (self.root / ".agents/skills/implement/SKILL.md").unlink()
         self.assertEqual(self.run_check()[0], 1)
+
+    def test_missing_config_points_to_init(self):
+        self.config.unlink()
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("→ ralph-kit init", output)
+        self.assertEqual(self.commands, [])
+
+    def test_run_without_config_points_to_init(self):
+        import subprocess
+
+        self.config.unlink()
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        for review in ([], ["--review"]):
+            with self.subTest(review=review):
+                result = subprocess.run(
+                    [sys.executable, "-m", "ralph_kit", "run", *review, "1"],
+                    cwd=self.root, capture_output=True, text=True,
+                    env=os.environ | {"PYTHONPATH": str(SOURCE_DIRECTORY)},
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("ralph.toml not found: run `ralph-kit init` first", result.stderr)
+
+    def test_missing_gh_skips_github_checks(self):
+        code, output = self.run_check(missing="gh")
+        self.assertEqual(code, 1)
+        self.assertFalse([args for args in self.commands if args[0] == "gh"])
+        self.assertIn("install GitHub CLI", output)
+        self.assertEqual(output.count("not verified: gh missing"), 5)
+        self.assertIn("1 blocker", output)
+
+    def test_failures_show_the_fix(self):
+        self.labels.remove("implemented")
+        self.labels.remove("wontfix")
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("2 missing: implemented, wontfix", output)
+        self.assertIn('for label in implemented wontfix; do gh label create "$label"; done', " ".join(output.split()))
 
     def test_command_failure_does_not_echo_cli_output(self):
         import subprocess

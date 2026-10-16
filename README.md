@@ -19,14 +19,14 @@ uv tool install git+https://github.com/lmpaul/ralph-kit # installs `ralph-kit` o
 uv tool upgrade ralph-kit                               # pick up new versions
 ```
 
-Pin a release with `git+https://github.com/lmpaul/ralph-kit@v0.1.0`.
+Pin a release with `git+https://github.com/lmpaul/ralph-kit@v0.2.0`.
 
 ## Use in a repository
 
 From the repository root:
 
 ```sh
-ralph-kit init                 # writes ./ralph.toml with placeholders
+ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
 ralph-kit check                # read-only readiness check
 ralph-kit run 123              # implement the sub-issues of parent issue #123
 ralph-kit run 123 10           # same, with at most 10 agent sessions
@@ -34,6 +34,20 @@ ralph-kit run --review 123     # adds an independent review session per child
 ```
 
 Commit `ralph.toml` and run on a clean, dedicated branch (never the base branch).
+
+`init` first requires `git`, an authenticated `gh` and at least one agent CLI
+(`claude` or `codex`), and stops before any question otherwise. `check` repeats
+these checks, requiring the CLI of each configured engine, so it is the command
+to run when reusing a committed `ralph.toml` on another machine.
+`init` then reads the GitHub repository, default branch, remote and current `gh`
+account, and enables local and CI checks when `.github/scripts/quality.py` and
+`.github/quality-gates.json` exist. It asks only for what it could not detect,
+plus the agent engine, models and reasoning efforts; lists are navigated with
+the arrow keys. Only installed agent CLIs are offered. Codex models and their supported efforts come from your account's
+catalog (`codex debug models`, with a free-text fallback); Claude Code has no
+model listing, so `init` offers its documented aliases (`fable`, `opus`,
+`sonnet`, `haiku`), which always follow the latest version. Without a terminal
+(agents, CI) it asks nothing and leaves placeholders that `ralph-kit check` reports.
 `--config path/to/other.toml` selects another configuration. Ralph writes run
 evidence to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 
@@ -42,7 +56,7 @@ evidence to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 ```sh
 git clone git@github.com:lmpaul/ralph-kit.git && cd ralph-kit
 uv tool install -e .                          # `ralph-kit` now runs this checkout
-python3 -m unittest discover -s tests         # offline tests (~5 min)
+uv run python -m unittest discover -s tests   # offline tests (~5 min), with dependencies
 ```
 
 Tests use temporary Git repositories and fake GitHub/Codex/Claude commands; they
@@ -263,6 +277,10 @@ and clean worktree, GitHub access/repository/trusted account/write permission/la
 the packaged result schema, the implement skill for each engine, and the enabled quality policy.
 It inspects local commands and CI names without executing them. Disabled checks
 may keep placeholder entries; when both are disabled the policy is not loaded.
+Results are grouped by section with what was found; each failure shows the fix
+(often a command to run), and checks that depend on a missing tool are reported
+as not verified instead of failing. Colors are dropped when the output is not a
+terminal (or with `NO_COLOR`).
 A nonzero exit code means a blocking check failed. GitHub requests are read-only;
 no agent, project check, CI run, push, issue or PR mutation occurs. The configured
 quality module is imported: it must be trusted and have no import-time side effects.

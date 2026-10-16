@@ -13,25 +13,28 @@ commands:
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
   init [--force]
-      Write a ralph.toml template at the repository root.
+      Write ./ralph.toml: detect repo, branch, remote, account and checks; ask for the rest.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """
 
-CONFIG_TEMPLATE = pathlib.Path(__file__).with_name("ralph.template.toml")
-
-
 def init(argv: list[str]) -> int:
+    from . import init as setup
+
     force = "--force" in argv
     if unknown := [argument for argument in argv if argument != "--force"]:
         print(f"ralph-kit init: unknown arguments: {' '.join(unknown)}", file=sys.stderr)
         return 2
-    target = pathlib.Path.cwd() / "ralph.toml"
-    if target.exists() and not force:
-        print(f"ralph-kit init: {target} already exists (use --force to overwrite)", file=sys.stderr)
+    interactive = sys.stdin.isatty()
+    prompter = setup.Prompter(interactive=interactive, select=setup.arrow_select if interactive and sys.stdout.isatty() else None)
+    try:
+        setup.run(pathlib.Path.cwd().resolve(), prompter, force=force)
+    except setup.InitAborted as error:
+        print(f"\n{error}", file=sys.stderr)
+        return 130
+    except setup.InitError as error:
+        print(f"❌ {error}", file=sys.stderr)
         return 1
-    target.write_text(CONFIG_TEMPLATE.read_text(encoding="utf-8"), encoding="utf-8")
-    print(f"✅ Wrote {target}. Replace the placeholders, then run `ralph-kit check`.")
     return 0
 
 
