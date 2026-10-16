@@ -27,22 +27,22 @@ LABELS = {
 }
 # Claude Code has no command listing models; its documented aliases follow the latest version.
 CLAUDE_MODELS = [
-    ("fable", "Fable, pour les tâches les plus dures et les plus longues"),
-    ("opus", "dernier Opus, raisonnement complexe"),
-    ("sonnet", "dernier Sonnet, code au quotidien"),
-    ("haiku", "dernier Haiku, rapide et économique"),
+    ("fable", "Fable, for the hardest and longest tasks"),
+    ("opus", "latest Opus, complex reasoning"),
+    ("sonnet", "latest Sonnet, everyday coding"),
+    ("haiku", "latest Haiku, fast and cheap"),
 ]
 DEFAULT_MODELS = {"claude": {"implementation": "sonnet", "review": "opus"}}
 EFFORTS = {
     "claude": sorted(CLAUDE_REASONING_EFFORTS, key=["low", "medium", "high", "xhigh", "max"].index),
     "codex": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
 }
-OTHER = "autre"
+OTHER = "other"
 PLACEHOLDERS = {
-    "repository": "VOTRE_ORG/VOTRE_REPO",
-    "author": "VOTRE_COMPTE_GITHUB",
-    "implementation": "MODELE_IMPLEMENTATION",
-    "review": "MODELE_REVIEW",
+    "repository": "YOUR_ORG/YOUR_REPO",
+    "author": "YOUR_GITHUB_ACCOUNT",
+    "implementation": "CHOOSE_IMPLEMENTATION_MODEL",
+    "review": "CHOOSE_REVIEW_MODEL",
 }
 
 CommandRunner = Callable[..., "str | None"]
@@ -63,9 +63,9 @@ def arrow_select(question: str, options: list[tuple[str, str]], default: str) ->
 
     choices = [questionary.Choice(f"{value}  ({label})" if label else value, value=value) for value, label in options]
     try:
-        return questionary.select(question, choices, default=default, instruction="(flèches ↑↓, Entrée pour valider)").unsafe_ask()
+        return questionary.select(question, choices, default=default, instruction="(↑↓ to move, Enter to select)").unsafe_ask()
     except KeyboardInterrupt:
-        raise InitAborted("init annulé, aucun fichier écrit") from None
+        raise InitAborted("init cancelled, nothing written") from None
 
 
 def run_command(*args: str, cwd: pathlib.Path) -> str | None:
@@ -99,7 +99,7 @@ class Prompter:
         try:
             return self.read(prompt).strip()
         except (EOFError, KeyboardInterrupt):
-            raise InitAborted("init annulé, aucun fichier écrit") from None
+            raise InitAborted("init cancelled, nothing written") from None
 
     def choice(self, question: str, options: list[tuple[str, str]], default: str) -> str:
         if not self.interactive:
@@ -113,14 +113,14 @@ class Prompter:
             self.say(f"  {index}) {value}{f'  ({label})' if label else ''}")
         default_index = values.index(default) + 1
         while True:
-            answer = self._read(f"Choix [{default_index}] : ")
+            answer = self._read(f"Choice [{default_index}]: ")
             if not answer:
                 return default
             if answer.isdigit() and 1 <= int(answer) <= len(values):
                 return values[int(answer) - 1]
             if answer in values:
                 return answer
-            self.say(f"  Réponse attendue : un numéro entre 1 et {len(values)}.")
+            self.say(f"  Expected a number between 1 and {len(values)}.")
 
     def text(
         self,
@@ -134,20 +134,20 @@ class Prompter:
             return placeholder if placeholder is not None else default or ""
         self.say(f"\n? {question}")
         while True:
-            answer = self._read(f"Réponse [{default}] : " if default else "Réponse : ") or (default or "")
-            error = "réponse obligatoire" if not answer else (validate(answer) if validate else None)
+            answer = self._read(f"Answer [{default}]: " if default else "Answer: ") or (default or "")
+            error = "an answer is required" if not answer else (validate(answer) if validate else None)
             if error is None:
                 return answer
             self.say(f"  {error}")
 
 
 def _repository_error(value: str) -> str | None:
-    return None if re.fullmatch(r"[^/\s]+/[^/\s]+", value) else "format attendu : owner/name"
+    return None if re.fullmatch(r"[^/\s]+/[^/\s]+", value) else "expected format: owner/name"
 
 
 def _git_name_error(value: str) -> str | None:
     if value.startswith("-") or any(character.isspace() for character in value):
-        return "nom Git invalide (pas d'espace, ne commence pas par -)"
+        return "invalid Git name (no spaces, must not start with -)"
     return None
 
 
@@ -195,12 +195,12 @@ def _choose_model(prompter: Prompter, engine: str, catalog: list[dict], role: st
         options = [(model["name"], model["description"]) for model in catalog]
         default = options[0][0] if options else None
     if not options:
-        return prompter.text(f"{question} — liste des modèles Codex indisponible", placeholder=PLACEHOLDERS[role])
+        return prompter.text(f"{question} (Codex model list unavailable)", placeholder=PLACEHOLDERS[role])
     if not prompter.interactive:
         return PLACEHOLDERS[role]
-    name = prompter.choice(question, [*options, (OTHER, "saisir un nom de modèle complet")], default)
+    name = prompter.choice(question, [*options, (OTHER, "enter a full model name")], default)
     if name == OTHER:
-        name = prompter.text("Nom du modèle", placeholder=PLACEHOLDERS[role])
+        name = prompter.text("Model name", placeholder=PLACEHOLDERS[role])
     return name
 
 
@@ -212,14 +212,14 @@ def _model_efforts(engine: str, catalog: list[dict], name: str) -> list[str]:
 
 def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, which: Callable[[str], str | None]) -> dict:
     say = prompter.say
-    say("🔎 Détection depuis git et gh…")
+    say("🔎 Detecting from git and gh…")
 
     repository, base_branch = _detect_repository(command)
     if repository:
-        say(f"  ✓ Repo GitHub : {repository}")
+        say(f"  ✓ GitHub repository: {repository}")
     else:
         repository = prompter.text(
-            "Repo GitHub (owner/name) — gh n'a pas pu le détecter",
+            "GitHub repository (owner/name); gh could not detect it",
             placeholder=PLACEHOLDERS["repository"],
             validate=_repository_error,
         )
@@ -228,51 +228,51 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         remote_head = command("git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
         base_branch = remote_head.split("/", 1)[1] if remote_head and "/" in remote_head else None
     if base_branch:
-        say(f"  ✓ Branche de base : {base_branch}")
+        say(f"  ✓ Base branch: {base_branch}")
     else:
-        base_branch = prompter.text("Branche de base (Ralph n'y committe jamais)", default="main", validate=_git_name_error)
+        base_branch = prompter.text("Base branch (Ralph never commits to it)", default="main", validate=_git_name_error)
 
     remotes = (command("git", "remote") or "").split()
     if len(remotes) == 1:
         remote = remotes[0]
-        say(f"  ✓ Remote : {remote}")
+        say(f"  ✓ Remote: {remote}")
     elif remotes:
         remote = prompter.choice(
-            "Remote sur lequel Ralph pousse",
+            "Remote Ralph pushes to",
             [(name, command("git", "remote", "get-url", name) or "") for name in remotes],
             "origin" if "origin" in remotes else remotes[0],
         )
     else:
-        remote = prompter.text("Remote sur lequel Ralph pousse — aucun remote Git trouvé", default="origin", validate=_git_name_error)
+        remote = prompter.text("Remote Ralph pushes to (no Git remote found)", default="origin", validate=_git_name_error)
 
     login = command("gh", "api", "user", "--jq", ".login")
     if login:
         authors = [login]
-        say(f"  ✓ Auteur de confiance : {login} (compte gh courant)")
+        say(f"  ✓ Trusted author: {login} (current gh account)")
     else:
         authors = _authors(prompter.text(
-            "Comptes GitHub de confiance, séparés par des virgules (inclure celui de la loop)",
+            "Trusted GitHub accounts, comma-separated (include the one the loop runs as)",
             placeholder=PLACEHOLDERS["author"],
-            validate=lambda value: None if _authors(value) else "au moins un compte",
+            validate=lambda value: None if _authors(value) else "at least one account",
         ))
 
     checks = (root / QUALITY_MODULE).is_file() and (root / QUALITY_MANIFEST).is_file()
     if checks:
-        say(f"  ✓ Module qualité trouvé : contrôles locaux et CI activés ({QUALITY_MODULE})")
+        say(f"  ✓ Quality module found: local and CI checks enabled ({QUALITY_MODULE})")
     else:
-        say(f"  ℹ Pas de {QUALITY_MODULE} + {QUALITY_MANIFEST} : contrôles locaux et CI désactivés")
+        say(f"  ℹ No {QUALITY_MODULE} + {QUALITY_MANIFEST}: local and CI checks disabled")
 
     installed = [engine for engine in ENGINES if which(engine)]
     if len(installed) == 1:
         engine = installed[0]
-        say(f"  ✓ Moteur des agents : {ENGINES[engine]} (seul CLI installé)")
+        say(f"  ✓ Agent engine: {ENGINES[engine]} (only CLI installed)")
     else:
-        engine = prompter.choice("Moteur des agents", [(name, ENGINES[name]) for name in installed], installed[0])
+        engine = prompter.choice("Agent engine", [(name, ENGINES[name]) for name in installed], installed[0])
     catalog = codex_catalog(command) if engine == "codex" else []
     models = {}
     for role, question, effort in (
-        ("implementation", "Modèle pour l'implémentation et les corrections", "medium"),
-        ("review", "Modèle pour la review indépendante (ralph-kit run --review)", "high"),
+        ("implementation", "Model for implementation and corrections", "medium"),
+        ("review", "Model for the independent review (ralph-kit run --review)", "high"),
     ):
         name = _choose_model(prompter, engine, catalog, role, question)
         efforts = _model_efforts(engine, catalog, name)
@@ -281,7 +281,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
             "name": name,
             "display_name": name,
             "reasoning_effort": prompter.choice(
-                f"Effort de raisonnement pour {name}",
+                f"Reasoning effort for {name}",
                 [(level, "") for level in efforts],
                 effort if effort in efforts else efforts[len(efforts) // 2],
             ),
@@ -338,9 +338,9 @@ def check_prerequisites(command: CommandRunner, which: Callable[[str], str | Non
     """Stop before any question when detection could not work; ralph-kit check repeats these on other machines."""
     problems = [f"{item.problem} → {item.fix}" for item in prerequisites(which) if item.problem]
     if which("gh") and command("gh", "auth", "status") is None:
-        problems.append("gh non authentifié → gh auth login")
+        problems.append("gh is not authenticated → gh auth login")
     if problems:
-        raise InitError("prérequis manquants\n" + "\n".join(f"  ✗ {problem}" for problem in problems))
+        raise InitError("missing prerequisites\n" + "\n".join(f"  ✗ {problem}" for problem in problems))
 
 
 def run(
@@ -355,10 +355,10 @@ def run(
     check_prerequisites(command, which)
     toplevel = command("git", "rev-parse", "--show-toplevel")
     if toplevel is None or pathlib.Path(toplevel).resolve() != root:
-        raise InitError("lancer ralph-kit init depuis la racine d'un repo Git")
+        raise InitError("run ralph-kit init from the root of a Git repository")
     target = root / CONFIG_NAME
     if target.exists() and not force:
-        raise InitError(f"{target} existe déjà (--force pour l'écraser)")
+        raise InitError(f"{target} already exists (use --force to overwrite it)")
 
     values = collect(root, prompter, command, which)
     contents = render(values)
@@ -366,11 +366,11 @@ def run(
     try:
         load_config(target, root)
     except RalphConfigError as error:  # The renderer must always produce a loadable file.
-        raise InitError(f"configuration générée invalide, merci de signaler ce bug : {error}") from error
+        raise InitError(f"generated configuration is invalid, please report this bug: {error}") from error
 
-    prompter.say(f"\n✅ {target} écrit.")
+    prompter.say(f"\n✅ Wrote {target}.")
     remaining = [value for value in PLACEHOLDERS.values() if value in contents]
     if remaining:
-        prompter.say("   Valeurs à compléter : " + ", ".join(remaining))
-    prompter.say("   Étape suivante : commiter ralph.toml, puis lancer `ralph-kit check`.")
+        prompter.say("   Values to fill in: " + ", ".join(remaining))
+    prompter.say("   Next step: commit ralph.toml, then run `ralph-kit check`.")
     return target

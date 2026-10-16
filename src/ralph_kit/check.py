@@ -25,27 +25,27 @@ from .config import MissingConfigError, RalphConfigError, load_config
 PACKAGE_DIRECTORY = pathlib.Path(__file__).resolve().parent
 AGENT_CLIS = {"claude": "Claude Code", "codex": "Codex"}
 INSTALL_HINTS = {
-    "git": "installer git",
-    "gh": "installer GitHub CLI : https://cli.github.com",
-    "claude": "installer Claude Code (commande claude)",
-    "codex": "installer Codex CLI (commande codex)",
+    "git": "install git",
+    "gh": "install GitHub CLI: https://cli.github.com",
+    "claude": "install Claude Code (claude command)",
+    "codex": "install Codex CLI (codex command)",
 }
 REMINDERS = (
-    "Agents connectés sur cette machine et accès aux modèles choisis",
-    "Permissions et identifiants Git pour pousser la branche",
-    "Dépendances des skills installées et skills découvertes par chaque agent",
-    "Outils, dépendances et services nécessaires au projet",
+    "Agents signed in on this machine, with access to the chosen models",
+    "Git permissions and credentials to push the branch",
+    "Skill dependencies installed and skills discovered by each agent",
+    "Tools, dependencies and services the project needs",
 )
 FINAL_REMINDERS = (
-    "Spec, critères d’acceptation, sous-issues, labels et dépendances GitHub relus",
-    "Accès autonome des agents accepté : la loop contourne les approbations et le sandbox",
+    "Spec, acceptance criteria, sub-issues, labels and GitHub dependencies reviewed",
+    "Autonomous agent access accepted: the loop bypasses approvals and the sandbox",
 )
 ERRORS = (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, ImportError, SyntaxError)
 
 
 def placeholder(value):
     if isinstance(value, str):
-        return any(marker in value for marker in ("VOTRE_", "MODELE_", "REMPLACER_"))
+        return any(marker in value for marker in ("YOUR_", "CHOOSE_", "REPLACE_"))
     if isinstance(value, dict):
         return any(placeholder(item) for item in value.values())
     if isinstance(value, (list, tuple, set, frozenset)):
@@ -67,18 +67,18 @@ def prerequisites(which, engines=None):
     Without engines (init), any installed agent CLI is enough; otherwise each configured engine's CLI is required.
     """
     version = ".".join(map(str, sys.version_info[:3]))
-    yield Prerequisite("Python", version, None if sys.version_info >= (3, 11) else f"Python {version}, 3.11 minimum", "installer Python 3.11 ou plus récent")
+    yield Prerequisite("Python", version, None if sys.version_info >= (3, 11) else f"Python {version}, 3.11 or newer required", "install Python 3.11 or newer")
 
     def tool(executable):
         path = which(executable)
-        return Prerequisite(executable, path or "", None if path else f"{executable} absent du PATH", INSTALL_HINTS[executable])
+        return Prerequisite(executable, path or "", None if path else f"{executable} not found in PATH", INSTALL_HINTS[executable])
 
     yield tool("git")
     yield tool("gh")
     if engines is None:
         found = [executable for executable in AGENT_CLIS if which(executable)]
-        names = " ou ".join(f"{executable} ({name})" for executable, name in AGENT_CLIS.items())
-        yield Prerequisite("CLI d'agent", ", ".join(found), None if found else "aucun CLI d'agent dans le PATH", f"installer {names}")
+        names = " or ".join(f"{executable} ({name})" for executable, name in AGENT_CLIS.items())
+        yield Prerequisite("Agent CLI", ", ".join(found), None if found else "no agent CLI found in PATH", f"install {names}")
     else:
         for executable in sorted(engines):
             yield tool(executable)
@@ -130,16 +130,16 @@ class Readiness:
         return self.add("ok", label, detail or "")
 
     def skip(self, label, reason):
-        self.add("skip", label, f"non vérifié : {reason}")
+        self.add("skip", label, f"not verified: {reason}")
 
     def command(self, *args):
         try:
             result = subprocess.run(args, cwd=self.root, capture_output=True, text=True, timeout=30, env=os.environ | {"GIT_OPTIONAL_LOCKS": "0"})
         except subprocess.TimeoutExpired:
-            raise RuntimeError(f"{args[0]} : délai de 30 secondes dépassé") from None
+            raise RuntimeError(f"{args[0]}: timed out after 30 seconds") from None
         if result.returncode:
             # CLI output can contain credentials; do not echo it.
-            raise RuntimeError(f"{args[0]} {' '.join(args[1:])} a échoué ; vérifier l’accès et l’authentification")
+            raise RuntimeError(f"{args[0]} {' '.join(args[1:])} failed; check access and authentication")
         return result.stdout.strip()
 
 
@@ -172,18 +172,18 @@ def render(console, report, repository=None, reminders=()):
     console.print()
     summary = Text()
     if counts["fail"]:
-        summary.append(f"✗ {counts['fail']} {'bloquant' if counts['fail'] == 1 else 'bloquants'}", style="bold red")
+        summary.append(f"✗ {counts['fail']} {'blocker' if counts['fail'] == 1 else 'blockers'}", style="bold red")
     else:
-        summary.append("✓ Aucun bloquant", style="bold green")
+        summary.append("✓ No blockers", style="bold green")
     summary.append(f" · {counts['ok']} OK", style="dim")
     if counts["skip"]:
-        summary.append(f" · {counts['skip']} non vérifié{'s' if counts['skip'] > 1 else ''}", style="dim")
+        summary.append(f" · {counts['skip']} not verified", style="dim")
     console.print(summary)
     if counts["fail"]:
-        console.print("Corriger les points en rouge, puis relancer ralph-kit check.", style="dim")
+        console.print("Fix the items in red, then run ralph-kit check again.", style="dim")
     if reminders:
         console.print()
-        console.print("Avant de lancer, à vérifier vous-même :", style="bold")
+        console.print("Not checked by ralph-kit; verify before launching:", style="bold")
         grid = Table.grid(padding=(0, 1))
         grid.add_column(width=1)
         grid.add_column()
@@ -194,34 +194,34 @@ def render(console, report, repository=None, reminders=()):
 
 def check_policy(config, root):
     spec = importlib.util.spec_from_file_location("ralph_readiness_quality", config.quality_module)
-    require(spec is not None and spec.loader is not None, "module de vérification introuvable")
+    require(spec is not None and spec.loader is not None, "quality module not found")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     for name in ("load_manifest", "matching_local_gates", "ci_requirements", "validate_check_evidence", "changed_paths"):
-        require(callable(getattr(module, name, None)), f"fonction {name} manquante")
+        require(callable(getattr(module, name, None)), f"missing function {name}")
     manifest = module.load_manifest(config.quality_manifest)
     found = []
     if config.local_checks:
         gates = [gate for gate in manifest["local_gates"] if gate.get("before_agent_review")]
-        require(gates, "aucun contrôle local utilisable par la loop", "ajouter un contrôle avec before_agent_review au manifeste")
+        require(gates, "no local check usable by the loop", "add a check with before_agent_review to the manifest")
         for gate in gates:
-            require(not placeholder(gate), "contrôle local encore à renseigner", "compléter la commande dans le manifeste")
+            require(not placeholder(gate), "local check still has placeholders", "fill in the command in the manifest")
             command = gate.get("command")
-            require(isinstance(command, list) and command and all(isinstance(arg, str) and arg for arg in command), "commande locale invalide")
+            require(isinstance(command, list) and command and all(isinstance(arg, str) and arg for arg in command), "invalid local command")
             executable = command[0]
             available = shutil.which(executable) if "/" not in executable else shutil.which(str(root / executable))
-            require(available, f"commande locale introuvable : {executable}", f"installer {executable} ou corriger la commande")
-        found.append(f"{len(gates)} contrôle{'s' if len(gates) > 1 else ''} local{'aux' if len(gates) > 1 else ''}")
+            require(available, f"local command not found: {executable}", f"install {executable} or fix the command")
+        found.append(f"{len(gates)} local check{'s' if len(gates) > 1 else ''}")
     if config.ci_checks:
         checks = manifest["ci"]["checks"]
-        require(checks, "aucun check CI configuré")
+        require(checks, "no CI check configured")
         names = [check["name"] for check in checks.values()]
-        require(all(isinstance(name, str) and name.strip() for name in names), "nom de check CI invalide")
-        require(not placeholder(checks), "checks CI encore à renseigner", "compléter les noms des checks dans le manifeste")
-        require(len(set(names)) == len(names), "noms de checks CI dupliqués")
+        require(all(isinstance(name, str) and name.strip() for name in names), "invalid CI check name")
+        require(not placeholder(checks), "CI checks still have placeholders", "fill in the check names in the manifest")
+        require(len(set(names)) == len(names), "duplicate CI check names")
         module.ci_requirements(manifest, [], final=True)
         found.append(f"{len(names)} check{'s' if len(names) > 1 else ''} CI")
-    return ", ".join(found) + " (non exécutés)"
+    return ", ".join(found) + " (not run)"
 
 
 def run(root, config_path, *, with_review=False, console=None):
@@ -231,18 +231,18 @@ def run(root, config_path, *, with_review=False, console=None):
     try:
         config = load_config(config_path, root, require_review=with_review)
         roles = ("implementation", "correction", "review") if with_review else ("implementation", "correction")
-        require(not placeholder([config.repository, config.trusted_authors, [config.models[role].name for role in roles]]), "repo, auteurs ou modèles encore à renseigner")
+        require(not placeholder([config.repository, config.trusted_authors, [config.models[role].name for role in roles]]), "repository, authors or models still have placeholders")
     except MissingConfigError:
-        report.add("fail", config_path.name, "introuvable : ce repo n’a pas encore été configuré", "ralph-kit init")
+        report.add("fail", config_path.name, "not found: this repository is not set up yet", "ralph-kit init")
         render(console, report)
         return 1
     except (RalphConfigError, ValueError) as error:
-        report.add("fail", config_path.name, str(error), f"compléter {config_path.name}, ou le régénérer avec ralph-kit init --force")
+        report.add("fail", config_path.name, str(error), f"fill in {config_path.name}, or regenerate it with ralph-kit init --force")
         render(console, report)
         return 1
-    report.add("ok", config_path.name, "valeurs renseignées")
+    report.add("ok", config_path.name, "values filled in")
 
-    report.section("Outils")
+    report.section("Tools")
     engines = {config.models[role].engine for role in roles}
     available = set()
     for item in prerequisites(shutil.which, engines):
@@ -251,54 +251,54 @@ def run(root, config_path, *, with_review=False, console=None):
 
     def package_files():
         schema = json.loads((PACKAGE_DIRECTORY / "outcome-schema.json").read_text())
-        require(isinstance(schema, dict) and schema.get("type") == "object", "schéma de résultat invalide")
-        return f"{__version__}, fichiers complets"
-    report.check("ralph-kit", package_files, "réinstaller ralph-kit")
+        require(isinstance(schema, dict) and schema.get("type") == "object", "invalid result schema")
+        return f"{__version__}, files complete"
+    report.check("ralph-kit", package_files, "reinstall ralph-kit")
 
     report.section("Git")
     if "git" not in available:
-        for label in ("Racine du repo", "Remote", "Branche", "Arbre de travail"):
-            report.skip(label, "git absent")
+        for label in ("Repository root", "Remote", "Branch", "Working tree"):
+            report.skip(label, "git missing")
     else:
         def repository_root():
             toplevel = pathlib.Path(report.command("git", "rev-parse", "--show-toplevel")).resolve()
-            require(toplevel == root, f"lancé depuis un sous-dossier de {toplevel}", f"cd {shlex.quote(str(toplevel))}")
+            require(toplevel == root, f"run from a subdirectory of {toplevel}", f"cd {shlex.quote(str(toplevel))}")
             return str(root)
-        report.check("Racine du repo", repository_root)
+        report.check("Repository root", repository_root)
 
         def remote():
             url = report.command("git", "remote", "get-url", config.remote)
             return f"{config.remote} → {re.sub(r'//[^/@]+@', '//', url)}"  # Hide credentials embedded in HTTPS URLs.
-        report.check("Remote", remote, f"git remote add {config.remote} <url>, ou corriger remote dans ralph.toml")
+        report.check("Remote", remote, f"git remote add {config.remote} <url>, or fix remote in ralph.toml")
 
         def branch():
             report.command("git", "check-ref-format", "--branch", config.base_branch)
             try:
                 current = report.command("git", "symbolic-ref", "--quiet", "--short", "HEAD")
             except RuntimeError:
-                raise Blocked("HEAD détaché, aucune branche active", "git switch -c <nom-de-branche>") from None
-            require(current != config.base_branch, f"sur la branche de base {current}", "git switch -c <nom-de-branche>")
-            return f"{current} (base : {config.base_branch})"
-        report.check("Branche", branch)
+                raise Blocked("detached HEAD, no active branch", "git switch -c <branch-name>") from None
+            require(current != config.base_branch, f"on the base branch {current}", "git switch -c <branch-name>")
+            return f"{current} (base: {config.base_branch})"
+        report.check("Branch", branch)
 
         def worktree():
             changes = report.command("git", "status", "--porcelain").splitlines()
             count = len(changes)
-            require(not changes, f"{count} fichier{'s' if count > 1 else ''} modifié{'s' if count > 1 else ''} ou non suivi{'s' if count > 1 else ''}", "commiter ou remiser (git stash) les changements")
-            return "propre"
-        report.check("Arbre de travail", worktree)
+            require(not changes, f"{count} modified or untracked file{'s' if count > 1 else ''}", "commit the changes, or stash them with git stash")
+            return "clean"
+        report.check("Working tree", worktree)
 
     report.section("GitHub")
     if "gh" not in available:
-        for label in ("Repo", "Compte gh", "Compte de confiance", "Accès en écriture", "Labels"):
-            report.skip(label, "gh absent")
+        for label in ("Repository", "gh account", "Trusted account", "Write access", "Labels"):
+            report.skip(label, "gh missing")
     else:
         def repository():
             # Default repo must match, because the runner uses gh repo view the same way.
             detected = json.loads(report.command("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
-            require(detected == config.repository, f"gh détecte {detected}, ralph.toml indique {config.repository}", f"corriger repository dans ralph.toml, ou gh repo set-default {config.repository}")
+            require(detected == config.repository, f"gh detects {detected}, ralph.toml says {config.repository}", f"fix repository in ralph.toml, or gh repo set-default {config.repository}")
             return config.repository
-        report.check("Repo", repository)
+        report.check("Repository", repository)
 
         login = None
 
@@ -306,14 +306,14 @@ def run(root, config_path, *, with_review=False, console=None):
             nonlocal login
             login = json.loads(report.command("gh", "api", "user"))["login"]
             return login
-        if report.check("Compte gh", account, "gh auth login"):
-            report.check("Compte de confiance", lambda: require(login in config.trusted_authors, f"{login} absent de trusted_authors", f"ajouter {login} à trusted_authors dans ralph.toml") or "dans trusted_authors")
+        if report.check("gh account", account, "gh auth login"):
+            report.check("Trusted account", lambda: require(login in config.trusted_authors, f"{login} is not in trusted_authors", f"add {login} to trusted_authors in ralph.toml") or "in trusted_authors")
 
             def write_access():
                 details = json.loads(report.command("gh", "api", f"repos/{config.repository}"))
-                require(details.get("permissions", {}).get("push"), f"{login} n’a pas l’accès en écriture", f"demander l’accès en écriture à {config.repository}")
-                return "push autorisé"
-            report.check("Accès en écriture", write_access)
+                require(details.get("permissions", {}).get("push"), f"{login} has no write access", f"ask for write access to {config.repository}")
+                return "push allowed"
+            report.check("Write access", write_access)
 
             def labels():
                 pages = json.loads(report.command("gh", "api", "--paginate", "--slurp", f"repos/{config.repository}/labels"))
@@ -322,30 +322,30 @@ def run(root, config_path, *, with_review=False, console=None):
                 missing = sorted(wanted - present)
                 names = " ".join(shlex.quote(name) for name in missing)
                 fix = f"gh label create {names}" if len(missing) == 1 else f'for label in {names}; do gh label create "$label"; done'
-                require(not missing, f"{len(missing)} manquant{'s' if len(missing) > 1 else ''} : {', '.join(missing)}", fix)
-                return f"{len(wanted)} présents"
+                require(not missing, f"{len(missing)} missing: {', '.join(missing)}", fix)
+                return f"all {len(wanted)} present"
             report.check("Labels", labels)
         else:
-            for label in ("Compte de confiance", "Accès en écriture", "Labels"):
-                report.skip(label, "compte gh indisponible")
+            for label in ("Trusted account", "Write access", "Labels"):
+                report.skip(label, "gh account unavailable")
 
     report.section("Agents")
     for engine in sorted(engines):
         directory = ".claude/skills" if engine == "claude" else ".agents/skills"
         path = f"{directory}/implement/SKILL.md"
-        report.check(f"Skill implement ({engine})", lambda path=path: require((root / path).is_file(), f"{path} absent ou lien cassé", f"ajouter la skill implement dans {directory}/") or path)
+        report.check(f"Skill implement ({engine})", lambda path=path: require((root / path).is_file(), f"{path} missing or broken link", f"add the implement skill to {directory}/") or path)
 
-    report.section("Contrôles qualité")
+    report.section("Quality checks")
     if config.verification.needs_quality_policy:
-        report.check("Module et manifeste", lambda: check_policy(config.verification, root))
+        report.check("Module and manifest", lambda: check_policy(config.verification, root))
     else:
-        report.add("off", "Contrôles", "locaux et CI désactivés dans ralph.toml")
+        report.add("off", "Checks", "local and CI checks disabled in ralph.toml")
 
     reminders = list(REMINDERS)
     if config.verification.local_checks:
-        reminders.append("Commandes de contrôles locaux exécutées et résultats vérifiés")
+        reminders.append("Local check commands run and their results verified")
     if config.verification.ci_checks:
-        reminders.append("Noms des checks du workflow CI confirmés et workflow fonctionnel")
+        reminders.append("CI workflow check names confirmed and workflow working")
     render(console, report, config.repository, [*reminders, *FINAL_REMINDERS])
     return int(bool(report.errors))
 
@@ -353,7 +353,7 @@ def run(root, config_path, *, with_review=False, console=None):
 def main(argv=None, prog=None):
     parser = argparse.ArgumentParser(prog=prog, description=__doc__)
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path("ralph.toml"))
-    parser.add_argument("--review", "--with-review", dest="with_review", action="store_true", help="vérifier aussi le rôle de review indépendante")
+    parser.add_argument("--review", "--with-review", dest="with_review", action="store_true", help="also check the independent review role")
     args = parser.parse_args(argv)
     root = pathlib.Path.cwd().resolve()
     path = args.config if args.config.is_absolute() else root / args.config

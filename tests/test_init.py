@@ -84,10 +84,10 @@ class InitTests(unittest.TestCase):
             "2",                          # remote: upstream
             "alice, bob, alice",          # trusted authors, deduplicated
             "", "high",                   # implementation: first listed model, then effort
-            "3", "custom-review", "",     # review: "autre", free name, default effort
+            "3", "custom-review", "",     # review: "other", free name, default effort
         ])
         self.assertEqual(config.repository, "acme/widget")
-        self.assertIn("format attendu", self.output.getvalue())
+        self.assertIn("expected format", self.output.getvalue())
         self.assertEqual(config.base_branch, "main")
         self.assertEqual(config.remote, "upstream")
         self.assertEqual(config.trusted_authors, {"alice", "bob"})
@@ -99,12 +99,12 @@ class InitTests(unittest.TestCase):
     def test_only_installed_engines_are_offered(self):
         self.installed = {"claude"}
         self.run_init(answers=[""] * 4)
-        self.assertIn("Claude Code (seul CLI installé)", self.output.getvalue())
+        self.assertIn("Claude Code (only CLI installed)", self.output.getvalue())
         self.assertNotIn("codex", self.output.getvalue())
 
     def test_no_agent_cli_stops_before_writing(self):
         self.installed = set()
-        with self.assertRaisesRegex(init.InitError, "aucun CLI d'agent"):
+        with self.assertRaisesRegex(init.InitError, "no agent CLI"):
             self.run_init(answers=[])
         self.assertFalse((self.root / "ralph.toml").exists())
 
@@ -113,16 +113,16 @@ class InitTests(unittest.TestCase):
 
         def select(question, options, default):
             asked.append((question, [value for value, _ in options], default))
-            return options[-1][0] if question.startswith("Effort") else default
+            return options[-1][0] if question.startswith("Reasoning effort") else default
 
         prompter = init.Prompter(interactive=True, read=lambda prompt: "", output=self.output, select=select)
         path = init.run(self.root, prompter, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
         config = load_config(path, self.root)
-        self.assertEqual(asked[0], ("Moteur des agents", ["claude", "codex"], "claude"))
+        self.assertEqual(asked[0], ("Agent engine", ["claude", "codex"], "claude"))
         self.assertEqual(asked[1][1], ["fable", "opus", "sonnet", "haiku", init.OTHER])
         self.assertEqual(len(asked), 5)
         self.assertEqual(config.models["implementation"].reasoning_effort, "max")
-        self.assertNotIn("Choix [", self.output.getvalue())
+        self.assertNotIn("Choice [", self.output.getvalue())
 
     def test_missing_tools_stop_before_any_probe(self):
         self.tools = {"git"}
@@ -132,8 +132,8 @@ class InitTests(unittest.TestCase):
         with self.assertRaises(init.InitError) as raised:
             self.run_init(answers=[])
         # Every missing prerequisite is reported at once, and nothing else runs.
-        self.assertIn("gh absent du PATH", str(raised.exception))
-        self.assertIn("aucun CLI d'agent", str(raised.exception))
+        self.assertIn("gh not found in PATH", str(raised.exception))
+        self.assertIn("no agent CLI", str(raised.exception))
         self.assertEqual(probes, [])
         self.assertFalse((self.root / "ralph.toml").exists())
 
@@ -160,7 +160,7 @@ class InitTests(unittest.TestCase):
         self.installed = {"codex"}
         del self.responses[("codex", "debug", "models")]
         config = self.run_init(answers=["my-model", "", "my-reviewer", ""])
-        self.assertIn("liste des modèles Codex indisponible", self.output.getvalue())
+        self.assertIn("Codex model list unavailable", self.output.getvalue())
         self.assertEqual(config.models["implementation"].name, "my-model")
         self.assertEqual(config.models["review"].name, "my-reviewer")
 
@@ -171,7 +171,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.prompts, [])
         self.assertTrue(check.placeholder([config.repository, config.trusted_authors]))
         self.assertTrue(check.placeholder(config.models["implementation"].name))
-        self.assertIn("Valeurs à compléter", self.output.getvalue())
+        self.assertIn("Values to fill in", self.output.getvalue())
 
     def test_quality_policy_enables_checks(self):
         (self.root / ".github/scripts").mkdir(parents=True)
@@ -182,7 +182,7 @@ class InitTests(unittest.TestCase):
 
     def test_existing_config_is_kept_before_any_question(self):
         (self.root / "ralph.toml").write_text("keep")
-        with self.assertRaisesRegex(init.InitError, "existe déjà"):
+        with self.assertRaisesRegex(init.InitError, "already exists"):
             self.run_init(answers=[])
         self.assertEqual(self.prompts, [])
         self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
@@ -190,7 +190,7 @@ class InitTests(unittest.TestCase):
 
     def test_must_run_from_repository_root(self):
         self.responses[("git", "rev-parse", "--show-toplevel")] = str(self.root.parent)
-        with self.assertRaisesRegex(init.InitError, "racine"):
+        with self.assertRaisesRegex(init.InitError, "root of a Git repository"):
             self.run_init(answers=[])
         self.assertFalse((self.root / "ralph.toml").exists())
 
