@@ -35,7 +35,11 @@ ralph-kit run --review 123     # adds an independent review session per child
 
 Commit `ralph.toml` and run on a clean, dedicated branch (never the base branch).
 
-`init` reads the GitHub repository, default branch, remote and current `gh`
+`init` first requires `git`, an authenticated `gh` and at least one agent CLI
+(`claude` or `codex`), and stops before any question otherwise. `check` repeats
+these checks, requiring the CLI of each configured engine, so it is the command
+to run when reusing a committed `ralph.toml` on another machine.
+`init` then reads the GitHub repository, default branch, remote and current `gh`
 account, and enables local and CI checks when `.github/scripts/quality.py` and
 `.github/quality-gates.json` exist. It asks only for what it could not detect,
 plus the agent engine, models and reasoning efforts. Only installed agent CLIs

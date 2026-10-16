@@ -21,6 +21,7 @@ class InitTests(unittest.TestCase):
         self.root = pathlib.Path(directory.name).resolve()
         self.responses = {
             ("git", "rev-parse", "--show-toplevel"): str(self.root),
+            ("gh", "auth", "status"): "",
             ("gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef"): json.dumps(
                 {"nameWithOwner": "acme/widget", "defaultBranchRef": {"name": "trunk"}}
             ),
@@ -35,6 +36,7 @@ class InitTests(unittest.TestCase):
             ]}),
         }
         self.installed = {"claude", "codex"}
+        self.tools = {"git", "gh"}
         self.output = io.StringIO()
 
     def command(self, *args):
@@ -52,7 +54,7 @@ class InitTests(unittest.TestCase):
             return pending.pop(0)
 
         prompter = init.Prompter(interactive=answers is not None, read=read, output=self.output)
-        path = init.run(self.root, prompter, force=force, command=self.command, which=lambda name: name if name in self.installed else None)
+        path = init.run(self.root, prompter, force=force, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
         return load_config(path, self.root)
 
     def test_detected_values_are_not_asked(self):
@@ -105,6 +107,25 @@ class InitTests(unittest.TestCase):
         with self.assertRaisesRegex(init.InitError, "aucun CLI d'agent"):
             self.run_init(answers=[])
         self.assertFalse((self.root / "ralph.toml").exists())
+
+    def test_missing_tools_stop_before_any_probe(self):
+        self.tools = {"git"}
+        self.installed = set()
+        probes = []
+        self.command = lambda *args: probes.append(args)
+        with self.assertRaises(init.InitError) as raised:
+            self.run_init(answers=[])
+        # Every missing prerequisite is reported at once, and nothing else runs.
+        self.assertIn("gh absent du PATH", str(raised.exception))
+        self.assertIn("aucun CLI d'agent", str(raised.exception))
+        self.assertEqual(probes, [])
+        self.assertFalse((self.root / "ralph.toml").exists())
+
+    def test_unauthenticated_gh_stops_before_questions(self):
+        del self.responses[("gh", "auth", "status")]
+        with self.assertRaisesRegex(init.InitError, "gh auth login"):
+            self.run_init(answers=[])
+        self.assertEqual(self.prompts, [])
 
     def test_codex_catalog_drives_models_and_efforts(self):
         self.installed = {"codex"}

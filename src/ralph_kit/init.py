@@ -10,6 +10,7 @@ import subprocess
 import sys
 from typing import Callable, TextIO
 
+from .check import AGENT_CLIS as ENGINES, prerequisites
 from .config import CLAUDE_REASONING_EFFORTS, RalphConfigError, load_config
 
 CONFIG_NAME = "ralph.toml"
@@ -24,7 +25,6 @@ LABELS = {
     "human_review": "human-review",
     "implemented": "implemented",
 }
-ENGINES = {"claude": "Claude Code", "codex": "Codex"}
 # Claude Code has no command listing models; its documented aliases follow the latest version.
 CLAUDE_MODELS = [
     ("fable", "Fable, pour les tâches les plus dures et les plus longues"),
@@ -241,8 +241,6 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         say(f"  ℹ Pas de {QUALITY_MODULE} + {QUALITY_MANIFEST} : contrôles locaux et CI désactivés")
 
     installed = [engine for engine in ENGINES if which(engine)]
-    if not installed:
-        raise InitError("aucun CLI d'agent trouvé dans le PATH : installer claude (Claude Code) ou codex")
     if len(installed) == 1:
         engine = installed[0]
         say(f"  ✓ Moteur des agents : {ENGINES[engine]} (seul CLI installé)")
@@ -314,6 +312,15 @@ def render(values: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def check_prerequisites(command: CommandRunner, which: Callable[[str], str | None]) -> None:
+    """Stop before any question when detection could not work; ralph-kit check repeats these on other machines."""
+    problems = [problem for _, problem in prerequisites(which) if problem]
+    if which("gh") and command("gh", "auth", "status") is None:
+        problems.append("gh non authentifié : lancer `gh auth login`")
+    if problems:
+        raise InitError("prérequis manquants\n" + "\n".join(f"  ✗ {problem}" for problem in problems))
+
+
 def run(
     root: pathlib.Path,
     prompter: Prompter,
@@ -323,6 +330,7 @@ def run(
     which: Callable[[str], str | None] = shutil.which,
 ) -> pathlib.Path:
     command = command or (lambda *args: run_command(*args, cwd=root))
+    check_prerequisites(command, which)
     toplevel = command("git", "rev-parse", "--show-toplevel")
     if toplevel is None or pathlib.Path(toplevel).resolve() != root:
         raise InitError("lancer ralph-kit init depuis la racine d'un repo Git")

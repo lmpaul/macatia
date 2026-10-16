@@ -14,6 +14,7 @@ import sys
 from .config import RalphConfigError, load_config
 
 PACKAGE_DIRECTORY = pathlib.Path(__file__).resolve().parent
+AGENT_CLIS = {"claude": "Claude Code", "codex": "Codex"}
 
 
 def placeholder(value):
@@ -24,6 +25,22 @@ def placeholder(value):
     if isinstance(value, (list, tuple, set, frozenset)):
         return any(placeholder(item) for item in value)
     return False
+
+
+def prerequisites(which, engines=None):
+    """Tools init and check both need, as (name, problem or None) pairs.
+
+    Without engines (init), any installed agent CLI is enough; otherwise each configured engine's CLI is required.
+    """
+    yield "Python 3.11+", None if sys.version_info >= (3, 11) else "Python 3.11 minimum"
+    for executable in ("git", "gh"):
+        yield f"CLI {executable}", None if which(executable) else f"{executable} absent du PATH"
+    if engines is None:
+        names = " ou ".join(f"{executable} ({name})" for executable, name in AGENT_CLIS.items())
+        yield "CLI d'agent", None if any(which(executable) for executable in AGENT_CLIS) else f"aucun CLI d'agent dans le PATH : installer {names}"
+    else:
+        for executable in sorted(engines):
+            yield f"CLI {executable}", None if which(executable) else f"{executable} absent du PATH"
 
 
 class Readiness:
@@ -94,10 +111,9 @@ def run(root, config_path, *, with_review=False):
         print(f"❌ Configuration : {error}")
         return 1
     print("✅ Configuration et valeurs renseignées")
-    report.check("Python 3.11+", lambda: require(sys.version_info >= (3, 11), "Python 3.11 minimum"))
     engines = {config.models[role].engine for role in roles}
-    for executable in sorted({"git", "gh"} | {"claude" if engine == "claude" else "codex" for engine in engines}):
-        report.check(f"CLI {executable}", lambda executable=executable: require(shutil.which(executable), f"{executable} absent du PATH"))
+    for name, problem in prerequisites(shutil.which, engines):
+        report.check(name, lambda problem=problem: require(problem is None, problem))
 
     def git_state():
         require(pathlib.Path(report.command("git", "rev-parse", "--show-toplevel")).resolve() == root, "lancer depuis la racine du repo cible")
