@@ -3,6 +3,7 @@
 import contextlib
 import io
 import json
+import os
 import pathlib
 import sys
 import shutil
@@ -149,6 +150,28 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(self.run_check()[0], 0)
         (self.root / ".agents/skills/implement/SKILL.md").unlink()
         self.assertEqual(self.run_check()[0], 1)
+
+    def test_missing_config_points_to_init(self):
+        self.config.unlink()
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("→ ralph-kit init", output)
+        self.assertEqual(self.commands, [])
+
+    def test_run_without_config_points_to_init(self):
+        import subprocess
+
+        self.config.unlink()
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        for review in ([], ["--review"]):
+            with self.subTest(review=review):
+                result = subprocess.run(
+                    [sys.executable, "-m", "ralph_kit", "run", *review, "1"],
+                    cwd=self.root, capture_output=True, text=True,
+                    env=os.environ | {"PYTHONPATH": str(SOURCE_DIRECTORY)},
+                )
+                self.assertEqual(result.returncode, 1)
+                self.assertIn("ralph.toml not found: run `ralph-kit init` first", result.stderr)
 
     def test_missing_gh_skips_github_checks(self):
         code, output = self.run_check(missing="gh")

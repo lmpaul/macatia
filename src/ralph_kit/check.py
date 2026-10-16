@@ -20,7 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
-from .config import RalphConfigError, load_config
+from .config import MissingConfigError, RalphConfigError, load_config
 
 PACKAGE_DIRECTORY = pathlib.Path(__file__).resolve().parent
 AGENT_CLIS = {"claude": "Claude Code", "codex": "Codex"}
@@ -232,6 +232,10 @@ def run(root, config_path, *, with_review=False, console=None):
         config = load_config(config_path, root, require_review=with_review)
         roles = ("implementation", "correction", "review") if with_review else ("implementation", "correction")
         require(not placeholder([config.repository, config.trusted_authors, [config.models[role].name for role in roles]]), "repo, auteurs ou modèles encore à renseigner")
+    except MissingConfigError:
+        report.add("fail", config_path.name, "introuvable : ce repo n’a pas encore été configuré", "ralph-kit init")
+        render(console, report)
+        return 1
     except (RalphConfigError, ValueError) as error:
         report.add("fail", config_path.name, str(error), f"compléter {config_path.name}, ou le régénérer avec ralph-kit init --force")
         render(console, report)
