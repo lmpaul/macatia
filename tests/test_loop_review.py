@@ -366,7 +366,13 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("claimed committed without creating a Git commit", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 1)
-        self.assert_only_safe_terminal_summary_was_published()
+        state = json.loads(self.github_state.read_text())
+        child = next(child for child in state["children"] if child["number"] == 193)
+        self.assertEqual({label["name"] for label in child["labels"]}, {"human-review"})
+        self.assertIn(
+            "claimed committed without creating a Git commit",
+            child["comments"][-1]["body"],
+        )
         remote_branch = run(
             ["git", "rev-parse", "--verify", "refs/remotes/origin/codex/issue-191"],
             cwd=self.repository,

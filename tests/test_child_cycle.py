@@ -10,12 +10,12 @@ sys.path.insert(0, str(KIT_ROOT / "src"))
 
 from ralph_kit.child_cycle import (
     ChildCycleAdapters,
+    ChildWorkRejected,
     CIFailure,
     CIUnavailable,
     GateFailure,
     HandedToHumanReview,
     RunBudget,
-    RunStop,
     SessionResult,
     Verified,
     run_child_cycle,
@@ -340,14 +340,41 @@ class NewCommitRuleTests(unittest.TestCase):
         self.assertIn("lint failed", tools.handoffs[0][1])
 
 
-class RunStopTests(unittest.TestCase):
+class ChildWorkStopTests(unittest.TestCase):
+    """A stop caused by the child's own work hands that child to human review."""
+
+    def test_rejected_session_work_is_handed_off(self):
+        tools = FakeTools({"implementation": []})
+
+        def reject(request):
+            raise ChildWorkRejected("implementation rewrote the verified commit base")
+
+        tools.adapters = ChildCycleAdapters(
+            reject,
+            tools.run_local_gates,
+            tools.verify_ci,
+            tools.adapters.hand_to_human_review,
+        )
+
+        result, _ = cycle(tools)
+
+        self.assertEqual(
+            result,
+            HandedToHumanReview("implementation rewrote the verified commit base"),
+        )
+        self.assertIn(
+            "Ralph stopped because implementation rewrote the verified commit base",
+            tools.handoffs[0][1],
+        )
+
     def test_review_must_not_change_an_unchanged_implementation(self):
         tools = FakeTools({"implementation": [no_changes()], "review": [committed()]})
 
-        with self.assertRaises(RunStop):
-            cycle(tools, review=True)
+        result, _ = cycle(tools, review=True)
 
-        self.assertEqual(tools.handoffs, [])
+        self.assertIsInstance(result, HandedToHumanReview)
+        self.assertIn("independent review with no corrections", result.reason)
+        self.assertEqual(len(tools.handoffs), 1)
 
 
 if __name__ == "__main__":

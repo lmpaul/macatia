@@ -24,12 +24,12 @@ from .agent import agent_command, session_prompt, write_agent_result
 from .child_cycle import (
     MAX_CORRECTIONS,
     ChildCycleAdapters,
+    ChildWorkRejected,
     CIFailure,
     CIUnavailable,
     GateFailure,
     HandedToHumanReview,
     RunBudget,
-    RunStop,
     SessionRequest,
     SessionResult,
     run_child_cycle,
@@ -899,17 +899,18 @@ def verify_agent_git_effect(
     result: dict[str, Any],
 ) -> tuple[str, list[str]]:
     after_head = current_head()
-    require_clean_worktree(f"after {role}")
+    if git("status", "--porcelain"):
+        raise ChildWorkRejected(f"worktree is dirty after {role}")
     if command(
         ["git", "merge-base", "--is-ancestor", before_head, after_head],
         check=False,
     ).returncode != 0:
-        raise RalphError(f"{role} rewrote or replaced the verified commit base")
+        raise ChildWorkRejected(f"{role} rewrote or replaced the verified commit base")
     commits = git("rev-list", "--reverse", f"{before_head}..{after_head}").splitlines()
     if result["outcome"] == "committed" and not commits:
-        raise RalphError(f"{role} claimed committed without creating a Git commit")
+        raise ChildWorkRejected(f"{role} claimed committed without creating a Git commit")
     if result["outcome"] == "no_changes" and commits:
-        raise RalphError(f"{role} claimed no_changes but created Git commits")
+        raise ChildWorkRejected(f"{role} claimed no_changes but created Git commits")
     return after_head, commits
 
 
@@ -1001,7 +1002,7 @@ def run_agent(
                 flush=True,
             )
             return result, after_head, commits
-        except RalphError as error:
+        except (RalphError, ChildWorkRejected) as error:
             validation.append(f"Rejected: {error}")
             raise
         finally:
@@ -1789,12 +1790,9 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> int:
             ),
             hand_to_human_review=send_child_to_human_review,
         )
-        try:
-            cycle = run_child_cycle(
-                child_number, base_sha, budget, adapters, review=mode.review
-            )
-        except RunStop as error:
-            raise RalphError(str(error)) from error
+        cycle = run_child_cycle(
+            child_number, base_sha, budget, adapters, review=mode.review
+        )
         if isinstance(cycle, HandedToHumanReview):
             raise RalphError(cycle.reason)
 

@@ -122,8 +122,8 @@ class AgentOutcomeStop(Exception):
         self.findings = findings or []
 
 
-class RunStop(Exception):
-    """Stops the whole run without changing the child's issue state."""
+class ChildWorkRejected(Exception):
+    """Raised by an adapter when the child's own work breaks Ralph's contract."""
 
 
 class HumanReviewStop(Exception):
@@ -192,6 +192,9 @@ def run_child_cycle(
     except HumanReviewStop as error:
         body = error.body
         reason = str(error)
+    except ChildWorkRejected as error:
+        reason = str(error)
+        body = f"Ralph stopped because {reason}. This child remains open for human review."
     adapters.hand_to_human_review(child, body)
     return HandedToHumanReview(reason)
 
@@ -320,7 +323,7 @@ class _ChildCycle:
             if require_unchanged_review and (
                 result.outcome != "no_changes" or result.commits
             ):
-                raise RunStop(
+                raise ChildWorkRejected(
                     "implementation no_changes requires an independent review with no corrections"
                 )
             if result.commits:
