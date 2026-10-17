@@ -1111,7 +1111,8 @@ def correction_prompt(
     return f"""Repair the failing local gate after work on GitHub issue #{child_number}.
 
 Correction attempt {attempt}/{MAX_CORRECTIONS}: fix only the failing
-`{gate_description}` gate described below. Preserve the existing work and commit a change only when needed. Do not push
+`{gate_description}` gate described below. Preserve the existing work and commit the repair: a correction without a new commit
+sends the child to human review. Do not push
 or change GitHub issue or pull request state.
 
 Sanitized local-gate diagnostic:
@@ -1134,7 +1135,8 @@ def ci_correction_prompt(child_number: int, attempt: int, diagnostic: str) -> st
     return f"""Repair the failing CI check after work on GitHub issue #{child_number}.
 
 Correction attempt {attempt}/{MAX_CORRECTIONS}: fix only the failure described below.
-Preserve the existing work and commit a change only when needed. Do not push or change GitHub issue or pull request state.
+Preserve the existing work and commit the repair: a correction without a new commit
+sends the child to human review. Do not push or change GitHub issue or pull request state.
 
 Sanitized CI diagnostic:
 

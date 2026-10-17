@@ -243,7 +243,7 @@ class _ChildCycle:
 
     def correct_ci(self, diagnostic: str) -> str:
         self.corrections.start("CI correction", diagnostic=diagnostic)
-        correction = self.session(
+        correction = self.correct(
             SessionRequest(
                 "CI correction",
                 self.child,
@@ -251,16 +251,22 @@ class _ChildCycle:
                 diagnostic=diagnostic,
             )
         )
-        if not correction.commits:
-            detail = "a product CI failure requires a committed correction"
-            if correction.findings:
-                detail += "\nRemaining findings:\n" + format_findings(correction.findings)
-            raise HumanReviewStop(
-                "CI correction did not create a new commit",
-                "Ralph stopped because the CI correction did not create a new commit. "
-                f"This child remains open for human review. Diagnostic: {detail}",
-            )
         return self.complete(correction)
+
+    def correct(self, request: SessionRequest, findings: list[str] | None = None) -> SessionResult:
+        """Run a correction session, which must create a new commit."""
+        result = self.session(request)
+        if not result.commits:
+            role = request.role
+            raise HumanReviewStop(
+                f"{role[0].upper()}{role[1:]} did not create a new commit",
+                f"Ralph stopped because the {role} did not create a new commit; a "
+                "correction session must commit its repair. This child remains open "
+                "for human review."
+                f"{_findings_detail(result.findings or findings or [])}"
+                f"{_diagnostic_detail(request.diagnostic)}",
+            )
+        return result
 
     def session(self, request: SessionRequest) -> SessionResult:
         result = self.adapters.run_session(request)
@@ -282,26 +288,20 @@ class _ChildCycle:
                 findings = result.findings
                 self.corrections.start("issue correction", findings=findings)
                 try:
-                    result = self.session(
+                    result = self.correct(
                         SessionRequest(
                             "issue correction",
                             self.child,
                             correction=self.corrections.used,
                             findings=tuple(findings),
-                        )
+                        ),
+                        findings,
                     )
                 except AgentOutcomeStop as error:
                     if not error.findings:
                         error.findings = findings
                     raise
                 head_sha = result.head
-                if not result.commits:
-                    raise AgentOutcomeStop(
-                        "issue correction",
-                        "needs_correction",
-                        "Issue correction did not create a new commit.",
-                        result.findings or findings,
-                    )
                 continue
 
             head_sha = self.pass_local_gates(head_sha)
@@ -336,7 +336,7 @@ class _ChildCycle:
             if failure is None:
                 return head_sha
             self.corrections.start("local gate correction", diagnostic=failure.diagnostic)
-            head_sha = self.session(
+            head_sha = self.correct(
                 SessionRequest(
                     "local gate correction",
                     self.child,

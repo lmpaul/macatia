@@ -59,7 +59,7 @@ An agent session that independently checks a child's work against its whole issu
 _Avoid_: Review (alone), code review
 
 **Correction session**:
-An agent session that repairs a child's work and must produce a new commit: an issue correction, a local gate correction, or a CI correction.
+An agent session that repairs a child's work and must produce a new commit: an issue correction, a local gate correction, or a CI correction. A correction session without a new commit sends the child to human review.
 _Avoid_: Fix session, retry
 
 **Issue correction**:

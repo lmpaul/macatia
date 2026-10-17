@@ -286,6 +286,60 @@ class HumanReviewTests(unittest.TestCase):
         )
 
 
+class NewCommitRuleTests(unittest.TestCase):
+    """Every correction session must create a commit, or the child goes to human review."""
+
+    def assert_no_commit_handoff(self, tools, result, role):
+        self.assertEqual(
+            result,
+            HandedToHumanReview(f"{role[0].upper()}{role[1:]} did not create a new commit"),
+        )
+        self.assertEqual(len(tools.handoffs), 1)
+        self.assertIn(
+            f"Ralph stopped because the {role} did not create a new commit",
+            tools.handoffs[0][1],
+        )
+
+    def test_gate_correction_without_a_commit_is_handed_off_at_once(self):
+        tools = FakeTools(
+            {"implementation": [committed()], "local gate correction": [no_changes()]},
+            gates=[GateFailure("unit tests", "1 failed")] * 4,
+        )
+
+        result, budget = cycle(tools)
+
+        self.assert_no_commit_handoff(tools, result, "local gate correction")
+        self.assertEqual(tools.gate_heads, ["implementation-1-0"])
+        self.assertEqual(budget.sessions, 2)
+        self.assertIn("1 failed", tools.handoffs[0][1])
+
+    def test_issue_correction_without_a_commit_uses_the_same_handoff(self):
+        tools = FakeTools({
+            "implementation": [needs_correction("gap", commits=1)],
+            "issue correction": [no_changes()],
+        })
+
+        result, _ = cycle(tools)
+
+        self.assert_no_commit_handoff(tools, result, "issue correction")
+        self.assertIn("- gap", tools.handoffs[0][1])
+
+    def test_ci_correction_without_a_commit_uses_the_same_handoff(self):
+        tools = FakeTools(
+            {
+                "implementation": [committed()],
+                "CI correction": [needs_correction("flaky check", commits=0)],
+            },
+            ci=[CIFailure("lint failed")],
+        )
+
+        result, _ = cycle(tools)
+
+        self.assert_no_commit_handoff(tools, result, "CI correction")
+        self.assertIn("- flaky check", tools.handoffs[0][1])
+        self.assertIn("lint failed", tools.handoffs[0][1])
+
+
 class RunStopTests(unittest.TestCase):
     def test_review_must_not_change_an_unchanged_implementation(self):
         tools = FakeTools({"implementation": [no_changes()], "review": [committed()]})
