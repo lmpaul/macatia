@@ -1681,7 +1681,7 @@ def verification_evidence(verified_head: str) -> str:
             "automated local gates and remote CI were explicitly disabled."
         )
     return (
-        f"Experimental implementation-only loop: {checks} "
+        f"Implementation-only loop: {checks} "
         "No separate Ralph review session was run."
     )
 

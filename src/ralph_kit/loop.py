@@ -1,4 +1,4 @@
-"""Experimental implementation-only loop with persisted correction evidence."""
+"""Default `ralph-kit run` loop: implementation and corrections, no review session."""
 
 from __future__ import annotations
 
@@ -10,7 +10,9 @@ MODE = loop_core.LoopMode(
     description=(
         "Implement a parent issue with the configured agent, local gates, and exact-commit CI."
     ),
-    diagnostics_label="start-ralph.py",
+    diagnostics_label="run",
+    # The "experimental" marker names predate this loop becoming the default.
+    # They are persisted in GitHub comments, so they must not change.
     implementation_evidence_prefix="<!-- ralph-experimental-implementation-evidence: ",
     parent_completion_marker="<!-- ralph-experimental-parent-completion -->",
     terminal_summary_marker="<!-- ralph-experimental-terminal-summary -->",

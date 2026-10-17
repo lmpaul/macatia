@@ -1,4 +1,4 @@
-"""Process tests for the experimental loop; GitHub and Codex remain offline."""
+"""Process tests for the default implementation-only loop; GitHub and Codex remain offline."""
 
 import json
 import pathlib
@@ -296,7 +296,7 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertFalse(self.quality_log.exists())
         self.assert_local_only_publication(local_gates=False)
 
-    def test_recovery_uses_experimental_evidence_without_another_session(self):
+    def test_recovery_uses_implementation_only_evidence_without_another_session(self):
         interrupted = self.run_loop(RALPH_TEST_INTERRUPT_AFTER_EVIDENCE="1")
         self.assertNotEqual(interrupted.returncode, 0)
         self.assert_completed(self.run_loop(), 1)
@@ -310,7 +310,7 @@ class StartLoopTests(RalphProcessTestCase):
         self.github_state.write_text(json.dumps(state))
         self.assert_completed(self.run_loop(), 1)
 
-    def test_original_pending_publication_does_not_skip_experimental_checks(self):
+    def test_original_pending_publication_does_not_skip_implementation_only_checks(self):
         state = self.state()
         child = state["children"][1]
         evidence = self._implementation_evidence(self.base_sha)

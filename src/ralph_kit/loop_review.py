@@ -11,7 +11,7 @@ MODE = loop_core.LoopMode(
         "Implement a parent issue by processing and independently reviewing "
         "its runnable sub-issues."
     ),
-    diagnostics_label="start-ralph-with-review.py",
+    diagnostics_label="run --review",
     implementation_evidence_prefix=loop_core.ORIGINAL_EVIDENCE_PREFIX,
     parent_completion_marker="<!-- ralph-parent-completion -->",
     terminal_summary_marker="<!-- ralph-terminal-summary -->",
