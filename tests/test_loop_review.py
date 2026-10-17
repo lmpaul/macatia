@@ -860,7 +860,7 @@ else:
         self.assertFalse(self.claude_log.exists())
 
     def test_default_ci_poll_interval_is_45_seconds(self):
-        from ralph_kit import loop_review as module
+        from ralph_kit import loop_core as module
 
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(module.ci_poll_seconds(), 45.0)
