@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the loops, the readiness check, and init."""
+"""`ralph-kit` command line: dispatch to the standard or reviewed run, the readiness check, and init."""
 
 from __future__ import annotations
 
@@ -9,8 +9,9 @@ import sys
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review] [--config PATH] PARENT_ISSUE [AGENT_BUDGET]
-      Implement the sub-issues of PARENT_ISSUE. --review adds the independent review session.
+  run [--review] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
+      Standard run: implement the children of PARENT_ISSUE, with at most RUN_BUDGET agent sessions.
+      --review starts a reviewed run, which adds an independent review session per child.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
   init [--force]

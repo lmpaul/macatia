@@ -1,17 +1,17 @@
-"""Default `ralph-kit run` loop: implementation and corrections, no review session."""
+"""Standard run (`ralph-kit run`): implementation and corrections, no review session."""
 
 from __future__ import annotations
 
 from . import loop_core
 
 
-MODE = loop_core.LoopMode(
+MODE = loop_core.RunMode(
     review=False,
     description=(
         "Implement a parent issue with the configured agent, local gates, and exact-commit CI."
     ),
     diagnostics_label="run",
-    # The "experimental" marker names predate this loop becoming the default.
+    # The "experimental" marker names predate the standard run becoming the default.
     # They are persisted in GitHub comments, so they must not change.
     implementation_evidence_prefix="<!-- ralph-experimental-implementation-evidence: ",
     parent_completion_marker="<!-- ralph-experimental-parent-completion -->",

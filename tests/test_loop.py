@@ -1,4 +1,4 @@
-"""Process tests for the default implementation-only loop; GitHub and Codex remain offline."""
+"""Process tests for the standard run; GitHub and Codex remain offline."""
 
 import json
 import pathlib
@@ -169,13 +169,66 @@ class StartLoopTests(RalphProcessTestCase):
         ])), 2)
         self.assertIn("Implement the missing acceptance criterion.", self.calls()[1]["prompt"])
 
-    def test_issue_correction_limit_still_stops_without_publication(self):
+    def test_correction_limit_stops_issue_corrections_without_publication(self):
         result = self.run_loop(RALPH_TEST_AGENT_RESULTS=json.dumps([
             {"outcome": "needs_correction", "commit": True, "findings": ["Still missing."]},
-        ] * 3))
+        ] * 4))
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("Issue correction limit of 2", result.stderr)
+        self.assertIn("correction limit of 3 exhausted", result.stderr)
         self.assertIsNone(self.state()["pull_request"])
+
+    def test_local_gate_corrections_count_toward_the_correction_limit(self):
+        result = self.run_loop(RALPH_TEST_FAIL_GATE_COUNT="99")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("correction limit of 3 exhausted", result.stderr)
+        self.assertEqual(len(self.calls()), 4)
+        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
+        self.assertIn("Full stdout:", self.child()["comments"][-1]["body"])
+        self.assertIsNone(self.state()["pull_request"])
+
+    def test_ci_corrections_count_toward_the_correction_limit(self):
+        result = self.run_loop(RALPH_TEST_CI_OUTCOMES="failure")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("correction limit of 3 exhausted", result.stderr)
+        self.assertEqual(len(self.calls()), 4)
+        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
+        self.assertIn("expected 42, received 0", self.child()["comments"][-1]["body"])
+
+    def test_local_gate_ci_and_issue_corrections_share_the_correction_limit(self):
+        self.assert_completed(self.run_loop(
+            RALPH_TEST_FAIL_GATE_COUNT="1",
+            RALPH_TEST_CI_OUTCOMES="failure,success",
+            RALPH_TEST_AGENT_RESULTS=json.dumps([
+                {"outcome": "committed"},
+                {"outcome": "committed"},
+                {"outcome": "needs_correction", "commit": True, "findings": ["Complete the journey."]},
+                {"outcome": "committed"},
+            ]),
+        ), 4)
+        prompts = [call["prompt"] for call in self.calls()]
+        self.assertIn("Repair the failing local gate", prompts[1])
+        self.assertIn("Correction attempt 1/3", prompts[1])
+        self.assertIn("Repair the failing CI check", prompts[2])
+        self.assertIn("Correction attempt 2/3", prompts[2])
+        self.assertIn("Complete the remaining requirements", prompts[3])
+        self.assertIn("Correction attempt 3/3", prompts[3])
+
+    def test_a_fourth_correction_of_any_kind_stops_the_child(self):
+        result = self.run_loop(
+            RALPH_TEST_FAIL_GATE_COUNT="2",
+            RALPH_TEST_CI_OUTCOMES="failure",
+            RALPH_TEST_AGENT_RESULTS=json.dumps([
+                {"outcome": "committed"},
+                {"outcome": "committed"},
+                {"outcome": "committed"},
+                {"outcome": "needs_correction", "commit": True, "findings": ["Complete the journey."]},
+            ]),
+        )
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("correction limit of 3 exhausted", result.stderr)
+        self.assertEqual(len(self.calls()), 4)
+        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
+        self.assertIn("Complete the journey.", self.child()["comments"][-1]["body"])
 
     def test_budget_stop_retains_the_local_evidence(self):
         result = self.run_loop(budget=1, RALPH_TEST_FAIL_GATE_COUNT="1")
@@ -233,13 +286,13 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertIsNone(self.state()["pull_request"])
         self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
 
-    def test_review_profile_is_optional_for_implementation_only_runner(self):
+    def test_review_profile_is_optional_for_a_standard_run(self):
         config = self.repository / "ralph.toml"
         config.write_text(re.sub(r"\[models.review\].*?(?=\[models.correction\])", "", config.read_text(), flags=re.S))
         run(["git", "commit", "-am", "Remove unused review profile"], cwd=self.repository)
         self.assert_completed(self.run_loop(), 1)
 
-    def test_review_profile_remains_required_for_runner_with_review(self):
+    def test_review_profile_remains_required_for_a_reviewed_run(self):
         config = self.repository / "ralph.toml"
         config.write_text(re.sub(r"\[models.review\].*?(?=\[models.correction\])", "", config.read_text(), flags=re.S))
         run(["git", "commit", "-am", "Remove required review profile"], cwd=self.repository)
@@ -296,12 +349,12 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertFalse(self.quality_log.exists())
         self.assert_local_only_publication(local_gates=False)
 
-    def test_recovery_uses_implementation_only_evidence_without_another_session(self):
+    def test_recovery_uses_standard_run_evidence_without_another_session(self):
         interrupted = self.run_loop(RALPH_TEST_INTERRUPT_AFTER_EVIDENCE="1")
         self.assertNotEqual(interrupted.returncode, 0)
         self.assert_completed(self.run_loop(), 1)
 
-    def test_dependency_completed_by_original_loop_remains_satisfied(self):
+    def test_blocker_implemented_by_a_reviewed_run_remains_satisfied(self):
         state = self.state()
         blocker = state["children"][0]
         blocker["state"] = "open"
@@ -310,7 +363,7 @@ class StartLoopTests(RalphProcessTestCase):
         self.github_state.write_text(json.dumps(state))
         self.assert_completed(self.run_loop(), 1)
 
-    def test_original_pending_publication_does_not_skip_implementation_only_checks(self):
+    def test_reviewed_run_pending_publication_does_not_skip_standard_run_checks(self):
         state = self.state()
         child = state["children"][1]
         evidence = self._implementation_evidence(self.base_sha)

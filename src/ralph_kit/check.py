@@ -38,8 +38,8 @@ REMINDERS = (
     "Tools, dependencies and services the project needs",
 )
 FINAL_REMINDERS = (
-    "Spec, acceptance criteria, sub-issues, labels and GitHub dependencies reviewed",
-    "Autonomous agent access accepted: the loop bypasses approvals and the sandbox",
+    "Spec, acceptance criteria, children, labels and GitHub dependencies reviewed",
+    "Autonomous agent access accepted: Ralph bypasses approvals and the sandbox",
 )
 LABEL_DESCRIPTIONS = {
     "needs_triage": "Maintainer needs to evaluate this issue",
@@ -251,7 +251,7 @@ def check_policy(config, root):
     found = []
     if config.local_checks:
         gates = [gate for gate in manifest["local_gates"] if gate.get("before_agent_review")]
-        require(gates, "no local check usable by the loop", "add a check with before_agent_review to the manifest")
+        require(gates, "no local gate usable by Ralph", "add a check with before_agent_review to the manifest")
         for gate in gates:
             require(not placeholder(gate), "local check still has placeholders", "fill in the command in the manifest")
             command = gate.get("command")
@@ -344,7 +344,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None):
             report.skip(label, "gh missing")
     else:
         def repository():
-            # Default repo must match, because the runner uses gh repo view the same way.
+            # Default repo must match, because a run uses gh repo view the same way.
             detected = json.loads(report.command("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
             require(detected == config.repository, f"gh detects {detected}, ralph.toml says {config.repository}", f"fix repository in ralph.toml, or gh repo set-default {config.repository}")
             return config.repository

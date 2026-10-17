@@ -1,3 +1,3 @@
-"""Ralph: run coding agents through a parent GitHub issue, one sub-issue at a time."""
+"""Ralph: run coding agents through a parent GitHub issue, one child at a time."""
 
 __version__ = "0.2.0"

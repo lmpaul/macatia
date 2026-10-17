@@ -1,15 +1,15 @@
-"""Implement a parent issue by processing its runnable sub-issues."""
+"""Reviewed run (`ralph-kit run --review`): adds an independent review session per child."""
 
 from __future__ import annotations
 
 from . import loop_core
 
 
-MODE = loop_core.LoopMode(
+MODE = loop_core.RunMode(
     review=True,
     description=(
         "Implement a parent issue by processing and independently reviewing "
-        "its runnable sub-issues."
+        "its runnable children."
     ),
     diagnostics_label="run --review",
     implementation_evidence_prefix=loop_core.ORIGINAL_EVIDENCE_PREFIX,

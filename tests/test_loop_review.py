@@ -386,7 +386,7 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assert_only_safe_terminal_summary_was_published()
         record = self._diagnostic_records()[0]
         self.assertIsNone(record["structured_result"])
-        self.assertIn("agent did not return valid structured output", (self.repository / ".ralph" / "diagnostics" / record["run_id"] / "iterations" / "001-implementation" / "validation.txt").read_text())
+        self.assertIn("agent did not return valid structured output", (self.repository / ".ralph" / "diagnostics" / record["run_id"] / "sessions" / "001-implementation" / "validation.txt").read_text())
 
     def test_dirty_agent_worktree_stops_without_discarding_diagnostic_evidence(self):
         environment = self.environment.copy()
@@ -399,7 +399,7 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertTrue((self.repository / "uncommitted-agent-output.txt").is_file())
         record = self._diagnostic_records()[0]
         self.assertEqual(record["structured_result"]["outcome"], "committed")
-        self.assertIn("worktree is dirty after implementation", (self.repository / ".ralph" / "diagnostics" / record["run_id"] / "iterations" / "001-implementation" / "validation.txt").read_text())
+        self.assertIn("worktree is dirty after implementation", (self.repository / ".ralph" / "diagnostics" / record["run_id"] / "sessions" / "001-implementation" / "validation.txt").read_text())
 
     def test_nonzero_codex_exit_with_valid_committed_result_is_still_verified(self):
         environment = self.environment.copy()
@@ -466,11 +466,11 @@ class ReviewLoopTests(RalphProcessTestCase):
         )
         self.assertEqual({label["name"] for label in child["labels"]}, {"implemented"})
 
-    def test_agent_budget_is_checked_before_each_codex_session(self):
+    def test_run_budget_is_checked_before_each_agent_session(self):
         completed = self._run_loop("191", "1")
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("agent budget exhausted before review", completed.stderr)
+        self.assertIn("run budget exhausted before review", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 1)
 
     def test_local_gate_failure_starts_a_fresh_correction_and_rechecks_it(self):
@@ -493,12 +493,12 @@ class ReviewLoopTests(RalphProcessTestCase):
         )
         self.assertIn(
             "🤖 Starting Codex local gate correction session (Terra - Medium) "
-            "for sub-issue #193.",
+            "for child #193.",
             completed.stdout,
         )
         self.assertIn(
             "🤖 Codex local gate correction session (Terra - Medium) finished "
-            "for sub-issue #193 (outcome: committed; commits: 1).",
+            "for child #193 (outcome: committed; commits: 1).",
             completed.stdout,
         )
         self.assertNotIn("super-secret", calls[1]["prompt"])
@@ -556,15 +556,15 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertEqual(len(self._json_lines(self.codex_log)), 2)
         self.assert_only_safe_terminal_summary_was_published()
 
-    def test_repeated_local_gate_failure_exhausts_the_shared_agent_budget(self):
+    def test_repeated_local_gate_failure_exhausts_the_run_budget(self):
         environment = self.environment.copy()
         environment["RALPH_TEST_FAIL_GATE_COUNT"] = "99"
 
-        completed = self._run_loop("191", environment=environment)
+        completed = self._run_loop("191", "3", environment=environment)
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("agent budget exhausted before correction", completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 10)
+        self.assertIn("run budget exhausted before local gate correction", completed.stderr)
+        self.assertEqual(len(self._json_lines(self.codex_log)), 3)
         self.assertFalse(
             any(
                 call[:2] == ["issue", "edit"] and "implemented" in call
@@ -576,19 +576,26 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertEqual(
             {label["name"] for label in child["labels"]}, {"human-review"}
         )
-        self.assertIn("shared agent budget of 10", child["comments"][-1]["body"])
+        self.assertIn("run budget of 3 agent sessions", child["comments"][-1]["body"])
         self.assertNotIn("super-secret", child["comments"][-1]["body"])
         self.assertNotIn("hidden-token", child["comments"][-1]["body"])
 
     def test_default_budget_allows_five_sessions_per_child(self):
         self._write_github_state(children=[self._child(193)], blockers={})
         environment = self.environment.copy()
-        environment["RALPH_TEST_FAIL_GATE_COUNT"] = "99"
+        finding = "Expose freshness for each dossier section."
+        environment["RALPH_TEST_AGENT_RESULTS"] = json.dumps([
+            {"outcome": "committed"},
+            {"outcome": "needs_correction", "findings": [finding]},
+            {"outcome": "committed"},
+            {"outcome": "needs_correction", "findings": [finding]},
+            {"outcome": "committed"},
+        ])
 
         completed = self._run_loop("191", environment=environment)
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("agent budget exhausted before correction", completed.stderr)
+        self.assertIn("run budget exhausted before review", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 5)
 
     def test_blocked_agent_leaves_precise_human_review_evidence(self):
@@ -665,7 +672,7 @@ class ReviewLoopTests(RalphProcessTestCase):
             for call in self._json_lines(self.github_log)
         ))
 
-    def test_two_issue_corrections_are_shared_between_implementation_and_review(self):
+    def test_correction_limit_is_shared_between_implementation_and_review(self):
         environment = self.environment.copy()
         finding = "Expose freshness for each dossier section."
         environment["RALPH_TEST_AGENT_RESULTS"] = json.dumps([
@@ -674,16 +681,19 @@ class ReviewLoopTests(RalphProcessTestCase):
             {"outcome": "needs_correction", "findings": [finding]},
             {"outcome": "committed"},
             {"outcome": "needs_correction", "findings": [finding]},
+            {"outcome": "committed"},
+            {"outcome": "needs_correction", "findings": [finding]},
         ])
 
-        completed = self._run_loop("191", environment=environment)
+        completed = self._run_loop("191", "10", environment=environment)
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("Issue correction limit of 2 attempts exhausted", completed.stderr)
+        self.assertIn("correction limit of 3 exhausted", completed.stderr)
         calls = self._json_lines(self.codex_log)
-        self.assertEqual(len(calls), 5)
-        self.assertIn("Correction attempt 1/2", calls[1]["prompt"])
-        self.assertIn("Correction attempt 2/2", calls[3]["prompt"])
+        self.assertEqual(len(calls), 7)
+        self.assertIn("Correction attempt 1/3", calls[1]["prompt"])
+        self.assertIn("Correction attempt 2/3", calls[3]["prompt"])
+        self.assertIn("Correction attempt 3/3", calls[5]["prompt"])
         state = json.loads(self.github_state.read_text())
         child = next(child for child in state["children"] if child["number"] == 193)
         self.assertEqual({label["name"] for label in child["labels"]}, {"human-review"})
@@ -702,7 +712,7 @@ class ReviewLoopTests(RalphProcessTestCase):
         completed = self._run_loop("191", "1", environment=environment)
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("agent budget exhausted before issue correction", completed.stderr)
+        self.assertIn("run budget exhausted before issue correction", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 1)
         state = json.loads(self.github_state.read_text())
         child = next(child for child in state["children"] if child["number"] == 193)
@@ -825,7 +835,7 @@ class ReviewLoopTests(RalphProcessTestCase):
             self.assertIn("[REDACTED]", diagnostic)
             self.assertNotIn("fixture-secret", diagnostic)
 
-    def test_ci_correction_cannot_reset_the_two_issue_correction_limit(self):
+    def test_ci_correction_counts_toward_the_correction_limit(self):
         environment = self.environment.copy()
         environment["RALPH_TEST_CI_OUTCOMES"] = "failure"
         pending = {"outcome": "needs_correction", "commit": True, "findings": ["Complete the journey."]}
@@ -841,7 +851,7 @@ class ReviewLoopTests(RalphProcessTestCase):
         completed = self._run_loop("191", environment=environment)
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("Issue correction limit of 2 attempts exhausted", completed.stderr)
+        self.assertIn("correction limit of 3 exhausted", completed.stderr)
         calls = self._json_lines(self.codex_log)
         self.assertEqual(len(calls), 5)
         self.assertIn("Repair the failing CI check", calls[4]["prompt"])
@@ -901,7 +911,7 @@ class ReviewLoopTests(RalphProcessTestCase):
         completed = self._run_loop("191", "3")
 
         self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("agent budget exhausted before review", completed.stderr)
+        self.assertIn("run budget exhausted before review", completed.stderr)
         calls = self._json_lines(self.codex_log)
         self.assertEqual(len(calls), 3)
         self.assertIn("issue #193", calls[0]["prompt"])
@@ -1199,7 +1209,7 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertIn("infrastructure retries exhausted", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 2)
 
-    def test_infrastructure_retry_can_succeed_without_consuming_agent_budget(self):
+    def test_infrastructure_retry_can_succeed_without_consuming_the_run_budget(self):
         environment = self.environment.copy()
         environment["RALPH_TEST_CI_OUTCOMES"] = "cancelled,success"
 
@@ -1250,30 +1260,30 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn(
             "Handled issue #191: all 2 children complete; "
-            "2 agent iterations and 0 infrastructure retries this run.",
+            "2 agent sessions and 0 infrastructure retries this run.",
             completed.stdout,
         )
-        self.assertIn("▶️  Starting sub-issue #193.", completed.stdout)
+        self.assertIn("▶️  Starting child #193.", completed.stdout)
         self.assertIn(
-            "🤖 Starting Codex implementation session (Terra - Medium) for sub-issue #193.",
+            "🤖 Starting Codex implementation session (Terra - Medium) for child #193.",
             completed.stdout,
         )
         self.assertIn(
-            "🤖 Codex implementation session (Terra - Medium) finished for sub-issue #193 "
+            "🤖 Codex implementation session (Terra - Medium) finished for child #193 "
             "(outcome: committed; commits: 1).",
             completed.stdout,
         )
         self.assertIn(
-            "🤖 Starting Codex review session (Sol - High) for sub-issue #193.",
+            "🤖 Starting Codex review session (Sol - High) for child #193.",
             completed.stdout,
         )
         self.assertIn(
-            "🤖 Codex review session (Sol - High) finished for sub-issue #193 "
+            "🤖 Codex review session (Sol - High) finished for child #193 "
             "(outcome: committed; commits: 1).",
             completed.stdout,
         )
         self.assertIn(
-            "✅ Completed sub-issue #193; selecting the next runnable sub-issue. 🔄",
+            "✅ Completed child #193; selecting the next runnable child. 🔄",
             completed.stdout,
         )
 
@@ -1394,7 +1404,7 @@ class ReviewLoopTests(RalphProcessTestCase):
             if call[:3] == ["issue", "comment", "191"]
             and "<!-- ralph-parent-completion -->" in call[-1]
         )
-        self.assertIn("all 2 formal sub-issues complete", parent_completion_comment[-1])
+        self.assertIn("all 2 children complete", parent_completion_comment[-1])
         parent_summary = next(
             call
             for call in github_calls
@@ -1416,10 +1426,10 @@ class ReviewLoopTests(RalphProcessTestCase):
 
         diagnostics = sorted((self.repository / ".ralph" / "diagnostics").glob("*/"))
         self.assertEqual(len(diagnostics), 1)
-        iterations = sorted((diagnostics[0] / "iterations").glob("*/"))
-        self.assertEqual(len(iterations), 2)
-        for iteration in iterations:
-            record = json.loads((iteration / "record.json").read_text())
+        sessions = sorted((diagnostics[0] / "sessions").glob("*/"))
+        self.assertEqual(len(sessions), 2)
+        for session in sessions:
+            record = json.loads((session / "record.json").read_text())
             self.assertIn(record["role"], {"implementation", "review"})
             self.assertEqual(record["issue_number"], 193)
             self.assertEqual(record["returncode"], 0)
@@ -1427,9 +1437,9 @@ class ReviewLoopTests(RalphProcessTestCase):
             self.assertTrue(record["observed_head"])
             self.assertGreaterEqual(record["duration_seconds"], 0)
             self.assertIn("outcome", record["structured_result"])
-            self.assertTrue((iteration / "stdout.txt").is_file())
-            self.assertTrue((iteration / "stderr.txt").is_file())
-            self.assertTrue((iteration / "validation.txt").is_file())
+            self.assertTrue((session / "stdout.txt").is_file())
+            self.assertTrue((session / "stderr.txt").is_file())
+            self.assertTrue((session / "validation.txt").is_file())
         timings = json.loads((diagnostics[0] / "timings.json").read_text())
         self.assertEqual(timings["run_id"], diagnostics[0].name)
         self.assertTrue(
@@ -1616,7 +1626,7 @@ class ReviewLoopTests(RalphProcessTestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         self.assertIn(
-            "0 agent iterations and 0 infrastructure retries this run",
+            "0 agent sessions and 0 infrastructure retries this run",
             completed.stdout,
         )
         self.assertIn("implemented children this run: 0", completed.stdout)

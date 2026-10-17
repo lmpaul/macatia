@@ -732,5 +732,5 @@ else:
         self.assertEqual(len(runs), 1)
         return [
             json.loads(path.read_text())
-            for path in sorted((runs[0] / "iterations").glob("*/record.json"))
+            for path in sorted((runs[0] / "sessions").glob("*/record.json"))
         ]

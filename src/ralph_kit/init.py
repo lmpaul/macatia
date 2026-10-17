@@ -245,7 +245,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         say(f"  ✓ Trusted author: {login} (current gh account)")
     else:
         authors = _authors(prompter.text(
-            "Trusted GitHub accounts, comma-separated (include the one the loop runs as)",
+            "Trusted GitHub accounts, comma-separated (include the one Ralph runs as)",
             placeholder=PLACEHOLDERS["author"],
             validate=lambda value: None if _authors(value) else "at least one account",
         ))
