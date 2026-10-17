@@ -11,7 +11,7 @@ import sys
 from collections.abc import Callable
 from typing import TextIO
 
-from .check import AGENT_CLIS as ENGINES, prerequisites
+from .check import AGENT_CLIS as ENGINES, create_labels, missing_labels, prerequisites
 from .config import CLAUDE_REASONING_EFFORTS, RalphConfigError, load_config
 
 
@@ -59,19 +59,8 @@ class InitAborted(RuntimeError):
     """The user interrupted the questions; nothing was written."""
 
 
-def arrow_select(question: str, options: list[tuple[str, str]], default: str) -> str:
-    """Pick an option with the arrow keys; needs a real terminal on stdin and stdout."""
-    import questionary
-
-    choices = [questionary.Choice(f"{value}  ({label})" if label else value, value=value) for value, label in options]
-    try:
-        return questionary.select(question, choices, default=default, instruction="(↑↓ to move, Enter to select)").unsafe_ask()
-    except KeyboardInterrupt:
-        raise InitAborted("init cancelled, nothing written") from None
-
-
 def run_command(*args: str, cwd: pathlib.Path) -> str | None:
-    """Read-only probe: stdout on success, None when the tool is missing or fails."""
+    """stdout on success, None when the tool is missing or fails."""
     try:
         result = subprocess.run(args, cwd=cwd, capture_output=True, text=True, timeout=30)
     except (OSError, subprocess.TimeoutExpired):
@@ -107,7 +96,10 @@ class Prompter:
         if not self.interactive:
             return default
         if self.select:
-            return self.select(question, options, default)
+            try:
+                return self.select(question, options, default)
+            except KeyboardInterrupt:
+                raise InitAborted("init cancelled, nothing written") from None
         # Numbered fallback when no arrow-key selector is available.
         values = [value for value, _ in options]
         self.say(f"\n? {question}")
@@ -291,6 +283,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
     models["correction"] = dict(models["implementation"])
 
     return {
+        "create_labels": _offer_labels(prompter, command, repository),
         "repository": repository,
         "base_branch": base_branch,
         "remote": remote,
@@ -299,6 +292,28 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         "local_checks": checks,
         "ci_checks": checks,
     }
+
+
+def _offer_labels(prompter: Prompter, command: CommandRunner, repository: str) -> dict[str, str]:
+    """Missing labels the user agreed to create once ralph.toml is written."""
+    if repository == PLACEHOLDERS["repository"]:
+        return {}
+    try:
+        missing = missing_labels(command, repository, LABELS.values())
+    except (TypeError, KeyError, ValueError):  # gh unavailable or unexpected output: ralph-kit check reports it.
+        return {}
+    if not missing:
+        prompter.say(f"  ✓ Labels: all {len(LABELS)} present")
+        return {}
+    prompter.say(f"  ℹ Labels missing on {repository}: {', '.join(missing)}")
+    if not prompter.interactive:
+        return {}
+    answer = prompter.choice(
+        f"Create the {len(missing)} missing label{'s' if len(missing) > 1 else ''}?",
+        [("Yes", "create them now with gh"), ("Later", "ralph-kit check will offer again")],
+        "Yes",
+    )
+    return {role: name for role, name in LABELS.items() if name in missing} if answer == "Yes" else {}
 
 
 def _string(value: str) -> str:
@@ -371,6 +386,10 @@ def run(
         raise InitError(f"generated configuration is invalid, please report this bug: {error}") from error
 
     prompter.say(f"\n✅ Wrote {target}.")
+    if values["create_labels"]:
+        failed = create_labels(command, values["repository"], values["create_labels"])
+        for name in values["create_labels"].values():
+            prompter.say(f"   ✗ Label {name} not created" if name in failed else f"   ✓ Label {name} created")
     remaining = [value for value in PLACEHOLDERS.values() if value in contents]
     if remaining:
         prompter.say("   Values to fill in: " + ", ".join(remaining))

@@ -27,7 +27,7 @@ From the repository root:
 
 ```sh
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
-ralph-kit check                # read-only readiness check
+ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit run 123              # implement the sub-issues of parent issue #123
 ralph-kit run 123 10           # same, with at most 10 agent sessions
 ralph-kit run --review 123     # adds an independent review session per child
@@ -133,8 +133,8 @@ accept trusted evidence from either version when its commits are on the branch.
 - `trusted_authors` is the non-empty allowlist for parent and child issues.
   Include the GitHub account used by the loop so a restarted run can trust its
   own evidence comments.
-- `labels` maps Ralph's seven canonical roles to labels that already exist in
-  the target repository.
+- `labels` maps Ralph's seven canonical roles to labels in the target
+  repository. `init` and `check` offer to create missing ones (Yes / Later).
 - `models` selects the CLI engine, model, display name, and reasoning effort for
   implementation, independent review, and correction sessions.
 
@@ -282,8 +282,9 @@ Results are grouped by section with what was found; each failure shows the fix
 (often a command to run), and checks that depend on a missing tool are reported
 as not verified instead of failing. Colors are dropped when the output is not a
 terminal (or with `NO_COLOR`).
-A nonzero exit code means a blocking check failed. GitHub requests are read-only;
-no agent, project check, CI run, push, issue or PR mutation occurs. The configured
+A nonzero exit code means a blocking check failed. In a terminal, missing labels
+are offered for creation after the report (Yes / Later); that is the only GitHub
+write. No agent, project check, CI run, push, issue or PR mutation occurs. The configured
 quality module is imported: it must be trusted and have no import-time side effects.
 
 A successful check does not validate agent authentication/model access, actual skill

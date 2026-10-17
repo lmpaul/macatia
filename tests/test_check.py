@@ -66,13 +66,18 @@ class ReadinessTests(unittest.TestCase):
             ("gh", "api", "repos/example/project"): json.dumps({"permissions": {"push": self.permission}}),
             ("gh", "api", "--paginate", "--slurp", "repos/example/project/labels"): json.dumps([[{"name": name} for name in self.labels]]),
         }
-        # Only the explicit read-only allowlist is accepted by the fixture.
+        if args[:3] == ("gh", "label", "create"):
+            if args[3] == "broken":
+                raise RuntimeError("gh label create failed")
+            self.labels.append(args[3])
+            return ""
+        # Only the explicit read-only allowlist, plus label creation, is accepted by the fixture.
         return responses[args]
 
-    def run_check(self, missing=None):
+    def run_check(self, missing=None, confirm=None):
         output = io.StringIO()
         with mock.patch.object(pathlib.Path, "cwd", return_value=self.root), mock.patch.object(self.checker.shutil, "which", side_effect=lambda name: None if name == missing else f"/tools/{name}"), mock.patch.object(self.checker.Readiness, "command", autospec=True, side_effect=self.command), contextlib.redirect_stdout(output):
-            code = self.checker.run(self.root, self.config)
+            code = self.checker.run(self.root, self.config, confirm=confirm)
         return code, output.getvalue()
 
     def flags(self, local, ci):
@@ -141,6 +146,28 @@ class ReadinessTests(unittest.TestCase):
     def test_missing_label_blocks(self):
         self.labels.remove("ready-for-agent")
         self.assertEqual(self.run_check()[0], 1)
+
+    def test_missing_labels_are_created_once_confirmed(self):
+        self.labels.remove("implemented")
+        questions = []
+        code, output = self.run_check(confirm=lambda question: questions.append(question) or True)
+        self.assertEqual(code, 0)
+        self.assertEqual(questions, ["Create the 1 missing label on example/project?"])
+        self.assertIn("✓ implemented created", output)
+        self.assertIn(("gh", "label", "create", "implemented", "--repo", "example/project", "--description", "Implemented by Ralph"), self.commands)
+
+    def test_labels_are_not_created_later_or_without_terminal(self):
+        self.labels.remove("implemented")
+        for confirm in (None, lambda question: False):
+            with self.subTest(confirm=confirm):
+                self.assertEqual(self.run_check(confirm=confirm)[0], 1)
+                self.assertFalse(any(args[:3] == ("gh", "label", "create") for args in self.commands))
+
+    def test_failed_label_creation_still_blocks(self):
+        self.config.write_text(self.config.read_text().replace('implemented = "implemented"', 'implemented = "broken"'))
+        code, output = self.run_check(confirm=lambda question: True)
+        self.assertEqual(code, 1)
+        self.assertIn("✗ broken not created", output)
 
     def test_broken_claude_skill_link_blocks(self):
         self.config.write_text(self.config.read_text().replace('engine = "codex"', 'engine = "claude"'))

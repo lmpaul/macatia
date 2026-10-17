@@ -1,4 +1,4 @@
-"""Read-only readiness checks; never run agents, project checks, or GitHub writes."""
+"""Readiness checks; never run agents or project checks. The only GitHub write is creating missing labels, once confirmed."""
 
 from __future__ import annotations
 
@@ -41,6 +41,15 @@ FINAL_REMINDERS = (
     "Spec, acceptance criteria, sub-issues, labels and GitHub dependencies reviewed",
     "Autonomous agent access accepted: the loop bypasses approvals and the sandbox",
 )
+LABEL_DESCRIPTIONS = {
+    "needs_triage": "Maintainer needs to evaluate this issue",
+    "needs_info": "Waiting on reporter for more information",
+    "ready_for_agent": "Fully specified, ready for an AFK agent",
+    "ready_for_human": "Requires human implementation",
+    "wontfix": "Will not be actioned",
+    "human_review": "Ralph stopped; a human must review",
+    "implemented": "Implemented by Ralph",
+}
 ERRORS = (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, ImportError, SyntaxError)
 
 
@@ -83,6 +92,44 @@ def prerequisites(which, engines=None):
     else:
         for executable in sorted(engines):
             yield tool(executable)
+
+
+def missing_labels(command, repository, wanted):
+    pages = json.loads(command("gh", "api", "--paginate", "--slurp", f"repos/{repository}/labels"))
+    present = {label["name"] for page in pages for label in page}
+    return sorted(set(wanted) - present)
+
+
+def create_labels(command, repository, labels):
+    """Create each {role: name} label; return the names gh could not create.
+
+    command either returns None or raises RuntimeError on failure.
+    """
+    failed = []
+    for role, name in labels.items():
+        try:
+            created = command("gh", "label", "create", name, "--repo", repository, "--description", LABEL_DESCRIPTIONS.get(role, ""))
+        except RuntimeError:
+            created = None
+        if created is None:
+            failed.append(name)
+    return failed
+
+
+def arrow_select(question, options, default):
+    """Pick an option with the arrow keys; needs a real terminal on stdin and stdout. Ctrl-C raises KeyboardInterrupt."""
+    import questionary
+
+    choices = [questionary.Choice(f"{value}  ({label})" if label else value, value=value) for value, label in options]
+    return questionary.select(question, choices, default=default, instruction="(↑↓ to move, Enter to select)").unsafe_ask()
+
+
+def confirm_with_arrows(question):
+    """Yes or Later; Ctrl-C counts as Later."""
+    try:
+        return arrow_select(question, [("Yes", ""), ("Later", "")], "Yes") == "Yes"
+    except KeyboardInterrupt:
+        return False
 
 
 class Blocked(ValueError):
@@ -225,7 +272,8 @@ def check_policy(config, root):
     return ", ".join(found) + " (not run)"
 
 
-def run(root, config_path, *, with_review=False, console=None):
+def run(root, config_path, *, with_review=False, console=None, confirm=None):
+    """confirm(question) -> bool offers to create missing labels; None never writes to GitHub."""
     console = console or Console(highlight=False)
     report = Readiness(root)
     report.section("Configuration")
@@ -290,6 +338,7 @@ def run(root, config_path, *, with_review=False, console=None):
         report.check("Working tree", worktree)
 
     report.section("GitHub")
+    missing = []
     if "gh" not in available:
         for label in ("Repository", "gh account", "Trusted account", "Write access", "Labels"):
             report.skip(label, "gh missing")
@@ -317,10 +366,8 @@ def run(root, config_path, *, with_review=False, console=None):
             report.check("Write access", write_access)
 
             def labels():
-                pages = json.loads(report.command("gh", "api", "--paginate", "--slurp", f"repos/{config.repository}/labels"))
-                present = {label["name"] for page in pages for label in page}
                 wanted = set(config.labels.values())
-                missing = sorted(wanted - present)
+                missing[:] = missing_labels(report.command, config.repository, wanted)
                 names = " ".join(shlex.quote(name) for name in missing)
                 fix = f"gh label create {names}" if len(missing) == 1 else f'for label in {names}; do gh label create "$label"; done'
                 require(not missing, f"{len(missing)} missing: {', '.join(missing)}", fix)
@@ -348,7 +395,19 @@ def run(root, config_path, *, with_review=False, console=None):
     if config.verification.ci_checks:
         reminders.append("CI workflow check names confirmed and workflow working")
     render(console, report, config.repository, [*reminders, *FINAL_REMINDERS])
-    return int(bool(report.errors))
+    errors = report.errors
+    if missing and confirm:
+        console.print()
+        count = f"{len(missing)} missing label{'s' if len(missing) > 1 else ''}"
+        if confirm(f"Create the {count} on {config.repository}?"):
+            roles = {name: role for role, name in config.labels.items()}
+            failed = create_labels(report.command, config.repository, {roles[name]: name for name in missing})
+            for name in missing:
+                console.print(Text(f"✗ {name} not created", style="red") if name in failed else Text(f"✓ {name} created", style="green"))
+            errors -= not failed
+        else:
+            console.print("Labels not created; ralph-kit check will offer again.", style="dim")
+    return int(bool(errors))
 
 
 def main(argv=None, prog=None):
@@ -358,4 +417,5 @@ def main(argv=None, prog=None):
     args = parser.parse_args(argv)
     root = pathlib.Path.cwd().resolve()
     path = args.config if args.config.is_absolute() else root / args.config
-    return run(root, path, with_review=args.with_review)
+    interactive = sys.stdin.isatty() and sys.stdout.isatty()
+    return run(root, path, with_review=args.with_review, confirm=confirm_with_arrows if interactive else None)

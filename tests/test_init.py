@@ -125,6 +125,32 @@ class InitTests(unittest.TestCase):
         self.assertEqual(config.models["implementation"].reasoning_effort, "max")
         self.assertNotIn("Choice [", self.output.getvalue())
 
+    def test_missing_labels_are_offered_and_created_after_writing(self):
+        self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[{"name": "needs-triage"}]])
+        created = []
+
+        def command(*args):
+            if args[:3] == ("gh", "label", "create"):
+                self.assertTrue((self.root / "ralph.toml").exists())
+                created.append(args[3])
+                return ""
+            return self.responses.get(args)
+
+        self.command = command
+        self.run_init(answers=[""] * 6)  # Enter keeps "Yes".
+        self.assertEqual(self.prompts[-1], "Choice [1]: ")
+        self.assertEqual(created, [label for label in init.LABELS.values() if label != "needs-triage"])
+        self.assertIn("✓ Label implemented created", self.output.getvalue())
+
+    def test_labels_are_kept_for_later(self):
+        self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[]])
+        self.run_init(answers=[""] * 5 + ["2"])
+        self.assertNotIn("created", self.output.getvalue())
+        # Without a terminal, missing labels are only reported.
+        self.run_init(force=True)
+        self.assertIn("Labels missing on acme/widget", self.output.getvalue())
+        self.assertNotIn("created", self.output.getvalue())
+
     def test_missing_tools_stop_before_any_probe(self):
         self.tools = {"git"}
         self.installed = set()

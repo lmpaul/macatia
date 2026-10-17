@@ -21,13 +21,14 @@ Run every command from the target repository root. Configuration defaults to ./r
 
 def init(argv: list[str]) -> int:
     from . import init as setup
+    from .check import arrow_select
 
     force = "--force" in argv
     if unknown := [argument for argument in argv if argument != "--force"]:
         print(f"ralph-kit init: unknown arguments: {' '.join(unknown)}", file=sys.stderr)
         return 2
     interactive = sys.stdin.isatty()
-    prompter = setup.Prompter(interactive=interactive, select=setup.arrow_select if interactive and sys.stdout.isatty() else None)
+    prompter = setup.Prompter(interactive=interactive, select=arrow_select if interactive and sys.stdout.isatty() else None)
     try:
         setup.run(pathlib.Path.cwd().resolve(), prompter, force=force)
     except setup.InitAborted as error:
