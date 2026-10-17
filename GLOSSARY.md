@@ -31,6 +31,10 @@ A GitHub account whose issues and evidence comments Ralph accepts; everything el
 The cycle Ralph repeats for each runnable child: implement, verify, correct if needed, publish, then select the next runnable child.
 _Avoid_: Pipeline, workflow
 
+**Child cycle**:
+The part of the loop that takes one runnable child from its implementation session to a verified head or to human review; publication of implementation evidence follows it.
+_Avoid_: Attempt, completion
+
 **Run**:
 One execution of the loop against a parent issue, until no runnable child is left or the run stops.
 _Avoid_: Runner, execution
@@ -55,7 +59,7 @@ An agent session that independently checks a child's work against its whole issu
 _Avoid_: Review (alone), code review
 
 **Correction session**:
-An agent session that repairs a child's work and must produce a new commit: an issue correction, a local gate correction, or a CI correction.
+An agent session that repairs a child's work and must produce a new commit: an issue correction, a local gate correction, or a CI correction. A correction session without a new commit sends the child to human review.
 _Avoid_: Fix session, retry
 
 **Issue correction**:

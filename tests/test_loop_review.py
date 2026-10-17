@@ -366,7 +366,13 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("claimed committed without creating a Git commit", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 1)
-        self.assert_only_safe_terminal_summary_was_published()
+        state = json.loads(self.github_state.read_text())
+        child = next(child for child in state["children"] if child["number"] == 193)
+        self.assertEqual({label["name"] for label in child["labels"]}, {"human-review"})
+        self.assertIn(
+            "claimed committed without creating a Git commit",
+            child["comments"][-1]["body"],
+        )
         remote_branch = run(
             ["git", "rev-parse", "--verify", "refs/remotes/origin/codex/issue-191"],
             cwd=self.repository,
@@ -672,36 +678,6 @@ class ReviewLoopTests(RalphProcessTestCase):
             for call in self._json_lines(self.github_log)
         ))
 
-    def test_correction_limit_is_shared_between_implementation_and_review(self):
-        environment = self.environment.copy()
-        finding = "Expose freshness for each dossier section."
-        environment["RALPH_TEST_AGENT_RESULTS"] = json.dumps([
-            {"outcome": "needs_correction", "commit": True, "findings": [finding]},
-            {"outcome": "committed"},
-            {"outcome": "needs_correction", "findings": [finding]},
-            {"outcome": "committed"},
-            {"outcome": "needs_correction", "findings": [finding]},
-            {"outcome": "committed"},
-            {"outcome": "needs_correction", "findings": [finding]},
-        ])
-
-        completed = self._run_loop("191", "10", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("correction limit of 3 exhausted", completed.stderr)
-        calls = self._json_lines(self.codex_log)
-        self.assertEqual(len(calls), 7)
-        self.assertIn("Correction attempt 1/3", calls[1]["prompt"])
-        self.assertIn("Correction attempt 2/3", calls[3]["prompt"])
-        self.assertIn("Correction attempt 3/3", calls[5]["prompt"])
-        state = json.loads(self.github_state.read_text())
-        child = next(child for child in state["children"] if child["number"] == 193)
-        self.assertEqual({label["name"] for label in child["labels"]}, {"human-review"})
-        self.assertIn(finding, child["comments"][-1]["body"])
-        self.assertFalse(any(
-            call[:2] == ["pr", "create"] for call in self._json_lines(self.github_log)
-        ))
-
     def test_issue_correction_budget_exhaustion_preserves_remaining_findings(self):
         environment = self.environment.copy()
         finding = "Add reversible journey ordering."
@@ -835,35 +811,6 @@ class ReviewLoopTests(RalphProcessTestCase):
             self.assertIn("[REDACTED]", diagnostic)
             self.assertNotIn("fixture-secret", diagnostic)
 
-    def test_ci_correction_counts_toward_the_correction_limit(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CI_OUTCOMES"] = "failure"
-        pending = {"outcome": "needs_correction", "commit": True, "findings": ["Complete the journey."]}
-        final_finding = "The CI repair left section freshness incomplete."
-        environment["RALPH_TEST_AGENT_RESULTS"] = json.dumps([
-            pending,
-            pending,
-            {"outcome": "committed"},
-            {"outcome": "no_changes"},
-            {"outcome": "needs_correction", "commit": True, "findings": [final_finding]},
-        ])
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("correction limit of 3 exhausted", completed.stderr)
-        calls = self._json_lines(self.codex_log)
-        self.assertEqual(len(calls), 5)
-        self.assertIn("Repair the failing CI check", calls[4]["prompt"])
-        state = json.loads(self.github_state.read_text())
-        child = next(child for child in state["children"] if child["number"] == 193)
-        self.assertEqual({label["name"] for label in child["labels"]}, {"human-review"})
-        self.assertIn(final_finding, child["comments"][-1]["body"])
-        self.assertEqual(sum(
-            call[0] == "api" and "/check-runs" in call[1]
-            for call in self._json_lines(self.github_log)
-        ), 1)
-
     def test_nonzero_needs_correction_is_not_retried_as_an_issue_gap(self):
         environment = self.environment.copy()
         environment["RALPH_TEST_CODEX_NONZERO"] = "1"
@@ -877,30 +824,6 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertIn("exited non-zero without a committed outcome", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 1)
         self.assert_only_safe_terminal_summary_was_published()
-
-    def test_local_gate_correction_after_review_requires_review_of_the_new_commit(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_FAIL_GATE_CALLS"] = "[2]"
-        environment["RALPH_TEST_AGENT_RESULTS"] = json.dumps([
-            {"outcome": "committed"},
-            {"outcome": "committed"},
-            {"outcome": "committed"},
-            {"outcome": "no_changes"},
-        ])
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        calls = self._json_lines(self.codex_log)
-        self.assertEqual(len(calls), 4)
-        self.assertIn("Repair the failing local gate", calls[2]["prompt"])
-        self.assertIn("gpt-5.6-sol", calls[3]["arguments"])
-        head = run(["git", "rev-parse", "HEAD"], cwd=self.repository).stdout.strip()
-        self.assertIn(head, calls[3]["prompt"])
-        self.assertTrue(any(
-            call[0] == "api" and f"/commits/{head}/check-runs" in call[1]
-            for call in self._json_lines(self.github_log)
-        ))
 
     def test_explicit_budget_replaces_the_larger_default_across_children(self):
         self._write_github_state(

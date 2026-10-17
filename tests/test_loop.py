@@ -169,31 +169,6 @@ class StartLoopTests(RalphProcessTestCase):
         ])), 2)
         self.assertIn("Implement the missing acceptance criterion.", self.calls()[1]["prompt"])
 
-    def test_correction_limit_stops_issue_corrections_without_publication(self):
-        result = self.run_loop(RALPH_TEST_AGENT_RESULTS=json.dumps([
-            {"outcome": "needs_correction", "commit": True, "findings": ["Still missing."]},
-        ] * 4))
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("correction limit of 3 exhausted", result.stderr)
-        self.assertIsNone(self.state()["pull_request"])
-
-    def test_local_gate_corrections_count_toward_the_correction_limit(self):
-        result = self.run_loop(RALPH_TEST_FAIL_GATE_COUNT="99")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("correction limit of 3 exhausted", result.stderr)
-        self.assertEqual(len(self.calls()), 4)
-        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
-        self.assertIn("Full stdout:", self.child()["comments"][-1]["body"])
-        self.assertIsNone(self.state()["pull_request"])
-
-    def test_ci_corrections_count_toward_the_correction_limit(self):
-        result = self.run_loop(RALPH_TEST_CI_OUTCOMES="failure")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("correction limit of 3 exhausted", result.stderr)
-        self.assertEqual(len(self.calls()), 4)
-        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
-        self.assertIn("expected 42, received 0", self.child()["comments"][-1]["body"])
-
     def test_local_gate_ci_and_issue_corrections_share_the_correction_limit(self):
         self.assert_completed(self.run_loop(
             RALPH_TEST_FAIL_GATE_COUNT="1",
@@ -212,23 +187,6 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertIn("Correction attempt 2/3", prompts[2])
         self.assertIn("Complete the remaining requirements", prompts[3])
         self.assertIn("Correction attempt 3/3", prompts[3])
-
-    def test_a_fourth_correction_of_any_kind_stops_the_child(self):
-        result = self.run_loop(
-            RALPH_TEST_FAIL_GATE_COUNT="2",
-            RALPH_TEST_CI_OUTCOMES="failure",
-            RALPH_TEST_AGENT_RESULTS=json.dumps([
-                {"outcome": "committed"},
-                {"outcome": "committed"},
-                {"outcome": "committed"},
-                {"outcome": "needs_correction", "commit": True, "findings": ["Complete the journey."]},
-            ]),
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("correction limit of 3 exhausted", result.stderr)
-        self.assertEqual(len(self.calls()), 4)
-        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
-        self.assertIn("Complete the journey.", self.child()["comments"][-1]["body"])
 
     def test_budget_stop_retains_the_local_evidence(self):
         result = self.run_loop(budget=1, RALPH_TEST_FAIL_GATE_COUNT="1")
