@@ -21,7 +21,26 @@ from datetime import UTC, datetime
 from typing import Any
 
 from .agent import agent_command, session_prompt, write_agent_result
+from .child_cycle import (
+    MAX_CORRECTIONS,
+    ChildCycleAdapters,
+    CIFailure,
+    CIUnavailable,
+    GateFailure,
+    HandedToHumanReview,
+    RunBudget,
+    RunStop,
+    SessionRequest,
+    SessionResult,
+    run_child_cycle,
+)
 from .config import AgentProfile, RalphConfig, RalphConfigError, load_config
+from .sanitize import (
+    format_findings,
+    sanitized_diagnostic,
+    sanitized_text,
+    sanitized_value,
+)
 
 
 @dataclass(frozen=True)
@@ -51,7 +70,6 @@ DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
 ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
-MAX_CORRECTIONS = 3
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
 If implementation or {follow_up_role} identifies concrete, fixable gaps that remain, return
 needs_correction, even if you created commits. Put every remaining problem and
@@ -349,63 +367,6 @@ class RalphError(RuntimeError):
     """A safe terminal stop that must not advance issue state."""
 
 
-class RunBudgetExhausted(RalphError):
-    """The run budget prevented another agent session from starting."""
-
-    def __init__(self, role: str):
-        super().__init__(f"run budget exhausted before {role}")
-        self.role = role
-        self.diagnostic: str | None = None
-
-
-class CorrectionLimitExhausted(RalphError):
-    """The child's correction limit prevented another correction session."""
-
-    def __init__(self, role: str, findings: list[str], diagnostic: str | None):
-        super().__init__(f"correction limit of {MAX_CORRECTIONS} exhausted before {role}")
-        self.role = role
-        self.findings = findings
-        self.diagnostic = diagnostic
-
-
-class AgentOutcomeStop(RalphError):
-    """A valid agent result that deliberately leaves the child incomplete."""
-
-    def __init__(
-        self, role: str, outcome: str, summary: str, findings: list[str] | None = None
-    ):
-        super().__init__(f"{role} stopped with {outcome}: {summary}")
-        self.role = role
-        self.outcome = outcome
-        self.summary = summary
-        self.findings = findings or []
-
-
-class CorrectionLimit:
-    """Bounds every correction session of one child: issue, local gate, and CI."""
-
-    def __init__(self):
-        self.used = 0
-
-    def start(
-        self,
-        role: str,
-        budget: RunBudget,
-        *,
-        findings: list[str] | None = None,
-        diagnostic: str | None = None,
-    ) -> None:
-        findings = findings or []
-        if self.used >= MAX_CORRECTIONS:
-            raise CorrectionLimitExhausted(role, findings, diagnostic)
-        try:
-            budget.start(role)
-        except RunBudgetExhausted as error:
-            error.diagnostic = diagnostic or format_findings(findings)
-            raise
-        self.used += 1
-
-
 class DependencyDeadlock(RalphError):
     """Every remaining runnable-looking child is blocked by incomplete work."""
 
@@ -450,17 +411,6 @@ class InfrastructureRetriesExhausted(RalphError):
             f"{retries} retries: {failure.diagnostic}"
         )
         self.failure = failure
-
-
-class RunBudget:
-    def __init__(self, maximum: int):
-        self.maximum = maximum
-        self.sessions = 0
-
-    def start(self, role: str) -> None:
-        if self.sessions >= self.maximum:
-            raise RunBudgetExhausted(role)
-        self.sessions += 1
 
 
 class InfrastructureRetryTracker:
@@ -960,14 +910,6 @@ def verify_agent_git_effect(
         raise RalphError(f"{role} claimed committed without creating a Git commit")
     if result["outcome"] == "no_changes" and commits:
         raise RalphError(f"{role} claimed no_changes but created Git commits")
-    if result["outcome"] in {"blocked", "failed"}:
-        raise AgentOutcomeStop(
-            role, result["outcome"], result["summary"], result["findings"]
-        )
-    if result["outcome"] == "needs_correction" and role == "local gate correction":
-        raise AgentOutcomeStop(
-            role, result["outcome"], result["summary"], result["findings"]
-        )
     return after_head, commits
 
 
@@ -1128,52 +1070,6 @@ Return a result that matches the supplied JSON schema.
 {agent_result_guidance()}"""
 
 
-def sanitized_diagnostic(raw_output: str) -> str:
-    clean = sanitized_text(raw_output)
-    lines = [
-        line[:300]
-        for line in clean.splitlines()
-        if line.strip()
-    ]
-    # Error details often precede a long suite summary. Keep nearby lines first.
-    selected: set[int] = set()
-    for index, line in enumerate(lines):
-        if re.search(r"error|fail|assert|expected|traceback", line, re.IGNORECASE):
-            selected.update(range(max(0, index - 1), min(len(lines), index + 5)))
-            if len(selected) >= 12:
-                break
-    excerpt = [lines[index] for index in sorted(selected)] if selected else lines[-6:]
-    return "\n".join(excerpt)[:1600] or "No output in this stream."
-
-
-def sanitized_text(raw_output: str) -> str:
-    clean = re.sub(r"\x1b\[[0-?]*[ -/]*[@-~]", "", raw_output.replace("\x00", ""))
-    clean = clean.replace("```", "'''")
-    clean = re.sub(
-        r"(?i)\b(password|secret|token|api[_-]?key)\b(\s*[:=]\s*)\S+",
-        r"\1\2[REDACTED]",
-        clean,
-    )
-    clean = re.sub(
-        r'(?i)(["\']?(?:password|secret|token|api[_-]?key)["\']?\s*:\s*["\']?)[^,\s"\']+',
-        r"\1[REDACTED]",
-        clean,
-    )
-    clean = re.sub(r"(?i)Bearer\s+\S+", "Bearer [REDACTED]", clean)
-    clean = re.sub(r"([a-z]+://)[^/\s:@]+(?::[^/\s@]+)?@", r"\1[REDACTED]@", clean)
-    return clean
-
-
-def sanitized_value(value: Any) -> Any:
-    if isinstance(value, str):
-        return sanitized_text(value)
-    if isinstance(value, dict):
-        return {key: sanitized_value(item) for key, item in value.items()}
-    if isinstance(value, list):
-        return [sanitized_value(item) for item in value]
-    return value
-
-
 def evidence_diagnostic(
     arguments: list[str], completed: subprocess.CompletedProcess[str], directory: pathlib.Path
 ) -> str:
@@ -1186,10 +1082,6 @@ def evidence_diagnostic(
         f"stdout excerpt:\n{sanitized_diagnostic(completed.stdout or '')}\n"
         f"stderr excerpt:\n{sanitized_diagnostic(completed.stderr or '')}"
     )
-
-
-def format_findings(findings: list[str]) -> str:
-    return "\n".join(f"- {sanitized_text(finding)}" for finding in findings)
 
 
 def issue_correction_prompt(child_number: int, attempt: int, findings: list[str]) -> str:
@@ -1304,85 +1196,6 @@ def run_local_gates(
     require_clean_worktree("after local quality gates")
 
 
-def run_local_gates_with_corrections(
-    quality: Any,
-    manifest: dict[str, Any],
-    base_sha: str,
-    head_sha: str,
-    child_number: int,
-    budget: RunBudget,
-    corrections: CorrectionLimit,
-) -> str:
-    if not active_config().verification.local_checks:
-        print("⚠️ Local quality gates are disabled by Ralph configuration.", flush=True)
-        observed_head = current_head()
-        if observed_head != head_sha:
-            raise RalphError(
-                f"disabled local gates expected head {head_sha}, found {observed_head}"
-            )
-        require_clean_worktree("while local quality gates are disabled")
-        return head_sha
-    if quality is None or manifest is None:
-        raise RalphError("local quality gates require a loaded quality policy")
-    current_verified_head = head_sha
-    while True:
-        try:
-            run_local_gates(
-                quality,
-                manifest,
-                base_sha,
-                current_verified_head,
-                child_number,
-            )
-            return current_verified_head
-        except LocalGateFailure as failure:
-            corrections.start(
-                "local gate correction", budget, diagnostic=failure.diagnostic
-            )
-            _, current_verified_head, _ = run_agent(
-                "local gate correction",
-                correction_prompt(
-                    child_number,
-                    corrections.used,
-                    failure.description,
-                    failure.diagnostic,
-                ),
-                child_number,
-            )
-
-
-def findings_detail(findings: list[str]) -> str:
-    return f"\n\nRemaining findings:\n{format_findings(findings)}" if findings else ""
-
-
-def diagnostic_detail(diagnostic: str | None) -> str:
-    return f"\n\nLast diagnostic:\n```text\n{diagnostic}\n```" if diagnostic else ""
-
-
-def stop_child_for_run_budget(
-    child_number: int,
-    budget: RunBudget,
-    error: RunBudgetExhausted,
-) -> None:
-    body = (
-        f"Ralph stopped before {error.role} because the run budget of "
-        f"{budget.maximum} agent sessions was exhausted after {budget.sessions} sessions. "
-        f"This child remains open for human review.{diagnostic_detail(error.diagnostic)}"
-    )
-    send_child_to_human_review(child_number, body)
-
-
-def stop_child_for_correction_limit(
-    child_number: int, error: CorrectionLimitExhausted
-) -> None:
-    send_child_to_human_review(
-        child_number,
-        f"Ralph stopped before {error.role} because the correction limit of "
-        f"{MAX_CORRECTIONS} was exhausted. This child remains open for human review."
-        f"{findings_detail(error.findings)}{diagnostic_detail(error.diagnostic)}",
-    )
-
-
 def send_child_to_human_review(child_number: int, body: str) -> None:
     command(["gh", "issue", "comment", str(child_number), "--body", body])
     command(
@@ -1396,34 +1209,6 @@ def send_child_to_human_review(child_number: int, body: str) -> None:
             "--remove-label",
             configured_label("ready_for_agent"),
         ]
-    )
-
-
-def stop_child_for_infrastructure_review(
-    child_number: int, error: InfrastructureRetriesExhausted
-) -> None:
-    body = (
-        "Ralph stopped after bounded infrastructure retries without changing the "
-        "implementation or consuming another agent session. This child remains open "
-        f"for human review. Last infrastructure diagnostic: {error.failure.diagnostic}"
-    )
-    send_child_to_human_review(child_number, body)
-
-
-def stop_child_for_correction_review(child_number: int, diagnostic: str) -> None:
-    send_child_to_human_review(
-        child_number,
-        "Ralph stopped because the CI correction did not create a new commit. "
-        f"This child remains open for human review. Diagnostic: {diagnostic}",
-    )
-
-
-def stop_child_for_agent_outcome(child_number: int, error: AgentOutcomeStop) -> None:
-    send_child_to_human_review(
-        child_number,
-        f"Ralph stopped because {error.role} reported {error.outcome}: "
-        f"{error.summary} This child remains open for human review."
-        f"{findings_detail(error.findings)}",
     )
 
 
@@ -1827,72 +1612,100 @@ def mark_pull_request_ready(branch: str) -> None:
         command(["gh", "pr", "ready", str(pulls[0]["number"])])
 
 
-def run_issue_completion(
+def run_session(request: SessionRequest) -> SessionResult:
+    """Child cycle adapter: run one agent session for a request."""
+    result, head, commits = run_agent(
+        request.role, session_request_prompt(request), request.child
+    )
+    return SessionResult(
+        result["outcome"], result["summary"], result["findings"], head, commits
+    )
+
+
+def session_request_prompt(request: SessionRequest) -> str:
+    if request.role == "implementation":
+        return implementation_prompt(request.child)
+    if request.role == "review":
+        return review_prompt(request.child, request.base_sha, request.head_sha)
+    if request.role == "issue correction":
+        return issue_correction_prompt(
+            request.child, request.correction, list(request.findings)
+        )
+    if request.role == "local gate correction":
+        return correction_prompt(
+            request.child, request.correction, request.gate, request.diagnostic
+        )
+    if request.role == "CI correction":
+        return ci_correction_prompt(request.child, request.correction, request.diagnostic)
+    raise RalphError(f"unknown agent session role: {request.role}")
+
+
+def check_local_gates(
     quality: Any,
     manifest: dict[str, Any] | None,
+    child_number: int,
     base_sha: str,
     head_sha: str,
-    result: dict[str, Any],
-    child_number: int,
-    budget: RunBudget,
-    corrections: CorrectionLimit,
-    role: str = "implementation",
-) -> str:
-    """Complete outstanding findings, pass local gates, and review if enabled."""
-    require_unchanged_review = result["outcome"] == "no_changes"
-    while True:
-        if result["outcome"] == "needs_correction":
-            require_unchanged_review = False
-            findings = result["findings"]
-            corrections.start("issue correction", budget, findings=findings)
-            try:
-                result, head_sha, commits = run_agent(
-                    "issue correction",
-                    issue_correction_prompt(child_number, corrections.used, findings),
-                    child_number,
-                )
-            except AgentOutcomeStop as error:
-                if not error.findings:
-                    error.findings = findings
-                raise
-            role = "issue correction"
-            if not commits:
-                raise AgentOutcomeStop(
-                    role,
-                    "needs_correction",
-                    "Issue correction did not create a new commit.",
-                    result["findings"] or findings,
-                )
-            continue
-
-        head_sha = run_local_gates_with_corrections(
-            quality, manifest, base_sha, head_sha, child_number, budget, corrections
-        )
-        if not active_mode().review:
-            return head_sha
-        budget.start("review")
-        result, reviewed_head, review_commits = run_agent(
-            "review", review_prompt(child_number, base_sha, head_sha), child_number
-        )
-        role = "review"
-        if result["outcome"] == "needs_correction":
-            head_sha = reviewed_head
-            continue
-        if require_unchanged_review and (
-            result["outcome"] != "no_changes" or review_commits
-        ):
+) -> GateFailure | None:
+    """Child cycle adapter: run the applicable local gates on head_sha."""
+    if not active_config().verification.local_checks:
+        print("⚠️ Local quality gates are disabled by Ralph configuration.", flush=True)
+        observed_head = current_head()
+        if observed_head != head_sha:
             raise RalphError(
-                "implementation no_changes requires an independent review with no corrections"
+                f"disabled local gates expected head {head_sha}, found {observed_head}"
             )
-        if review_commits:
-            head_sha = run_local_gates_with_corrections(
-                quality, manifest, base_sha, reviewed_head, child_number, budget,
-                corrections,
+        require_clean_worktree("while local quality gates are disabled")
+        return None
+    if quality is None or manifest is None:
+        raise RalphError("local quality gates require a loaded quality policy")
+    try:
+        run_local_gates(quality, manifest, base_sha, head_sha, child_number)
+    except LocalGateFailure as failure:
+        return GateFailure(failure.description, failure.diagnostic)
+    return None
+
+
+def verify_with_ci(
+    quality: Any,
+    manifest: dict[str, Any] | None,
+    branch: str,
+    parent_issue: int,
+    infrastructure: InfrastructureRetryTracker,
+    child_number: int,
+    base_sha: str,
+    head_sha: str,
+) -> CIFailure | CIUnavailable | None:
+    """Child cycle adapter: publish head_sha and wait for its required CI checks."""
+    push_and_prepare_draft_pull_request(branch, parent_issue)
+    if not active_config().verification.ci_checks:
+        if active_mode().review:
+            print(
+                "ℹ️ Remote CI is disabled; accepting configured local-only "
+                "verification for the published head.",
+                flush=True,
             )
-            if head_sha != reviewed_head:
-                # A local-gate correction changed the reviewed code. Review it again.
-                continue
-        return reviewed_head
+        return None
+    ci_started_at = time.monotonic()
+    try:
+        infrastructure.run(
+            functools.partial(wait_for_exact_sha_ci, quality, manifest, base_sha, head_sha),
+            initial_delay_seconds=ci_poll_seconds(),
+        )
+        return None
+    except ProductCIFailure as failure:
+        assert manifest is not None
+        return CIFailure(ci_failure_diagnostic(failure, manifest, head_sha, child_number))
+    except InfrastructureRetriesExhausted as error:
+        return CIUnavailable(str(error), error.failure.diagnostic)
+    finally:
+        if DIAGNOSTICS is not None:
+            DIAGNOSTICS.record_phase(
+                "ci_wait",
+                "GitHub Actions wait",
+                time.monotonic() - ci_started_at,
+                issue_number=child_number,
+            )
 
 
 def main(argv: list[str] | None = None, prog: str | None = None) -> int:
@@ -1961,108 +1774,30 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> int:
         require_trusted_issue(issue_details(child_number))
         base_sha = current_head()
         DIAGNOSTICS.issue_bases[child_number] = base_sha
-        corrections = CorrectionLimit()
-
-        try:
-            budget.start("implementation")
-            implementation, implementation_head, _ = run_agent(
-                "implementation",
-                implementation_prompt(child_number),
-                child_number,
-            )
-            verified_head = run_issue_completion(
+        adapters = ChildCycleAdapters(
+            run_session=run_session,
+            run_local_gates=functools.partial(check_local_gates, quality, manifest),
+            verify_ci=functools.partial(
+                verify_with_ci,
                 quality,
                 manifest,
-                base_sha,
-                implementation_head,
-                implementation,
-                child_number,
-                budget,
-                corrections,
+                branch,
+                arguments.parent_issue,
+                infrastructure,
+            ),
+            hand_to_human_review=send_child_to_human_review,
+        )
+        try:
+            cycle = run_child_cycle(
+                child_number, base_sha, budget, adapters, review=mode.review
             )
-        except RunBudgetExhausted as error:
-            stop_child_for_run_budget(child_number, budget, error)
-            raise
-        except CorrectionLimitExhausted as error:
-            stop_child_for_correction_limit(child_number, error)
-            raise
-        except AgentOutcomeStop as error:
-            stop_child_for_agent_outcome(child_number, error)
-            raise
+        except RunStop as error:
+            raise RalphError(str(error)) from error
+        if isinstance(cycle, HandedToHumanReview):
+            raise RalphError(cycle.reason)
 
-        while True:
-            push_and_prepare_draft_pull_request(branch, arguments.parent_issue)
-            if not CONFIG.verification.ci_checks:
-                if mode.review:
-                    print(
-                        "ℹ️ Remote CI is disabled; accepting configured local-only "
-                        "verification for the published head.",
-                        flush=True,
-                    )
-                break
-            ci_started_at = time.monotonic()
-            try:
-                infrastructure.run(
-                    functools.partial(
-                        wait_for_exact_sha_ci, quality, manifest, base_sha, verified_head
-                    ),
-                    initial_delay_seconds=ci_poll_seconds(),
-                )
-                break
-            except ProductCIFailure as failure:
-                diagnostic = ci_failure_diagnostic(failure, manifest, verified_head, child_number)
-                try:
-                    corrections.start("CI correction", budget, diagnostic=diagnostic)
-                    correction, corrected_head, correction_commits = run_agent(
-                        "CI correction",
-                        ci_correction_prompt(child_number, corrections.used, diagnostic),
-                        child_number,
-                    )
-                    if not correction_commits:
-                        diagnostic = "a product CI failure requires a committed correction"
-                        if correction["findings"]:
-                            diagnostic += (
-                                "\nRemaining findings:\n"
-                                + format_findings(correction["findings"])
-                            )
-                        stop_child_for_correction_review(
-                            child_number,
-                            diagnostic,
-                        )
-                        raise RalphError("CI correction did not create a new commit")
-                    verified_head = run_issue_completion(
-                        quality,
-                        manifest,
-                        base_sha,
-                        corrected_head,
-                        correction,
-                        child_number,
-                        budget,
-                        corrections,
-                        role="CI correction",
-                    )
-                except RunBudgetExhausted as error:
-                    error.diagnostic = error.diagnostic or diagnostic
-                    stop_child_for_run_budget(child_number, budget, error)
-                    raise
-                except CorrectionLimitExhausted as error:
-                    stop_child_for_correction_limit(child_number, error)
-                    raise
-                except AgentOutcomeStop as error:
-                    stop_child_for_agent_outcome(child_number, error)
-                    raise
-            except InfrastructureRetriesExhausted as error:
-                stop_child_for_infrastructure_review(child_number, error)
-                raise
-            finally:
-                if DIAGNOSTICS is not None:
-                    DIAGNOSTICS.record_phase(
-                        "ci_wait",
-                        "GitHub Actions wait",
-                        time.monotonic() - ci_started_at,
-                        issue_number=child_number,
-                    )
-
+        implementation_head = cycle.implementation_head
+        verified_head = cycle.verified_head
         implementation_range = f"{base_sha}..{implementation_head}"
         correction_range = (
             f"{implementation_head}..{verified_head}"
