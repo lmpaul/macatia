@@ -165,6 +165,8 @@ class VerifiedCycleTests(unittest.TestCase):
             ["implementation", "review", "local gate correction", "review"],
         )
         self.assertEqual(result.verified_head, "local gate correction-3-0")
+        self.assertEqual(tools.requests[3].head_sha, "local gate correction-3-0")
+        self.assertEqual(tools.ci_heads, ["local gate correction-3-0"])
 
 
 class HumanReviewTests(unittest.TestCase):
@@ -230,6 +232,39 @@ class HumanReviewTests(unittest.TestCase):
             "correction limit of 3 exhausted before issue correction",
             "- gap 4",
         )
+        self.assertEqual(tools.ci_heads, [])
+
+    def test_gate_correction_limit_keeps_the_last_gate_diagnostic(self):
+        tools = FakeTools(
+            {"implementation": [committed()], "local gate correction": [committed()] * 3},
+            gates=[GateFailure("unit tests", f"failure {index}") for index in range(4)],
+        )
+
+        result, budget = cycle(tools)
+
+        self.assert_handed_off(
+            tools, result,
+            "correction limit of 3 exhausted before local gate correction",
+            "failure 3",
+        )
+        self.assertEqual(budget.sessions, 4)
+        self.assertEqual(tools.ci_heads, [])
+
+    def test_review_findings_share_the_correction_limit(self):
+        tools = FakeTools({
+            "implementation": [needs_correction("freshness", commits=1)],
+            "issue correction": [committed()] * 3,
+            "review": [needs_correction("freshness")] * 3,
+        })
+
+        result, _ = cycle(tools, review=True)
+
+        self.assert_handed_off(
+            tools, result, "correction limit of 3 exhausted before issue correction"
+        )
+        corrections = [r.correction for r in tools.requests if r.role == "issue correction"]
+        self.assertEqual(corrections, [1, 2, 3])
+        self.assertEqual(len(tools.requests), 7)
 
     def test_run_budget_stops_before_the_review_session(self):
         tools = FakeTools({"implementation": [committed()]})
