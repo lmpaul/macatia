@@ -5,6 +5,7 @@ from __future__ import annotations
 import pathlib
 import sys
 
+
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
@@ -39,7 +40,8 @@ def init(argv: list[str]) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
-    if sys.version_info < (3, 11):
+    # Kept for source checkouts run with an older interpreter; pip enforces it otherwise.
+    if sys.version_info < (3, 11):  # noqa: UP036
         print("❌ ralph-kit requires Python 3.11 or newer.", file=sys.stderr)
         return 1
     argv = list(sys.argv[1:] if argv is None else argv)

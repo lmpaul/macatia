@@ -5,11 +5,12 @@ import io
 import json
 import os
 import pathlib
-import sys
 import shutil
+import sys
 import tempfile
 import unittest
 from unittest import mock
+
 
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 SOURCE_DIRECTORY = KIT_ROOT / "src"
@@ -193,9 +194,11 @@ class ReadinessTests(unittest.TestCase):
         import subprocess
 
         result = subprocess.CompletedProcess(["gh"], 1, "sensitive token", "sensitive token")
-        with mock.patch.object(self.checker.subprocess, "run", return_value=result):
-            with self.assertRaises(RuntimeError) as error:
-                self.checker.Readiness(self.root).command("gh", "api", "user")
+        with (
+            mock.patch.object(self.checker.subprocess, "run", return_value=result),
+            self.assertRaises(RuntimeError) as error,
+        ):
+            self.checker.Readiness(self.root).command("gh", "api", "user")
         self.assertNotIn("sensitive", str(error.exception))
 
 

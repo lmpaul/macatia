@@ -8,7 +8,8 @@ import json
 import pathlib
 import subprocess
 import sys
-from typing import Any, Iterable
+from collections.abc import Iterable
+from typing import Any
 
 
 DEFAULT_MANIFEST_PATH = pathlib.Path(__file__).parents[1] / "quality-gates.json"
@@ -131,4 +132,4 @@ if __name__ == "__main__":
         raise SystemExit(main(sys.argv[1:]))
     except (ValueError, subprocess.CalledProcessError) as error:
         print(error, file=sys.stderr)
-        raise SystemExit(2)
+        raise SystemExit(2) from error

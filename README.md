@@ -84,7 +84,7 @@ The optional final number limits the total agent sessions. The default remains
 
 There is no separate review session, including after corrections. The existing
 `models.review` configuration entry is optional and unused by `run`;
-the original runner with independent review still requires it. This experiment
+the original runner with independent review still requires it. `run`
 accepts `local_checks = true` or `false` and
 `ci_checks = true` or `false`. Both settings are independent;
 success evidence reports only the checks that were enabled.
@@ -118,7 +118,8 @@ and handoff. Excerpts prioritize error details and stay bounded; complete logs
 are referenced, not pasted into every prompt. These artifacts are ignored by
 Git and are available to subsequent sessions in the same checkout.
 
-Success comments use separate experimental markers and `verified_head` rather
+Success comments use separate markers (still named `ralph-experimental-*` for
+compatibility with earlier runs) and `verified_head` rather
 than claiming independent review. Each loop only recovers its own interrupted
 publication markers. Existing `implemented` labels remain shared, so switching
 scripts does not revalidate children already marked complete. Dependency checks
