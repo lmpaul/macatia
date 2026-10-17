@@ -8,10 +8,12 @@ import re
 import shutil
 import subprocess
 import sys
-from typing import Callable, TextIO
+from collections.abc import Callable
+from typing import TextIO
 
 from .check import AGENT_CLIS as ENGINES, prerequisites
 from .config import CLAUDE_REASONING_EFFORTS, RalphConfigError, load_config
+
 
 CONFIG_NAME = "ralph.toml"
 QUALITY_MODULE = ".github/scripts/quality.py"

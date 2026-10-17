@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import functools
 import importlib.util
 import json
 import os
@@ -14,12 +15,13 @@ import sys
 import tempfile
 import time
 import uuid
+from collections.abc import Iterable
 from dataclasses import dataclass
-from datetime import datetime, timezone
-from typing import Any, Iterable
+from datetime import UTC, datetime
+from typing import Any
 
-from .config import AgentProfile, RalphConfig, RalphConfigError, load_config
 from .agent import agent_command, session_prompt, write_agent_result
+from .config import AgentProfile, RalphConfig, RalphConfigError, load_config
 
 
 @dataclass(frozen=True)
@@ -104,7 +106,7 @@ def agent_profile(role: str) -> AgentProfile:
 
 
 def utc_timestamp() -> str:
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class DiagnosticRecorder:
@@ -274,8 +276,8 @@ def terminal_summary(outcome: str) -> str:
 def update_run_summary(
     parent_issue: int,
     children: Iterable[dict[str, Any]],
-    budget: "AgentBudget",
-    infrastructure: "InfrastructureRetryTracker",
+    budget: AgentBudget,
+    infrastructure: InfrastructureRetryTracker,
 ) -> None:
     global RUN_INITIAL_IMPLEMENTED_CHILDREN
     child_list = list(children)
@@ -374,7 +376,7 @@ class IssueCorrectionTracker:
     def __init__(self):
         self.attempts = 0
 
-    def start(self, role: str, result: dict[str, Any], budget: "AgentBudget") -> None:
+    def start(self, role: str, result: dict[str, Any], budget: AgentBudget) -> None:
         if self.attempts >= MAX_ISSUE_CORRECTIONS:
             raise AgentOutcomeStop(
                 role,
@@ -942,9 +944,8 @@ def verify_agent_git_effect(
     commits = git("rev-list", "--reverse", f"{before_head}..{after_head}").splitlines()
     if result["outcome"] == "committed" and not commits:
         raise RalphError(f"{role} claimed committed without creating a Git commit")
-    if result["outcome"] == "no_changes":
-        if commits:
-            raise RalphError(f"{role} claimed no_changes but created Git commits")
+    if result["outcome"] == "no_changes" and commits:
+        raise RalphError(f"{role} claimed no_changes but created Git commits")
     if result["outcome"] in {"blocked", "failed"}:
         raise AgentOutcomeStop(
             role, result["outcome"], result["summary"], result["findings"]
@@ -1977,8 +1978,8 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> int:
             ci_started_at = time.monotonic()
             try:
                 infrastructure.run(
-                    lambda: wait_for_exact_sha_ci(
-                        quality, manifest, base_sha, verified_head
+                    functools.partial(
+                        wait_for_exact_sha_ci, quality, manifest, base_sha, verified_head
                     ),
                     initial_delay_seconds=ci_poll_seconds(),
                 )

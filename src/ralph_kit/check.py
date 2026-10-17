@@ -22,6 +22,7 @@ from rich.text import Text
 from . import __version__
 from .config import MissingConfigError, RalphConfigError, load_config
 
+
 PACKAGE_DIRECTORY = pathlib.Path(__file__).resolve().parent
 AGENT_CLIS = {"claude": "Claude Code", "codex": "Codex"}
 INSTALL_HINTS = {
@@ -333,7 +334,7 @@ def run(root, config_path, *, with_review=False, console=None):
     for engine in sorted(engines):
         directory = ".claude/skills" if engine == "claude" else ".agents/skills"
         path = f"{directory}/implement/SKILL.md"
-        report.check(f"Skill implement ({engine})", lambda path=path: require((root / path).is_file(), f"{path} missing or broken link", f"add the implement skill to {directory}/") or path)
+        report.check(f"Skill implement ({engine})", lambda path=path, directory=directory: require((root / path).is_file(), f"{path} missing or broken link", f"add the implement skill to {directory}/") or path)
 
     report.section("Quality checks")
     if config.verification.needs_quality_policy:
