@@ -148,6 +148,10 @@ _Avoid_: Success comment, marker
 **Verified head**:
 The commit on which verification passed and which was published.
 
+**Agent working**:
+The lifecycle state of a child a run has started and has neither implemented nor handed to human review; only Ralph sets it. A run that ends without releasing its child leaves it in this state.
+_Avoid_: In progress, WIP, claimed, running
+
 **Implemented**:
 The lifecycle state of a child whose work is complete and verified; only Ralph sets it.
 _Avoid_: Done, closed
@@ -157,13 +161,13 @@ The lifecycle state of a child or parent handed to a human: either because Ralph
 _Avoid_: Escalation, stuck
 
 **Label role**:
-One of Ralph's seven canonical meanings for a label, mapped to a label name in each repository.
+One of Ralph's eight canonical meanings for a label, mapped to a label name in each repository.
 
 **Triage labels**:
 The label roles that say whether a child is ready for an agent: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix.
 
 **Lifecycle labels**:
-The label roles that track a child's progress through a run: ready-for-agent, implemented, and human-review.
+The label roles that track a child's progress through a run: ready-for-agent, agent-working, implemented, and human-review.
 
 **Run diagnostics**:
 The local, redacted record of a run's prompts, session results, and command output, which later sessions in the same checkout can read.
