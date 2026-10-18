@@ -135,8 +135,14 @@ correction that review causes. The loop of a standard run is:
    human review; only a human merges.
 
 The optional final number is the run budget: the total number of agent
-sessions the run may start, shared by all children. The default remains
-`max(4, number_of_children * 5)`. It counts sessions, not tokens or time.
+sessions the run may start, shared by all children. The default is
+`max(4, ready_children * 5)`, where `ready_children` counts the children the
+run can work on when it starts: open, not `implemented`, with `ready-for-agent`
+as their only triage label and only lifecycle label, blocked or not. Closed,
+implemented, human-review, and ready-for-human children do not count, so
+resuming a parent with one child left gets 5 sessions.
+The count is taken once; relabelling a child during the run does not change its
+budget. It counts sessions, not tokens or time.
 
 A standard run has no separate review session, including after corrections. The
 `models.review` configuration entry is optional and unused by a standard run;

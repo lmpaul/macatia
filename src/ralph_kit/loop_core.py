@@ -1938,7 +1938,9 @@ def run_children(
     assert branch is not None
     require_trusted_issue(state, issue_details(state, parent_issue))
     siblings = state.github.sub_issues(parent_issue)
-    budget = RunBudget(run_budget or max(4, len(siblings) * 5))
+    # The default counts the children the run can work on as it starts, once.
+    ready_children = [child for child in siblings if child_is_pending_and_ready(state, child)]
+    budget = RunBudget(run_budget or max(4, len(ready_children) * 5))
     infrastructure = InfrastructureRetryTracker(state)
     update_run_summary(state, parent_issue, siblings, budget, infrastructure)
     adapters = state.adapters.child_cycle(

@@ -1115,6 +1115,12 @@ class InfrastructureRetryTests(VerificationTestCase):
         self.assertIn("infra_retries: 0;", self.github.comments(PARENT)[-1])
 
 
+CLOSED_CHILD = 195
+IMPLEMENTED_CHILD = 196
+HUMAN_REVIEW_CHILD = 197
+READY_FOR_HUMAN_CHILD = 198
+
+
 class RunBudgetTests(VerificationTestCase):
     def new_two_child_run(self):
         self.new_run()
@@ -1135,12 +1141,15 @@ class RunBudgetTests(VerificationTestCase):
         self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
         return handoff
 
-    def test_default_budget_allows_five_sessions_per_child_across_the_run(self):
-        self.new_two_child_run()
+    def reviewed_twice(self):
+        """Implementation, then two reviews with findings, each followed by an issue correction."""
         committed = ScriptedResult("committed")
         findings = ScriptedResult("needs_correction", findings=("Expose freshness for each section.",))
-        # Implementation, then two reviews with findings, each followed by an issue correction.
-        reviewed_twice = [committed, findings, committed, findings, committed]
+        return [committed, findings, committed, findings, committed]
+
+    def test_default_budget_allows_five_sessions_per_child_across_the_run(self):
+        self.new_two_child_run()
+        reviewed_twice = self.reviewed_twice()
 
         result = self.start(
             loop_review.MODE, *reviewed_twice, ScriptedResult("no_changes"), *reviewed_twice[:4]
@@ -1150,6 +1159,17 @@ class RunBudgetTests(VerificationTestCase):
         self.assertEqual(self.session_children(), [CHILD] * 6 + [DEPENDENT] * 4)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
         self.assertTrue(self.github.pull_request().is_draft)
+
+    def test_default_budget_of_a_resumed_parent_counts_only_children_ready_for_an_agent(self):
+        # CHILD, from `setUp`, is the only child ready for an agent.
+        self.github.add_issue(CLOSED_CHILD, parent=PARENT, state="closed", labels=())
+        self.github.add_issue(IMPLEMENTED_CHILD, parent=PARENT, labels=("implemented",))
+        self.github.add_issue(HUMAN_REVIEW_CHILD, parent=PARENT, labels=("human-review",))
+        self.github.add_issue(READY_FOR_HUMAN_CHILD, parent=PARENT, labels=("ready-for-human",))
+
+        result = self.start(loop_review.MODE, *self.reviewed_twice())
+
+        self.assert_budget_stop(result, CHILD, role="review", budget=5)
 
     def test_explicit_budget_replaces_the_default_across_children(self):
         self.new_two_child_run()
