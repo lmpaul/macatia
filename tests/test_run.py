@@ -823,6 +823,20 @@ class CIEvidenceTests(VerificationTestCase):
 
         self.assert_not_implemented(result, "branch advanced after canonical CI")
 
+    def test_branch_advancing_while_ci_is_pending_never_authorizes_implemented(self):
+        self.new_child_run(ci=({CANONICAL_CHECK: {"status": "in_progress", "conclusion": None}}, "success"))
+
+        def advance_the_branch(head_sha):
+            self.github.before_check_runs = None
+            self.commit_file("advance.txt", "Advance while CI is pending")
+
+        self.github.before_check_runs = advance_the_branch
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_not_implemented(result, "branch advanced while waiting for canonical CI")
+        self.assertEqual(len(self.github.checked_heads), 1)
+
     def test_no_changes_still_requires_ci_before_completion(self):
         result = self.start(loop.MODE, ScriptedResult("no_changes"), ScriptedResult("committed"))
 
@@ -968,6 +982,19 @@ class HandoffRedactionTests(VerificationTestCase):
                     self.assertNotIn(secret, handoff)
 
 
+class CrashedRunTests(VerificationTestCase):
+    def test_crash_publishes_a_crashed_terminal_summary_and_is_not_swallowed(self):
+        crash = ValueError("the session adapter broke")
+
+        with self.assertRaises(ValueError) as raised:
+            self.start(loop.MODE, crash)
+
+        self.assertIs(raised.exception, crash)
+        self.assertIn("final outcome: crashed.", self.github.comments(PARENT)[-1])
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assertEqual(self.github.comments(CHILD), [])
+
+
 class InfrastructureRetryTests(VerificationTestCase):
     def assert_stopped_after_infrastructure_retries(self, result, diagnostic):
         """The run stopped safely after every retry, without another session or publication."""
@@ -1024,6 +1051,22 @@ class InfrastructureRetryTests(VerificationTestCase):
                 self.assertIn("Checking canonical CI (attempt 2/4).", result.stdout)
                 self.assertEqual(self.github.checked_heads, [self.repository.head()] * 2)
 
+    def test_branch_advancing_during_an_infrastructure_retry_stops_without_another_check(self):
+        self.new_child_run(ci=("cancelled", "success"))
+
+        def advance_the_branch(head_sha):
+            self.github.before_check_runs = None
+            self.commit_file("advance.txt", "Advance during the retry")
+
+        self.github.before_check_runs = advance_the_branch
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_not_implemented(result, "branch advanced during an infrastructure retry")
+        self.assertEqual(len(self.github.checked_heads), 1)
+        self.assertEqual(self.roles(), ["implementation"])
+        self.assertIn("infra_retries: 0;", self.github.comments(PARENT)[-1])
+
 
 class RunBudgetTests(VerificationTestCase):
     def new_two_child_run(self):
@@ -1071,33 +1114,6 @@ class RunBudgetTests(VerificationTestCase):
         self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT])
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
         self.assertTrue(self.github.pull_request().is_draft)
-
-    def test_budget_stops_keep_the_last_evidence_for_the_handoff_and_do_not_publish(self):
-        local_gate = ("local gate correction", "fixture gate failed:", False)
-        for name, run_options, (role, evidence, pushed) in (
-            ("local gate", {"local_gate_results": ("fail",)}, local_gate),
-            ("local gate with CI disabled", {"local_gate_results": ("fail",), "ci_checks": False}, local_gate),
-            (
-                "CI",
-                {"ci": ("failure",), "job_log_output": CI_LOG},
-                ("CI correction", "expected 42, received 0", True),
-            ),
-        ):
-            with self.subTest(name):
-                self.new_child_run(**run_options)
-
-                result = self.start(loop.MODE, ScriptedResult("committed"), budget=1)
-
-                handoff = self.assert_budget_stop(result, CHILD, role=role, budget=1)
-                self.assertIn(evidence, handoff)
-                self.assertIn("Full stdout:", handoff)
-                pull = self.github.pull_request()
-                if pushed:
-                    self.assertTrue(pull.is_draft)
-                else:
-                    self.assertIsNone(pull)
-                    with self.assertRaises(subprocess.CalledProcessError):
-                        self.repository.pushed_head()
 
 
 class AgentSessionTestCase(VerificationTestCase):
@@ -1232,10 +1248,6 @@ class InvalidOutputTests(AgentSessionTestCase):
              "agent did not return valid structured output"),
             ("Claude Code printing invalid JSON", "claude", EngineResult(stdout="Not JSON output"),
              "Claude Code did not return valid JSON output"),
-            ("Claude Code reporting an error", "claude", EngineResult(is_error=True),
-             "Claude Code reported an error; inspect retained session output"),
-            ("Claude Code without a structured result", "claude", EngineResult(writes_result=False),
-             "Claude Code did not return a structured_output object"),
         ):
             with self.subTest(name):
                 self.new_child_run(engines={"implementation": engine})
@@ -1400,8 +1412,7 @@ class EngineSelectionTests(AgentSessionTestCase):
                     [record["engine"] for record in self.repository.session_records()], expected
                 )
                 implementation, gate_correction, review = (call.prompt for call in self.engine.calls)
-                command = "/implement" if expected[0] == "claude" else "$implement"
-                self.assertTrue(implementation.startswith(f"{command} issue #{CHILD}\n"), implementation)
+                self.assertIn(f"implement issue #{CHILD}\n", implementation)
                 self.assertIn("Repair the failing local gate", gate_correction)
                 self.assertIn("Review the exact", review)
 

@@ -1,4 +1,4 @@
-"""Subprocess execution shared by the run and its GitHub adapter."""
+"""Subprocess execution shared by the run and its GitHub adapter, and the safe stop both raise."""
 
 from __future__ import annotations
 

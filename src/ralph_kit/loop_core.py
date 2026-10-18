@@ -238,14 +238,15 @@ class DiagnosticRecorder:
         )
 
 
-def initial_run_summary() -> dict[str, int | None]:
-    return {
-        "parent": None,
-        "implemented": 0,
-        "remaining": 0,
-        "agent_sessions": 0,
-        "infra_retries": 0,
-    }
+@dataclass
+class RunSummary:
+    """The counts the terminal summary reports; `parent` is set once the run reads its children."""
+
+    parent: int | None = None
+    implemented: int = 0
+    remaining: int = 0
+    agent_sessions: int = 0
+    infra_retries: int = 0
 
 
 @dataclass(frozen=True)
@@ -298,7 +299,7 @@ class RunState:
     diagnostics: DiagnosticRecorder | None = None
     branch: str | None = None
     initial_implemented_children: set[int] | None = None
-    summary: dict[str, int | None] = field(default_factory=initial_run_summary)
+    summary: RunSummary = field(default_factory=RunSummary)
 
     @property
     def config(self) -> RalphConfig:
@@ -328,10 +329,10 @@ def terminal_summary(state: RunState, outcome: str) -> str:
     )
     return (
         "Ralph summary: "
-        f"parent #{state.summary['parent']}; implemented children this run: "
-        f"{state.summary['implemented']}; remaining children: {state.summary['remaining']}; "
-        f"agent_sessions: {state.summary['agent_sessions']}; "
-        f"infra_retries: {state.summary['infra_retries']}; "
+        f"parent #{state.summary.parent}; implemented children this run: "
+        f"{state.summary.implemented}; remaining children: {state.summary.remaining}; "
+        f"agent_sessions: {state.summary.agent_sessions}; "
+        f"infra_retries: {state.summary.infra_retries}; "
         f"total duration: {format_elapsed_duration(elapsed_seconds)}; "
         f"phase timings: {phase_summary}; "
         f"final outcome: {outcome}."
@@ -353,34 +354,30 @@ def update_run_summary(
     }
     if state.initial_implemented_children is None:
         state.initial_implemented_children = set(implemented_children)
-    state.summary.update(
-        {
-            "parent": parent_issue,
-            "implemented": len(
-                implemented_children - state.initial_implemented_children
-            ),
-            "remaining": sum(
-                str(child.get("state", "")).upper() == "OPEN"
-                and configured_label(state, "implemented") not in labels(child)
-                for child in child_list
-            ),
-            "agent_sessions": budget.sessions,
-            "infra_retries": infrastructure.infra_retries,
-        }
+    state.summary = RunSummary(
+        parent=parent_issue,
+        implemented=len(implemented_children - state.initial_implemented_children),
+        remaining=sum(
+            str(child.get("state", "")).upper() == "OPEN"
+            and configured_label(state, "implemented") not in labels(child)
+            for child in child_list
+        ),
+        agent_sessions=budget.sessions,
+        infra_retries=infrastructure.infra_retries,
     )
 
 
 def print_terminal_summary(state: RunState, outcome: str, *, stream: Any = None) -> None:
-    if state.summary["parent"] is None:
+    if state.summary.parent is None:
         return
     print(terminal_summary(state, outcome), file=stream or sys.stdout)
 
 
 def publish_terminal_summary(state: RunState, outcome: str) -> None:
-    if state.summary["parent"] is None or state.branch is None:
+    if state.summary.parent is None or state.branch is None:
         return
     summary = f"{state.mode.terminal_summary_marker}\n{terminal_summary(state, outcome)}"
-    state.github.comment_on_issue(int(state.summary["parent"]), summary)
+    state.github.comment_on_issue(state.summary.parent, summary)
     pull = open_pull_request(state, state.branch)
     if pull is not None:
         state.github.comment_on_pull_request(pull["number"], summary)
@@ -1027,7 +1024,7 @@ def session_context(state: RunState, issue_number: int, head_sha: str) -> str:
     repository = state.config.repository
     context = (
         f"\n\nShared context:\nIssue: https://github.com/{repository}/issues/{issue_number}\n"
-        f"Parent: https://github.com/{repository}/issues/{state.summary['parent']}\n"
+        f"Parent: https://github.com/{repository}/issues/{state.summary.parent}\n"
         f"Issue base commit: {state.diagnostics.issue_bases.get(issue_number, head_sha)}\n"
         f"Current commit: {head_sha}\nWorking directory: {state.repository_root}\n"
         f"Verification evidence (command metadata identifies each commit): {state.diagnostics.directory / 'evidence'}\n"
@@ -1318,6 +1315,15 @@ def classify_ci_failure(
     return None
 
 
+def actions_job_id(details_url: str) -> str | None:
+    """The Actions job ID in a check's details URL; it is not the check ID."""
+    match = re.search(
+        r"/(?:actions/runs/\d+/(?:attempts/\d+/)?job|runs/\d+/jobs)/(\d+)(?:[?#].*)?$",
+        details_url,
+    )
+    return match.group(1) if match else None
+
+
 def ci_failure_diagnostic(
     state: RunState,
     failure: ProductCIFailure, manifest: dict[str, Any], head_sha: str, child_number: int
@@ -1335,16 +1341,11 @@ def ci_failure_diagnostic(
         if local_command:
             sections.append(f"Repository check command: {shlex.join(local_command)}")
 
-        # Resolve the job ID from its URL rather than assuming it is the check ID.
-        match = re.search(
-            r"/(?:actions/runs/\d+/(?:attempts/\d+/)?job|runs/\d+/jobs)/(\d+)(?:[?#].*)?$",
-            details_url,
-        )
+        job_id = actions_job_id(details_url)
         metadata: dict[str, Any] = {"check_run": check}
         logs_available = False
         log_error = "Actions job URL is unavailable; logs were not fetched."
-        if match:
-            job_id = match.group(1)
+        if job_id is not None:
             completed = state.github.actions_job(job_id)
             try:
                 job = json.loads(completed.stdout) if completed.returncode == 0 else None
@@ -1592,14 +1593,10 @@ def session_request_prompt(state: RunState, request: SessionRequest) -> str:
 
 
 def check_local_gates(
-    state: RunState,
-    quality: Any,
-    manifest: dict[str, Any] | None,
-    child_number: int,
-    base_sha: str,
-    head_sha: str,
+    context: ChildCycleContext, child_number: int, base_sha: str, head_sha: str
 ) -> GateFailure | None:
     """Child cycle adapter: run the applicable local gates on head_sha."""
+    state = context.state
     if not state.config.verification.local_checks:
         print("⚠️ Local quality gates are disabled by Ralph configuration.", flush=True)
         observed_head = current_head(state)
@@ -1609,28 +1606,23 @@ def check_local_gates(
             )
         require_clean_worktree(state, "while local quality gates are disabled")
         return None
-    if quality is None or manifest is None:
+    if context.quality is None or context.manifest is None:
         raise RalphError("local quality gates require a loaded quality policy")
     try:
-        run_local_gates(state, quality, manifest, base_sha, head_sha, child_number)
+        run_local_gates(
+            state, context.quality, context.manifest, base_sha, head_sha, child_number
+        )
     except LocalGateFailure as failure:
         return GateFailure(failure.description, failure.diagnostic)
     return None
 
 
 def verify_with_ci(
-    state: RunState,
-    quality: Any,
-    manifest: dict[str, Any] | None,
-    branch: str,
-    parent_issue: int,
-    infrastructure: InfrastructureRetryTracker,
-    child_number: int,
-    base_sha: str,
-    head_sha: str,
+    context: ChildCycleContext, child_number: int, base_sha: str, head_sha: str
 ) -> CIFailure | CIUnavailable | None:
     """Child cycle adapter: publish head_sha and wait for its required CI checks."""
-    push_and_prepare_draft_pull_request(state, branch, parent_issue)
+    state = context.state
+    push_and_prepare_draft_pull_request(state, context.branch, context.parent_issue)
     if not state.config.verification.ci_checks:
         if state.mode.review:
             print(
@@ -1641,14 +1633,23 @@ def verify_with_ci(
         return None
     ci_started_at = time.monotonic()
     try:
-        infrastructure.run(
-            functools.partial(wait_for_exact_sha_ci, state, quality, manifest, base_sha, head_sha),
+        context.infrastructure.run(
+            functools.partial(
+                wait_for_exact_sha_ci,
+                state,
+                context.quality,
+                context.manifest,
+                base_sha,
+                head_sha,
+            ),
             initial_delay_seconds=ci_poll_seconds(),
         )
         return None
     except ProductCIFailure as failure:
-        assert manifest is not None
-        return CIFailure(ci_failure_diagnostic(state, failure, manifest, head_sha, child_number))
+        assert context.manifest is not None
+        return CIFailure(
+            ci_failure_diagnostic(state, failure, context.manifest, head_sha, child_number)
+        )
     except InfrastructureRetriesExhausted as error:
         return CIUnavailable(str(error), error.failure.diagnostic)
     finally:
@@ -1663,22 +1664,11 @@ def verify_with_ci(
 
 def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
     """The child cycle adapters a real run uses: agent CLIs, local gates, and GitHub CI."""
-    state = context.state
     return ChildCycleAdapters(
-        run_session=functools.partial(run_session, state),
-        run_local_gates=functools.partial(
-            check_local_gates, state, context.quality, context.manifest
-        ),
-        verify_ci=functools.partial(
-            verify_with_ci,
-            state,
-            context.quality,
-            context.manifest,
-            context.branch,
-            context.parent_issue,
-            context.infrastructure,
-        ),
-        hand_to_human_review=functools.partial(send_child_to_human_review, state),
+        run_session=functools.partial(run_session, context.state),
+        run_local_gates=functools.partial(check_local_gates, context),
+        verify_ci=functools.partial(verify_with_ci, context),
+        hand_to_human_review=functools.partial(send_child_to_human_review, context.state),
     )
 
 
@@ -1690,6 +1680,7 @@ def real_run_adapters() -> RunAdapters:
 def main(
     state: RunState, argv: list[str] | None = None, prog: str | None = None
 ) -> int:
+    """Start the run: read its arguments, configuration, and quality policy, then run its children."""
     mode = state.mode
     arguments = parse_arguments(state, argv, prog)
     require_repository_root(state)
@@ -1707,8 +1698,7 @@ def main(
         state.repository_root, configuration.repository
     )
     state.diagnostics = DiagnosticRecorder(state.repository_root, mode.diagnostics_label)
-    branch = preflight(state)
-    state.branch = branch
+    state.branch = preflight(state)
     quality = None
     manifest = None
     if configuration.verification.needs_quality_policy:
@@ -1719,34 +1709,47 @@ def main(
             raise RalphError(f"invalid Ralph quality policy: {error}") from error
     if not configuration.verification.has_automated_verification:
         print(mode.unverified_warning, flush=True)
-    require_trusted_issue(state, issue_details(state, arguments.parent_issue))
-    siblings = state.github.sub_issues(arguments.parent_issue)
-    budget = RunBudget(arguments.run_budget or max(4, len(siblings) * 5))
+    return run_children(state, arguments.parent_issue, arguments.run_budget, quality, manifest)
+
+
+def run_children(
+    state: RunState,
+    parent_issue: int,
+    run_budget: int | None,
+    quality: Any,
+    manifest: dict[str, Any] | None,
+) -> int:
+    """Implement the parent's runnable children one at a time, then hand the parent to a human.
+
+    Startup has loaded the configuration and quality policy, opened GitHub
+    access, and accepted the branch; the run reaches everything else through
+    its adapters.
+    """
+    branch = state.branch
+    assert branch is not None
+    require_trusted_issue(state, issue_details(state, parent_issue))
+    siblings = state.github.sub_issues(parent_issue)
+    budget = RunBudget(run_budget or max(4, len(siblings) * 5))
     infrastructure = InfrastructureRetryTracker(state)
-    update_run_summary(state, arguments.parent_issue, siblings, budget, infrastructure)
+    update_run_summary(state, parent_issue, siblings, budget, infrastructure)
     adapters = state.adapters.child_cycle(
-        ChildCycleContext(
-            state, quality, manifest, branch, arguments.parent_issue, infrastructure
-        )
+        ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
     )
 
     while True:
-        siblings = state.github.sub_issues(arguments.parent_issue)
-        update_run_summary(state, arguments.parent_issue, siblings, budget, infrastructure)
+        siblings = state.github.sub_issues(parent_issue)
+        update_run_summary(state, parent_issue, siblings, budget, infrastructure)
         if recover_published_child(state, siblings):
             continue
         try:
-            selected_child, _blockers, siblings = select_runnable_child(
-                state,
-                arguments.parent_issue
-            )
+            selected_child, _blockers, siblings = select_runnable_child(state, parent_issue)
         except DependencyDeadlock as error:
             stop_children_for_dependency_deadlock(state, error.children)
             raise
         if selected_child is None:
             publish_parent_completion(
                 state,
-                arguments.parent_issue,
+                parent_issue,
                 len(siblings),
                 budget.sessions,
             )
@@ -1760,7 +1763,7 @@ def main(
         base_sha = current_head(state)
         state.diagnostics.issue_bases[child_number] = base_sha
         cycle = run_child_cycle(
-            child_number, base_sha, budget, adapters, review=mode.review
+            child_number, base_sha, budget, adapters, review=state.mode.review
         )
         if isinstance(cycle, HandedToHumanReview):
             raise RalphError(cycle.reason)
@@ -1784,14 +1787,14 @@ def main(
             f"✅ Completed child #{child_number}; selecting the next runnable child. 🔄",
             flush=True,
         )
-        update_run_summary(state, arguments.parent_issue, siblings, budget, infrastructure)
+        update_run_summary(state, parent_issue, siblings, budget, infrastructure)
 
     print(
-        f"Handled issue #{arguments.parent_issue}: all {len(siblings)} children "
+        f"Handled issue #{parent_issue}: all {len(siblings)} children "
         f"complete; {budget.sessions} agent sessions and "
         f"{infrastructure.infra_retries} infrastructure retries this run."
     )
-    update_run_summary(state, arguments.parent_issue, siblings, budget, infrastructure)
+    update_run_summary(state, parent_issue, siblings, budget, infrastructure)
     print_terminal_summary(state, "completed")
     return 0
 
@@ -1801,12 +1804,17 @@ def run(
     adapters: RunAdapters,
     argv: list[str] | None = None,
     prog: str | None = None,
+    *,
+    repository_root: pathlib.Path | None = None,
 ) -> int:
-    """Start a run from the current directory, reaching GitHub and agents through adapters."""
+    """Start a run from repository_root, by default the current directory.
+
+    The run reaches GitHub and agents through adapters.
+    """
     state = RunState(
         mode=mode,
         adapters=adapters,
-        repository_root=pathlib.Path.cwd().resolve(),
+        repository_root=(repository_root or pathlib.Path.cwd()).resolve(),
         started_at=time.monotonic(),
     )
     try:

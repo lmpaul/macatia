@@ -20,7 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
-from .agent import engine_flags
+from .agent import engine_help_command_and_flags
 from .config import MissingConfigError, RalphConfigError, load_config
 
 
@@ -116,7 +116,7 @@ def listed_flags(help_text):
 
 def check_engine_flags(command, engine):
     """Confirm the installed engine's help lists every flag Ralph passes to it; no network or tokens."""
-    help_command, flags = engine_flags(engine, PACKAGE_DIRECTORY / "outcome-schema.json")
+    help_command, flags = engine_help_command_and_flags(engine, PACKAGE_DIRECTORY / "outcome-schema.json")
     listed = listed_flags(command(*help_command))
     missing = [flag for flag in flags if flag not in listed]
     name = AGENT_CLIS[engine]

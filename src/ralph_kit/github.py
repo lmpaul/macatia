@@ -18,6 +18,22 @@ def flatten_pages(value: Any) -> list[dict[str, Any]]:
     return value
 
 
+# The CI diagnostic records these commands as evidence, so the in-memory GitHub
+# of the run tests reports the same ones.
+
+
+def check_run_command(repository: str, check_id: Any) -> list[str]:
+    return ["gh", "api", f"repos/{repository}/check-runs/{check_id}"]
+
+
+def actions_job_command(repository: str, job_id: str) -> list[str]:
+    return ["gh", "api", f"repos/{repository}/actions/jobs/{job_id}"]
+
+
+def job_log_command(repository: str, job_id: str) -> list[str]:
+    return ["gh", "run", "view", "--repo", repository, "--job", job_id, "--log"]
+
+
 class GitHub:
     """Runs `gh` from the repository root against the configured repository."""
 
@@ -122,12 +138,16 @@ class GitHub:
     # these return the completed process instead of raising on failure.
 
     def check_run(self, check_id: Any) -> subprocess.CompletedProcess[str]:
-        return self._gh("api", f"repos/{self.repository}/check-runs/{check_id}", check=False)
+        return command(
+            self.repository_root, check_run_command(self.repository, check_id), check=False
+        )
 
     def actions_job(self, job_id: str) -> subprocess.CompletedProcess[str]:
-        return self._gh("api", f"repos/{self.repository}/actions/jobs/{job_id}", check=False)
+        return command(
+            self.repository_root, actions_job_command(self.repository, job_id), check=False
+        )
 
     def job_log(self, job_id: str) -> subprocess.CompletedProcess[str]:
-        return self._gh(
-            "run", "view", "--repo", self.repository, "--job", job_id, "--log", check=False
+        return command(
+            self.repository_root, job_log_command(self.repository, job_id), check=False
         )

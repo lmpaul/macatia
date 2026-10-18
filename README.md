@@ -57,7 +57,7 @@ diagnostics to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 ```sh
 git clone git@github.com:lmpaul/ralph-kit.git && cd ralph-kit
 uv tool install -e .                          # `ralph-kit` now runs this checkout
-uv run python -m unittest discover -s tests   # offline tests (~1 min), with dependencies
+uv run python -m unittest discover -s tests   # offline tests (~35 s), with dependencies
 ```
 
 The default suite is offline: it never starts `ralph-kit run` as a subprocess,
@@ -91,7 +91,8 @@ RALPH_LIVE=1 uv run python -m unittest discover -s tests -p test_live.py -v
 ```
 
 It makes read-only `gh` calls of each shape a run parses (repository, children,
-blockers, issue details, check runs) through Ralph's GitHub adapter, against the
+blockers, issue details, open pull requests, check runs, and the Actions job, job
+log and check run behind a check) through Ralph's GitHub adapter, against the
 children of parent issue #5 in this repository (`RALPH_LIVE_PARENT` selects another
 parent issue with children and blockers) and the check runs of its default branch
 head. It then starts one Claude Code and one Codex session in a scratch Git

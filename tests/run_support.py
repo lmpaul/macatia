@@ -26,6 +26,11 @@ sys.path.insert(0, str(KIT_ROOT / "src"))
 from ralph_kit import loop_core  # noqa: E402
 from ralph_kit.child_cycle import SessionResult  # noqa: E402
 from ralph_kit.commands import RalphError  # noqa: E402
+from ralph_kit.github import (  # noqa: E402
+    actions_job_command,
+    check_run_command,
+    job_log_command,
+)
 
 
 REPOSITORY = "lmpaul/buyr"
@@ -39,6 +44,13 @@ def git(repository, *arguments):
     ).stdout.strip()
 
 
+# The scripted local gate runs from the repository root and reads its results
+# next to the repository, so every copy of a template finds its own.
+SCRIPTED_LOCAL_GATE = [
+    sys.executable, "-I", str(FIXTURES / "local_gate.py"), "../local-gate-results.json"
+]
+
+
 class RunRepository:
     """A temporary checkout on a Ralph branch, with a bare `origin` and the fixture policy.
 
@@ -48,53 +60,38 @@ class RunRepository:
     disabled, no quality policy is installed, so a run that loads it fails.
     `engines` maps a model profile to the engine it uses, or to None to leave
     the profile without an `engine` key; other profiles use Codex.
+
+    Each setup is built with Git once per test process, then copied for each test.
     """
+
+    templates = {}
 
     def __init__(
         self, test_case, *, local_gate_results=None, local_checks=True, ci_checks=True, engines=None
     ):
+        self.local_gate_command = SCRIPTED_LOCAL_GATE if local_gate_results is not None else ["true"]
+        setup = (local_checks, ci_checks, tuple((engines or {}).items()), tuple(self.local_gate_command))
+        if setup not in self.templates:
+            self.templates[setup] = RepositoryTemplate(
+                local_checks, ci_checks, engines or {}, self.local_gate_command
+            )
+        template = self.templates[setup]
         directory = tempfile.TemporaryDirectory()
         test_case.addCleanup(directory.cleanup)
         root = pathlib.Path(directory.name)
+        shutil.copytree(template.root, root, symlinks=True, dirs_exist_ok=True)
         self.path = root / "repository"
         self.origin = root / "origin.git"
-        self.path.mkdir()
-        git(root, "init", "--bare", str(self.origin))
-        git(self.path, "init", "-b", "main")
-        git(self.path, "config", "user.email", "ralph-test@example.com")
-        git(self.path, "config", "user.name", "Ralph Test")
-        git(self.path, "remote", "add", "origin", str(self.origin))
-        configuration = (FIXTURES / "ralph.toml").read_text(encoding="utf-8")
-        flags = "local_checks = true\nci_checks = true"
-        assert flags in configuration, "the fixture configuration enables both verification paths"
-        configuration = configuration.replace(
-            flags, f"local_checks = {str(local_checks).lower()}\nci_checks = {str(ci_checks).lower()}"
+        git_config = self.path / ".git" / "config"
+        git_config.write_text(
+            git_config.read_text(encoding="utf-8").replace(str(template.root), str(root)),
+            encoding="utf-8",
         )
-        for profile, engine in (engines or {}).items():
-            configuration = configure_engine(configuration, profile, engine)
-        (self.path / "ralph.toml").write_text(configuration, encoding="utf-8")
-        (self.path / ".gitignore").write_text(
-            "__pycache__/\n*.py[cod]\n.ralph/\n", encoding="utf-8"
-        )
-        self.local_gate_command = ["true"]
         if local_gate_results is not None:
-            results = root / "local-gate-results.json"
-            results.write_text(json.dumps(list(local_gate_results)), encoding="utf-8")
-            self.local_gate_command = [
-                sys.executable, "-I", str(FIXTURES / "local_gate.py"), str(results)
-            ]
-        if local_checks or ci_checks:
-            scripts = self.path / ".github" / "scripts"
-            scripts.mkdir(parents=True)
-            shutil.copyfile(FIXTURES / "quality.py", scripts / "quality.py")
-            (self.path / ".github" / "quality-gates.json").write_text(
-                json.dumps(quality_manifest(self.local_gate_command)), encoding="utf-8"
+            (root / "local-gate-results.json").write_text(
+                json.dumps(list(local_gate_results)), encoding="utf-8"
             )
-        git(self.path, "add", ".")
-        git(self.path, "commit", "-m", "Initial fixture")
-        git(self.path, "push", "-u", "origin", "main")
-        git(self.path, "checkout", "-b", BRANCH)
-        self.base_sha = self.head()
+        self.base_sha = template.base_sha
 
     def edit_configuration(self, old, new):
         """Replace text in `ralph.toml` and commit it, keeping the worktree clean."""
@@ -145,6 +142,46 @@ class RunRepository:
             json.loads((evidence / "command.json").read_text())
             for evidence in sorted((self.diagnostics() / "evidence").glob("*-ci"))
         ]
+
+
+class RepositoryTemplate:
+    """One fixture repository and its bare `origin`, built with Git and kept for the test process."""
+
+    def __init__(self, local_checks, ci_checks, engines, local_gate_command):
+        self.directory = tempfile.TemporaryDirectory()
+        self.root = pathlib.Path(self.directory.name)
+        path = self.root / "repository"
+        origin = self.root / "origin.git"
+        path.mkdir()
+        git(self.root, "init", "--bare", str(origin))
+        git(path, "init", "-b", "main")
+        git(path, "config", "user.email", "ralph-test@example.com")
+        git(path, "config", "user.name", "Ralph Test")
+        git(path, "remote", "add", "origin", str(origin))
+        configuration = (FIXTURES / "ralph.toml").read_text(encoding="utf-8")
+        flags = "local_checks = true\nci_checks = true"
+        assert flags in configuration, "the fixture configuration enables both verification paths"
+        configuration = configuration.replace(
+            flags, f"local_checks = {str(local_checks).lower()}\nci_checks = {str(ci_checks).lower()}"
+        )
+        for profile, engine in engines.items():
+            configuration = configure_engine(configuration, profile, engine)
+        (path / "ralph.toml").write_text(configuration, encoding="utf-8")
+        (path / ".gitignore").write_text(
+            "__pycache__/\n*.py[cod]\n.ralph/\n", encoding="utf-8"
+        )
+        if local_checks or ci_checks:
+            scripts = path / ".github" / "scripts"
+            scripts.mkdir(parents=True)
+            shutil.copyfile(FIXTURES / "quality.py", scripts / "quality.py")
+            (path / ".github" / "quality-gates.json").write_text(
+                json.dumps(quality_manifest(local_gate_command)), encoding="utf-8"
+            )
+        git(path, "add", ".")
+        git(path, "commit", "-m", "Initial fixture")
+        git(path, "push", "-u", "origin", "main")
+        git(path, "checkout", "-b", BRANCH)
+        self.base_sha = git(path, "rev-parse", "HEAD")
 
 
 def configure_engine(configuration, profile, engine):
@@ -249,7 +286,9 @@ class FakeGitHub:
     and its log is `job_log_output`, or a failed download with `job_log_error`.
     Setting `interrupt_after_comment_on` to an issue number kills the run once,
     right after its next comment on that issue is stored; `after_comment`, when
-    set, is called with the issue number and body after each issue comment.
+    set, is called with the issue number and body after each issue comment;
+    `before_check_runs`, when set, is called with the requested head before each
+    check-runs request is answered.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     """
 
@@ -282,6 +321,7 @@ class FakeGitHub:
         self.revision = 0
         self.interrupt_after_comment_on = None
         self.after_comment = None
+        self.before_check_runs = None
         self.opened_for = []
 
     # Test setup and observation.
@@ -391,6 +431,8 @@ class FakeGitHub:
 
     def check_runs(self, head_sha):
         self.checked_heads.append(head_sha)
+        if self.before_check_runs is not None:
+            self.before_check_runs(head_sha)
         ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
         if isinstance(ci_round, RalphError):
             raise ci_round
@@ -416,14 +458,14 @@ class FakeGitHub:
 
     def check_run(self, check_id):
         return self._completed(
-            ["gh", "api", f"repos/{self.repository}/check-runs/{check_id}"],
+            check_run_command(self.repository, check_id),
             json.dumps({"output": {"summary": self.check_annotation}}),
         )
 
     def actions_job(self, job_id):
         check_id = int(job_id) - 1000
         return self._completed(
-            ["gh", "api", f"repos/{self.repository}/actions/jobs/{job_id}"],
+            actions_job_command(self.repository, job_id),
             json.dumps({
                 "head_sha": self.job_head_sha or self.checked_heads[-1],
                 "check_run_url": (
@@ -434,7 +476,7 @@ class FakeGitHub:
 
     def job_log(self, job_id):
         self.job_log_requests.append(job_id)
-        arguments = ["gh", "run", "view", "--repo", self.repository, "--job", job_id, "--log"]
+        arguments = job_log_command(self.repository, job_id)
         if self.job_log_error is not None:
             return subprocess.CompletedProcess(arguments, 1, "", self.job_log_error)
         return self._completed(arguments, self.job_log_output)
@@ -461,6 +503,7 @@ class ScriptedResult:
 class ScriptedSessions:
     """Answers each agent session with the next scripted result, committing for real.
 
+    A scripted exception is raised by its session instead, as a crashing adapter would.
     `prompts` keeps the prompt Ralph would give the agent for each session, in order.
     """
 
@@ -476,6 +519,8 @@ class ScriptedSessions:
         session = self.script.pop(0)
         self.requests.append(request)
         self.prompts.append(prompt)
+        if isinstance(session, Exception):
+            raise session
         path = self.repository.path
         before = self.repository.head()
         commit = session.commit if session.commit is not None else session.outcome == "committed"

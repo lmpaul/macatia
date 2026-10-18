@@ -52,8 +52,11 @@ def agent_command(
     ]
 
 
-def engine_flags(engine: str, schema_path: pathlib.Path) -> tuple[list[str], list[str]]:
+def engine_help_command_and_flags(
+    engine: str, schema_path: pathlib.Path
+) -> tuple[list[str], list[str]]:
     """The help command and the flags agent_command passes to engine, read from a sample command so they cannot drift."""
+    # Only the engine matters: every profile passes the same flags.
     profile = AgentProfile("model", "Model", "medium", engine)
     command = agent_command(profile, "prompt", pathlib.Path("repository"), schema_path, pathlib.Path("result.json"))
     flags = [arg for arg in command if arg.startswith("-")]

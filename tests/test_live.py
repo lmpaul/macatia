@@ -4,6 +4,7 @@ Skipped unless RALPH_LIVE=1. It needs authenticated CLIs and spends tokens;
 see "Live suite" in the README for when and how to run it.
 """
 
+import json
 import os
 import pathlib
 import subprocess
@@ -25,6 +26,7 @@ from live_support import (
 )
 from ralph_kit.github import GitHub
 from ralph_kit.loop_core import (
+    actions_job_id,
     check_runs_for_head,
     classify_ci_failure,
     issue_details,
@@ -98,11 +100,57 @@ class LiveGitHubTests(unittest.TestCase):
             self.assertIsInstance(comment["author"]["login"], str)
             self.assertIsInstance(comment["body"], str)
 
+    def gh_json(self, *arguments):
+        """A read-only `gh` query outside Ralph's adapter, to find something for it to read."""
+        return json.loads(subprocess.run(
+            ["gh", *arguments], cwd=KIT_ROOT, check=True, text=True, capture_output=True
+        ).stdout)
+
+    def default_branch_head(self):
+        return self.gh_json("api", f"repos/{self.repository}/commits/HEAD")["sha"]
+
+    def test_open_pull_requests_list_each_pull_request_with_its_number_draft_state_and_url(self):
+        open_pulls = self.gh_json(
+            "pr", "list", "--state", "open", "--limit", "1", "--json", "headRefName,baseRefName"
+        )
+        if not open_pulls:
+            self.skipTest(f"{self.repository} has no open pull request")
+        (pull,) = open_pulls
+
+        pulls = self.github.open_pull_requests(pull["headRefName"], pull["baseRefName"])
+
+        self.assertIsInstance(pulls, list)
+        self.assertTrue(pulls)
+        for listed in pulls:
+            self.assertIsInstance(listed["number"], int)
+            self.assertIsInstance(listed["isDraft"], bool)
+            self.assertIsInstance(listed["url"], str)
+
+    def test_actions_job_its_log_and_its_check_run_match_the_check_they_come_from(self):
+        head = self.default_branch_head()
+        check = next(
+            (run for run in check_runs_for_head(self.state, head)
+             if actions_job_id(str(run.get("details_url") or ""))),
+            None,
+        )
+        self.assertIsNotNone(check, f"{self.repository}@{head} has no check run from an Actions job")
+        job_id = actions_job_id(check["details_url"])
+
+        job = self.github.actions_job(job_id)
+        log = self.github.job_log(job_id)
+        check_run = self.github.check_run(check["id"])
+
+        self.assertEqual(job.returncode, 0, job.stderr)
+        job_metadata = json.loads(job.stdout)
+        self.assertEqual(job_metadata["head_sha"], head)
+        self.assertTrue(job_metadata["check_run_url"].endswith(f"/check-runs/{check['id']}"))
+        self.assertEqual(log.returncode, 0, log.stderr)
+        self.assertTrue(log.stdout.strip(), f"job {job_id} has an empty log")
+        self.assertEqual(check_run.returncode, 0, check_run.stderr)
+        self.assertIsInstance(json.loads(check_run.stdout)["output"], dict)
+
     def test_check_runs_for_the_default_branch_head_pass_ralph_ci_classification(self):
-        head = subprocess.run(
-            ["gh", "api", f"repos/{self.repository}/commits/HEAD", "--jq", ".sha"],
-            check=True, text=True, capture_output=True,
-        ).stdout.strip()
+        head = self.default_branch_head()
 
         runs = check_runs_for_head(self.state, head)
 
