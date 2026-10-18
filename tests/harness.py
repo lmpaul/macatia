@@ -290,8 +290,6 @@ class RalphProcessTestCase(unittest.TestCase):
                         if is_correction
                         else f"feature-{issue_number}.txt"
                     )
-                    if not is_correction:
-                        filename = os.environ.get("RALPH_TEST_CHANGED_PATH", filename)
                     contents = (
                         f"repair {call_index}\n"
                         if is_correction
@@ -326,7 +324,6 @@ class RalphProcessTestCase(unittest.TestCase):
                 if (
                     outcome in {"committed", "no_changes", "needs_correction"}
                     and (outcome != "no_changes" or quality_heads)
-                    and os.environ.get("RALPH_TEST_EXPECT_LOCAL_GATES", "1") == "1"
                     and (
                     not quality_heads or quality_heads[-1] != current_head
                     )
@@ -409,8 +406,6 @@ class RalphProcessTestCase(unittest.TestCase):
                 log.write(json.dumps(arguments) + "\n")
 
             if arguments[:2] == ["run", "view"]:
-                if os.environ.get("START_TEST_LOGS_UNAVAILABLE") == "1":
-                    raise SystemExit("Job logs have expired")
                 print("AssertionError: expected 42, received 0; token=ci-secret")
                 print("\n".join("CI progress " + str(i) for i in range(100)))
                 print("last CI log line")
@@ -418,12 +413,10 @@ class RalphProcessTestCase(unittest.TestCase):
                 head = subprocess.run(["git", "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
                 check_id = int(arguments[1].rsplit("/", 1)[1]) - 1000
                 print(json.dumps({
-                    "head_sha": "stale" if os.environ.get("START_TEST_STALE_JOB") else head,
+                    "head_sha": head,
                     "check_run_url": f"https://api.github.com/repos/lmpaul/buyr/check-runs/{check_id}",
                     "steps": [{"name": "Run tests", "conclusion": "failure"}],
                 }))
-            elif arguments[0] == "api" and "/check-runs/" in arguments[1]:
-                print(json.dumps({"output": {"summary": "A test assertion failed; logs have no job URL."}}))
             elif arguments[:2] == ["repo", "view"]:
                 print(json.dumps({
                     "nameWithOwner": os.environ.get(
@@ -475,39 +468,16 @@ class RalphProcessTestCase(unittest.TestCase):
                     if outcome == "unavailable":
                         print(json.dumps({"check_runs": []}))
                         raise SystemExit(0)
-                    check_head = (
-                        os.environ.get("RALPH_TEST_STALE_CI_HEAD")
-                        if outcome == "stale"
-                        else head
-                    )
-                    conclusion = "failure" if outcome == "failure" else outcome
-                    check_names = os.environ.get(
-                        "RALPH_TEST_CI_CHECK_NAMES", "Canonical CI"
-                    ).split(",")
-                    failed_check = os.environ.get("RALPH_TEST_CI_FAILED_CHECK")
-                    conclusions = json.loads(
-                        os.environ.get("RALPH_TEST_CI_CHECK_CONCLUSIONS", "{}")
-                    )
-                    stale_check = os.environ.get("RALPH_TEST_STALE_CI_CHECK")
                     print(json.dumps({
                         "check_runs": [
                             {
-                                "id": index,
-                                "details_url": "" if os.environ.get("START_TEST_NO_JOB_URL") else f"https://github.com/lmpaul/buyr/actions/runs/777/job/{1000 + index}",
-                                "name": name,
-                                "head_sha": (
-                                    os.environ["RALPH_TEST_STALE_CI_HEAD"]
-                                    if name == stale_check
-                                    else check_head
-                                ),
+                                "id": 1,
+                                "details_url": "https://github.com/lmpaul/buyr/actions/runs/777/job/1001",
+                                "name": "Canonical CI",
+                                "head_sha": head,
                                 "status": "completed",
-                                "conclusion": (
-                                    "failure"
-                                    if name == failed_check
-                                    else conclusions.get(name, conclusion)
-                                ),
+                                "conclusion": outcome,
                             }
-                            for index, name in enumerate(check_names, start=1)
                         ]
                     }))
                 else:
@@ -539,20 +509,6 @@ class RalphProcessTestCase(unittest.TestCase):
                     "createdAt": created_at,
                 })
                 save_state()
-                if os.environ.get("RALPH_TEST_ADVANCE_AFTER_CI") == "1":
-                    pathlib.Path("ci-advance.txt").write_text(
-                        "advanced\n", encoding="utf-8"
-                    )
-                    subprocess.run(
-                        ["git", "add", "ci-advance.txt"],
-                        check=True,
-                        capture_output=True,
-                    )
-                    subprocess.run(
-                        ["git", "commit", "-m", "Advance after CI"],
-                        check=True,
-                        capture_output=True,
-                    )
             elif arguments[:2] == ["issue", "edit"]:
                 target = issue(int(arguments[2]))
                 names = {label["name"] for label in target["labels"]}
@@ -592,11 +548,7 @@ class RalphProcessTestCase(unittest.TestCase):
             failures_path = quality_log.with_suffix(".failures")
             failures = int(failures_path.read_text() if failures_path.exists() else "0")
             failures_path.write_text(str(failures + 1), encoding="utf-8")
-            selected_failures = json.loads(os.environ.get("RALPH_TEST_FAIL_GATE_CALLS", "[]"))
-            if (
-                failures < int(os.environ.get("RALPH_TEST_FAIL_GATE_COUNT", "0"))
-                or failures + 1 in selected_failures
-            ):
+            if failures < int(os.environ.get("RALPH_TEST_FAIL_GATE_COUNT", "0")):
                 print("AssertionError: expected local value 42, received 0")
                 print("\n".join("local progress " + str(i) for i in range(100)))
                 print("last local log line")

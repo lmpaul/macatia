@@ -4,7 +4,6 @@ import contextlib
 import io
 import json
 import os
-import pathlib
 import re
 import sys
 import unittest
@@ -58,9 +57,6 @@ class StartLoopTests(RalphProcessTestCase):
     def child(self):
         return next(child for child in self.state()["children"] if child["number"] == 193)
 
-    def evidence_files(self, prompt, name):
-        return [pathlib.Path(path) for path in re.findall(rf"Full {name}: (.+)", prompt)]
-
     def assert_completed(self, result, count):
         self.assertEqual(result.returncode, 0, result.stderr)
         calls = self.calls()
@@ -85,77 +81,6 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertTrue(calls[0]["prompt"].startswith("/implement issue #193\n"))
         self.assertIn("Repair the failing local gate", calls[1]["prompt"])
         self.assertEqual({label["name"] for label in self.child()["labels"]}, {"implemented"})
-
-    def test_local_failure_passes_context_and_both_complete_streams(self):
-        self.assert_completed(self.run_loop(RALPH_TEST_FAIL_GATE_COUNT="1"), 2)
-        prompt = self.calls()[1]["prompt"]
-        self.assertIn("Command: quality-gate", prompt)
-        self.assertIn("expected local value 42, received 0", prompt)
-        self.assertIn("fixture gate failed", prompt)
-        self.assertIn("Parent: https://github.com/lmpaul/buyr/issues/191", prompt)
-        self.assertIn("Issue base commit: " + self.base_sha, prompt)
-        self.assertIn("Previous session summary: Implemented the requested child issue.", prompt)
-        stdout = self.evidence_files(prompt, "stdout")[0].read_text()
-        stderr = self.evidence_files(prompt, "stderr")[0].read_text()
-        self.assertIn("local progress 50", stdout)
-        self.assertIn("last local log line", stdout)
-        self.assertNotIn("local progress 50", prompt)
-        self.assertIn("[REDACTED]", stderr)
-        self.assertNotIn("super-secret", stderr + prompt)
-        previous = pathlib.Path(re.search(r"Previous result: (.+)", prompt).group(1))
-        self.assertEqual(json.loads(previous.read_text())["outcome"], "committed")
-        self.assertEqual(len(self.quality_log.read_text().splitlines()), 2)
-
-    def test_ci_failure_fetches_job_logs_and_rechecks_corrected_commit(self):
-        self.assert_completed(self.run_loop(RALPH_TEST_CI_OUTCOMES="failure,success"), 2)
-        prompt = self.calls()[1]["prompt"]
-        self.assertIn("Repair the failing CI check", prompt)
-        self.assertIn("Repository check command: quality-gate", prompt)
-        self.assertIn("--job 1001 --log", prompt)
-        self.assertIn("expected 42, received 0", prompt)
-        stdout = self.evidence_files(prompt, "stdout")[0].read_text()
-        self.assertIn("last CI log line", stdout)
-        self.assertNotIn("ci-secret", stdout + prompt)
-        checks = [call[1] for call in self.github_calls() if call[0] == "api" and "/commits/" in call[1]]
-        self.assertEqual(len(checks), 2)
-        self.assertNotEqual(checks[0], checks[1])
-        self.assertEqual(len(self.quality_log.read_text().splitlines()), 2)
-
-    def test_all_failed_required_checks_reach_one_correction(self):
-        self.assert_completed(self.run_loop(
-            RALPH_TEST_CI_OUTCOMES="failure,success",
-            RALPH_TEST_CHANGED_PATH="buyr-hono/prisma/schema.prisma",
-            RALPH_TEST_CI_CHECK_NAMES="Canonical CI,PostgreSQL 16 and Redis acceptance",
-        ), 2)
-        prompt = self.calls()[1]["prompt"]
-        self.assertIn("Canonical CI concluded failure", prompt)
-        self.assertIn("PostgreSQL 16 and Redis acceptance concluded failure", prompt)
-        self.assertEqual(len(self.evidence_files(prompt, "stdout")), 2)
-
-    def test_expired_logs_leave_explicit_evidence_and_a_job_reference(self):
-        self.assert_completed(self.run_loop(
-            RALPH_TEST_CI_OUTCOMES="failure,success", START_TEST_LOGS_UNAVAILABLE="1",
-        ), 2)
-        prompt = self.calls()[1]["prompt"]
-        self.assertIn("CI logs unavailable", prompt)
-        self.assertIn("Job logs have expired", prompt)
-        self.assertIn("/actions/runs/777/job/1001", prompt)
-
-    def test_job_from_another_commit_is_not_used_as_failure_evidence(self):
-        self.assert_completed(self.run_loop(
-            RALPH_TEST_CI_OUTCOMES="failure,success", START_TEST_STALE_JOB="1",
-        ), 2)
-        self.assertFalse(any(call[:2] == ["run", "view"] for call in self.github_calls()))
-        self.assertIn("does not match the failed commit", self.calls()[1]["prompt"])
-
-    def test_check_without_actions_url_retains_annotations(self):
-        self.assert_completed(self.run_loop(
-            RALPH_TEST_CI_OUTCOMES="failure,success", START_TEST_NO_JOB_URL="1",
-        ), 2)
-        prompt = self.calls()[1]["prompt"]
-        self.assertIn("CI logs unavailable", prompt)
-        self.assertIn("A test assertion failed", prompt)
-        self.assertFalse(any(call[:2] == ["run", "view"] for call in self.github_calls()))
 
     def test_local_and_ci_repairs_chain_previous_context_without_sol(self):
         self.assert_completed(self.run_loop(
@@ -208,37 +133,6 @@ class StartLoopTests(RalphProcessTestCase):
     def test_infrastructure_retries_do_not_launch_a_correction(self):
         self.assert_completed(self.run_loop(RALPH_TEST_CI_OUTCOMES="cancelled,success"), 1)
 
-    def assert_local_only_publication(self, *, local_gates=True):
-        calls = self.github_calls()
-        self.assertFalse(any(call[0] == "api" and "/commits/" in call[1] for call in calls))
-        self.assertTrue(any(call[:2] == ["pr", "create"] and "--draft" in call for call in calls))
-        self.assertFalse(any(call[:2] == ["pr", "merge"] for call in calls))
-        remote_head = run(
-            ["git", "rev-parse", "refs/heads/codex/issue-191"], cwd=self.remote,
-        ).stdout.strip()
-        local_head = run(["git", "rev-parse", "HEAD"], cwd=self.repository).stdout.strip()
-        self.assertEqual(remote_head, local_head)
-        body = self.child()["comments"][-1]["body"]
-        self.assertIn(
-            "remote CI was not required" if local_gates else
-            "automated local gates and remote CI were explicitly disabled", body,
-        )
-        self.assertIn(local_head, body)
-        self.assertNotIn("CI are green", body)
-
-    def test_local_only_publishes_with_local_evidence_without_querying_ci(self):
-        self._configure_verification(ci_checks=False, local_checks=True)
-        self.assert_completed(self.run_loop(), 1)
-        self.assertEqual(len(self.quality_log.read_text().splitlines()), 1)
-        self.assert_local_only_publication()
-
-    def test_local_only_repairs_failed_gates_before_publication(self):
-        self._configure_verification(ci_checks=False, local_checks=True)
-        self.assert_completed(self.run_loop(RALPH_TEST_FAIL_GATE_COUNT="1"), 2)
-        self.assertIn("Repair the failing local gate", self.calls()[1]["prompt"])
-        self.assertEqual(len(self.quality_log.read_text().splitlines()), 2)
-        self.assert_local_only_publication()
-
     def test_local_only_budget_stop_does_not_publish(self):
         self._configure_verification(ci_checks=False, local_checks=True)
         result = self.run_loop(budget=1, RALPH_TEST_FAIL_GATE_COUNT="1")
@@ -264,61 +158,12 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertIn("configuration.models is missing keys: review", result.stderr)
         self.assertFalse(self.codex_log.exists())
 
-    def disable_local_gates(self, ci_checks):
-        self._configure_verification(ci_checks=ci_checks, local_checks=False)
-        self.environment["RALPH_TEST_EXPECT_LOCAL_GATES"] = "0"
-
-    def test_local_only_can_disable_all_automated_verification(self):
-        self.disable_local_gates(False)
-        # An unused policy must not be loaded when both verification paths are off.
-        (self.repository / ".github" / "scripts" / "quality.py").unlink()
-        (self.repository / ".github" / "quality-gates.json").unlink()
-        run(["git", "commit", "-am", "Remove unused quality policy"], cwd=self.repository)
-        result = self.run_loop()
-        self.assert_completed(result, 1)
-        self.assertFalse(self.quality_log.exists())
-        self.assertIn("without automated verification", result.stdout)
-        self.assert_local_only_publication(local_gates=False)
-        body = self.child()["comments"][-1]["body"]
-        self.assertIn("automated local gates and remote CI were explicitly disabled", body)
-        self.assertNotIn("are green", body)
-
-    def test_ci_can_run_without_local_gates(self):
-        self.disable_local_gates(True)
-        self.assert_completed(self.run_loop(), 1)
-        self.assertFalse(self.quality_log.exists())
-        self.assertTrue(any(call[0] == "api" and "/commits/" in call[1] for call in self.github_calls()))
-        body = self.child()["comments"][-1]["body"]
-        self.assertIn("Canonical CI is green", body)
-        self.assertIn("local gates were explicitly disabled", body)
-        self.assertNotIn("local gates and canonical CI are green", body)
-
-    def test_ci_failure_is_repaired_when_local_gates_are_disabled(self):
-        self.disable_local_gates(True)
-        self.assert_completed(self.run_loop(RALPH_TEST_CI_OUTCOMES="failure,success"), 2)
-        self.assertIn("Repair the failing CI check", self.calls()[1]["prompt"])
-        self.assertFalse(self.quality_log.exists())
-
-    def test_unfinished_requirements_are_repaired_without_automated_verification(self):
-        self.disable_local_gates(False)
-        self.assert_completed(self.run_loop(RALPH_TEST_AGENT_RESULTS=json.dumps([
-            {"outcome": "needs_correction", "commit": True, "findings": ["Implement the missing acceptance criterion."]},
-            {"outcome": "committed"},
-        ])), 2)
-        self.assertIn("Implement the missing acceptance criterion.", self.calls()[1]["prompt"])
-        self.assertFalse(self.quality_log.exists())
-        self.assert_local_only_publication(local_gates=False)
-
     def test_ci_budget_stop_keeps_logs_for_the_human_handoff(self):
         result = self.run_loop(budget=1, RALPH_TEST_CI_OUTCOMES="failure")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(len(self.calls()), 1)
         self.assertIn("expected 42, received 0", self.child()["comments"][-1]["body"])
         self.assertIn("Full stdout:", self.child()["comments"][-1]["body"])
-
-    def test_no_changes_still_requires_ci_before_completion(self):
-        self.assert_completed(self.run_loop(RALPH_TEST_AGENT_OUTCOME="no_changes"), 1)
-        self.assertTrue(any(call[0] == "api" and "/commits/" in call[1] for call in self.github_calls()))
 
     def test_dirty_agent_output_cannot_be_published(self):
         result = self.run_loop(RALPH_TEST_LEAVE_DIRTY="1")

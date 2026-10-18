@@ -57,7 +57,7 @@ diagnostics to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 ```sh
 git clone git@github.com:lmpaul/ralph-kit.git && cd ralph-kit
 uv tool install -e .                          # `ralph-kit` now runs this checkout
-uv run python -m unittest discover -s tests   # offline tests (~5 min), with dependencies
+uv run python -m unittest discover -s tests   # offline tests (~2 min), with dependencies
 ```
 
 Tests use temporary Git repositories and fake GitHub/Codex/Claude commands; they

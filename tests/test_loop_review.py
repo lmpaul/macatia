@@ -1,9 +1,5 @@
 import json
-import os
-import pathlib
-import re
 import unittest
-from unittest import mock
 
 from harness import (
     RalphProcessTestCase,
@@ -141,12 +137,6 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertEqual(len(self._json_lines(self.codex_log)), 2)
         self.assertFalse(self.claude_log.exists())
 
-    def test_default_ci_poll_interval_is_45_seconds(self):
-        from ralph_kit import loop_core as module
-
-        with mock.patch.dict(os.environ, {}, clear=True):
-            self.assertEqual(module.ci_poll_seconds(), 45.0)
-
     def test_duplicate_toml_key_is_rejected_before_codex_starts(self):
         config_path = self.repository / "ralph.toml"
         config_path.write_text(
@@ -159,75 +149,6 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertNotEqual(completed.returncode, 0)
         self.assertIn("invalid TOML", completed.stderr)
         self.assert_codex_did_not_start()
-
-    def test_local_only_uses_local_gates_without_querying_ci(self):
-        self._configure_verification(ci_checks=False, local_checks=True)
-
-        completed = self._run_loop("191")
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        github_calls = self._json_lines(self.github_log)
-        self.assertFalse(
-            any(call[0] == "api" and "/check-runs" in call[1] for call in github_calls)
-        )
-        self.assertEqual(len(self.quality_log.read_text().splitlines()), 2)
-        child = next(
-            child
-            for child in json.loads(self.github_state.read_text())["children"]
-            if child["number"] == 193
-        )
-        self.assertEqual({label["name"] for label in child["labels"]}, {"implemented"})
-        self.assertIn("remote CI was not required", child["comments"][-1]["body"])
-
-    def test_local_only_can_explicitly_disable_all_automated_verification(self):
-        self._configure_verification(ci_checks=False, local_checks=False)
-        environment = self.environment.copy()
-        environment["RALPH_TEST_EXPECT_LOCAL_GATES"] = "0"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("without automated verification", completed.stdout)
-        self.assertIn("Local quality gates are disabled", completed.stdout)
-        self.assertFalse(self.quality_log.exists())
-        github_calls = self._json_lines(self.github_log)
-        self.assertFalse(
-            any(call[0] == "api" and "/check-runs" in call[1] for call in github_calls)
-        )
-        child = next(
-            child
-            for child in json.loads(self.github_state.read_text())["children"]
-            if child["number"] == 193
-        )
-        self.assertEqual({label["name"] for label in child["labels"]}, {"implemented"})
-        self.assertIn(
-            "automated local gates and remote CI were explicitly disabled",
-            child["comments"][-1]["body"],
-        )
-
-    def test_ci_can_run_when_local_gates_are_disabled(self):
-        self._configure_verification(ci_checks=True, local_checks=False)
-        environment = self.environment.copy()
-        environment["RALPH_TEST_EXPECT_LOCAL_GATES"] = "0"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertFalse(self.quality_log.exists())
-        self.assertTrue(
-            any(
-                call[0] == "api" and "/check-runs" in call[1]
-                for call in self._json_lines(self.github_log)
-            )
-        )
-        child = next(
-            child
-            for child in json.loads(self.github_state.read_text())["children"]
-            if child["number"] == 193
-        )
-        self.assertIn(
-            "local gates were explicitly disabled", child["comments"][-1]["body"]
-        )
 
     def test_repository_trust_remote_and_labels_come_from_toml(self):
         config_path = self.repository / "ralph.toml"
@@ -479,7 +400,7 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertIn("run budget exhausted before review", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 1)
 
-    def test_local_gate_failure_starts_a_fresh_correction_and_rechecks_it(self):
+    def test_local_gate_correction_session_is_announced_with_its_profile(self):
         environment = self.environment.copy()
         environment["RALPH_TEST_FAIL_GATE_COUNT"] = "1"
 
@@ -487,8 +408,6 @@ class ReviewLoopTests(RalphProcessTestCase):
 
         self.assertEqual(completed.returncode, 0, completed.stderr)
         calls = self._json_lines(self.codex_log)
-        self.assertEqual(len(calls), 3)
-        self.assertIn("Repair the failing local gate", calls[1]["prompt"])
         self.assertIn(
             "Use an empty findings array for committed or no_changes.",
             calls[1]["prompt"],
@@ -507,34 +426,6 @@ class ReviewLoopTests(RalphProcessTestCase):
             "for child #193 (outcome: committed; commits: 1).",
             completed.stdout,
         )
-        self.assertNotIn("super-secret", calls[1]["prompt"])
-        self.assertNotIn("hidden-token", calls[1]["prompt"])
-        self.assertNotIn("bearer-secret", calls[1]["prompt"])
-        self.assertNotIn("user:password", calls[1]["prompt"])
-        self.assertNotIn("```escaped fence", calls[1]["prompt"])
-        self.assertEqual(len(self.quality_log.read_text().splitlines()), 3)
-
-    def test_local_gate_correction_receives_complete_evidence_and_previous_context(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_FAIL_GATE_COUNT"] = "1"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        calls = self._json_lines(self.codex_log)
-        prompt = calls[1]["prompt"]
-        self.assertIn("Command: quality-gate", prompt)
-        self.assertIn("Exit code: 1", prompt)
-        self.assertIn("AssertionError: expected local value 42, received 0", prompt)
-        self.assertIn("fixture gate failed:", prompt)
-        self.assertIn("Previous session summary: Implemented the requested child issue.", prompt)
-        self.assertIn("Previous result:", prompt)
-        stdout = pathlib.Path(re.search(r"Full stdout: (.+)", prompt).group(1))
-        stderr = pathlib.Path(re.search(r"Full stderr: (.+)", prompt).group(1))
-        self.assertIn("last local log line", stdout.read_text())
-        self.assertIn("[REDACTED]", stderr.read_text())
-        self.assertNotIn("super-secret", prompt + stderr.read_text())
-        self.assertIn("Previous session summary: Repaired the failing local gate.", calls[2]["prompt"])
 
     def test_completed_work_in_local_correction_findings_has_an_actionable_error(self):
         environment = self.environment.copy()
@@ -869,213 +760,6 @@ class ReviewLoopTests(RalphProcessTestCase):
                 for record in records
             )
         )
-
-    def test_branch_advance_after_ci_cannot_authorize_implemented(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_ADVANCE_AFTER_CI"] = "1"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("branch advanced after canonical CI", completed.stderr)
-        github_calls = self._json_lines(self.github_log)
-        self.assertFalse(
-            any(call[:2] == ["issue", "edit"] for call in github_calls)
-        )
-
-    def test_stale_ci_evidence_cannot_authorize_implemented(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CI_OUTCOMES"] = "stale"
-        environment["RALPH_TEST_STALE_CI_HEAD"] = self.base_sha
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("infrastructure retries exhausted", completed.stderr)
-        self.assertFalse(
-            any(
-                call[:2] == ["issue", "edit"] and "implemented" in call
-                for call in self._json_lines(self.github_log)
-            )
-        )
-
-    def test_frontend_only_change_does_not_require_the_database_check(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CHANGED_PATH"] = "buyr-web/src/app/page.tsx"
-        environment["RALPH_TEST_CI_CHECK_NAMES"] = (
-            "Canonical CI,PostgreSQL 16 and Redis acceptance"
-        )
-        environment["RALPH_TEST_CI_FAILED_CHECK"] = (
-            "PostgreSQL 16 and Redis acceptance"
-        )
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 2)
-
-    def test_persistence_change_requires_a_green_database_check_for_its_sha(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CHANGED_PATH"] = "buyr-hono/prisma/schema.prisma"
-        environment["RALPH_TEST_CI_CHECK_NAMES"] = "Canonical CI"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn(
-            "no required current-SHA check evidence is available for: "
-            "PostgreSQL 16 and Redis acceptance",
-            completed.stderr,
-        )
-        self.assertFalse(
-            any(
-                call[:2] == ["issue", "edit"] and "implemented" in call
-                for call in self._json_lines(self.github_log)
-            )
-        )
-
-    def test_persistence_change_rejects_failed_database_evidence(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CHANGED_PATH"] = "buyr-hono/prisma/schema.prisma"
-        environment["RALPH_TEST_CI_CHECK_NAMES"] = (
-            "Canonical CI,PostgreSQL 16 and Redis acceptance"
-        )
-        environment["RALPH_TEST_CI_FAILED_CHECK"] = (
-            "PostgreSQL 16 and Redis acceptance"
-        )
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn(
-            "PostgreSQL 16 and Redis acceptance concluded failure",
-            self._json_lines(self.codex_log)[2]["prompt"],
-        )
-        self.assertFalse(
-            any(
-                call[:2] == ["issue", "edit"] and "implemented" in call
-                for call in self._json_lines(self.github_log)
-            )
-        )
-
-    def test_persistence_change_rejects_skipped_database_evidence(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CHANGED_PATH"] = "buyr-hono/prisma/schema.prisma"
-        environment["RALPH_TEST_CI_CHECK_NAMES"] = (
-            "Canonical CI,PostgreSQL 16 and Redis acceptance"
-        )
-        environment["RALPH_TEST_CI_CHECK_CONCLUSIONS"] = json.dumps(
-            {"PostgreSQL 16 and Redis acceptance": "skipped"}
-        )
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn(
-            "PostgreSQL 16 and Redis acceptance concluded skipped",
-            self._json_lines(self.codex_log)[2]["prompt"],
-        )
-        self.assertFalse(
-            any(
-                call[:2] == ["issue", "edit"] and "implemented" in call
-                for call in self._json_lines(self.github_log)
-            )
-        )
-
-    def test_persistence_change_rejects_cancelled_database_evidence(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CHANGED_PATH"] = "buyr-hono/prisma/schema.prisma"
-        environment["RALPH_TEST_CI_CHECK_NAMES"] = (
-            "Canonical CI,PostgreSQL 16 and Redis acceptance"
-        )
-        environment["RALPH_TEST_CI_CHECK_CONCLUSIONS"] = json.dumps(
-            {"PostgreSQL 16 and Redis acceptance": "cancelled"}
-        )
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("infrastructure retries exhausted", completed.stderr)
-
-    def test_persistence_change_rejects_database_evidence_from_another_sha(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CHANGED_PATH"] = "buyr-hono/prisma/schema.prisma"
-        environment["RALPH_TEST_CI_CHECK_NAMES"] = (
-            "Canonical CI,PostgreSQL 16 and Redis acceptance"
-        )
-        environment["RALPH_TEST_STALE_CI_CHECK"] = (
-            "PostgreSQL 16 and Redis acceptance"
-        )
-        environment["RALPH_TEST_STALE_CI_HEAD"] = self.base_sha
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("infrastructure retries exhausted", completed.stderr)
-
-    def test_product_ci_failure_starts_a_fresh_correction_and_waits_for_its_sha(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CI_OUTCOMES"] = "failure,success"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        calls = self._json_lines(self.codex_log)
-        self.assertEqual(len(calls), 4)
-        self.assertIn("Repair the failing CI check", calls[2]["prompt"])
-        self.assertIn("Canonical CI concluded failure", calls[2]["prompt"])
-        self.assertIn("gpt-5.6-sol", calls[3]["arguments"])
-        head = run(["git", "rev-parse", "HEAD"], cwd=self.repository).stdout.strip()
-        check_calls = [
-            call for call in self._json_lines(self.github_log)
-            if call[0] == "api" and "/check-runs" in call[1]
-        ]
-        self.assertEqual(len(check_calls), 2)
-        self.assertIn(f"/commits/{head}/check-runs", check_calls[-1][1])
-        records = self._diagnostic_records()
-        self.assertIn(records[2]["observed_head"], calls[3]["prompt"])
-        self.assertNotEqual(
-            check_calls[0][1].split("/commits/", 1)[1].split("/", 1)[0],
-            check_calls[1][1].split("/commits/", 1)[1].split("/", 1)[0],
-        )
-
-    def test_ci_correction_receives_all_failed_checks_and_verified_job_logs(self):
-        environment = self.environment.copy()
-        environment.update({
-            "RALPH_TEST_CI_OUTCOMES": "failure,success",
-            "RALPH_TEST_CHANGED_PATH": "buyr-hono/prisma/schema.prisma",
-            "RALPH_TEST_CI_CHECK_NAMES": "Canonical CI,PostgreSQL 16 and Redis acceptance",
-        })
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        calls = self._json_lines(self.codex_log)
-        prompt = calls[2]["prompt"]
-        self.assertIn("Canonical CI concluded failure", prompt)
-        self.assertIn("PostgreSQL 16 and Redis acceptance concluded failure", prompt)
-        self.assertIn("Repository check command: quality-gate", prompt)
-        self.assertIn("expected 42, received 0", prompt)
-        self.assertEqual(prompt.count("Full stdout:"), 2)
-        self.assertNotIn("ci-secret", prompt)
-        for path in re.findall(r"Full stdout: (.+)", prompt):
-            evidence = pathlib.Path(path).read_text()
-            self.assertIn("last CI log line", evidence)
-            self.assertNotIn("ci-secret", evidence)
-        self.assertIn("Previous session summary:", calls[3]["prompt"])
-
-    def test_ci_job_from_another_commit_is_not_used_as_evidence(self):
-        environment = self.environment.copy()
-        environment.update({
-            "RALPH_TEST_CI_OUTCOMES": "failure,success",
-            "START_TEST_STALE_JOB": "1",
-        })
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertIn("does not match the failed commit", self._json_lines(self.codex_log)[2]["prompt"])
-        self.assertFalse(any(call[:2] == ["run", "view"] for call in self._json_lines(self.github_log)))
 
     def test_cancelled_and_timed_out_ci_runs_retry_as_infrastructure_failures(self):
         environment = self.environment.copy()

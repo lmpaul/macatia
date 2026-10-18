@@ -38,9 +38,15 @@ def git(repository, *arguments):
 
 
 class RunRepository:
-    """A temporary checkout on a Ralph branch, with a bare `origin` and the fixture policy."""
+    """A temporary checkout on a Ralph branch, with a bare `origin` and the fixture policy.
 
-    def __init__(self, test_case, *, local_gate_command=("true",)):
+    The fixture policy has one local gate. By default it always passes; with
+    `local_gate_results` ("pass" or "fail" per call, the last repeats) it runs
+    the scripted gate in `fixtures/local_gate.py`. With both verification paths
+    disabled, no quality policy is installed, so a run that loads it fails.
+    """
+
+    def __init__(self, test_case, *, local_gate_results=None, local_checks=True, ci_checks=True):
         directory = tempfile.TemporaryDirectory()
         test_case.addCleanup(directory.cleanup)
         root = pathlib.Path(directory.name)
@@ -52,16 +58,29 @@ class RunRepository:
         git(self.path, "config", "user.email", "ralph-test@example.com")
         git(self.path, "config", "user.name", "Ralph Test")
         git(self.path, "remote", "add", "origin", str(self.origin))
-        shutil.copyfile(FIXTURES / "ralph.toml", self.path / "ralph.toml")
+        configuration = (FIXTURES / "ralph.toml").read_text(encoding="utf-8")
+        configuration = configuration.replace(
+            "local_checks = true\nci_checks = true",
+            f"local_checks = {str(local_checks).lower()}\nci_checks = {str(ci_checks).lower()}",
+        )
+        (self.path / "ralph.toml").write_text(configuration, encoding="utf-8")
         (self.path / ".gitignore").write_text(
             "__pycache__/\n*.py[cod]\n.ralph/\n", encoding="utf-8"
         )
-        scripts = self.path / ".github" / "scripts"
-        scripts.mkdir(parents=True)
-        shutil.copyfile(FIXTURES / "quality.py", scripts / "quality.py")
-        (self.path / ".github" / "quality-gates.json").write_text(
-            json.dumps(quality_manifest(list(local_gate_command))), encoding="utf-8"
-        )
+        self.local_gate_command = ["true"]
+        if local_gate_results is not None:
+            results = root / "local-gate-results.json"
+            results.write_text(json.dumps(list(local_gate_results)), encoding="utf-8")
+            self.local_gate_command = [
+                sys.executable, "-I", str(FIXTURES / "local_gate.py"), str(results)
+            ]
+        if local_checks or ci_checks:
+            scripts = self.path / ".github" / "scripts"
+            scripts.mkdir(parents=True)
+            shutil.copyfile(FIXTURES / "quality.py", scripts / "quality.py")
+            (self.path / ".github" / "quality-gates.json").write_text(
+                json.dumps(quality_manifest(self.local_gate_command)), encoding="utf-8"
+            )
         git(self.path, "add", ".")
         git(self.path, "commit", "-m", "Initial fixture")
         git(self.path, "push", "-u", "origin", "main")
@@ -91,6 +110,13 @@ class RunRepository:
         return [
             json.loads((evidence / "command.json").read_text())["head_sha"]
             for evidence in sorted((self.diagnostics() / "evidence").glob("*-local-gate"))
+        ]
+
+    def ci_evidence(self):
+        """The command metadata of each recorded CI failure evidence, in order."""
+        return [
+            json.loads((evidence / "command.json").read_text())
+            for evidence in sorted((self.diagnostics() / "evidence").glob("*-ci"))
         ]
 
 
@@ -172,9 +198,14 @@ class FakeGitHub:
     Issues carry their state, labels, author, and comments; children and
     blockers link them. Every check-runs request answers with the next scripted
     CI round for the requested head; the last round repeats. A round is one
-    conclusion for every check, or a mapping from check name to conclusion.
+    conclusion for every check, or a mapping from check name to either a
+    conclusion or the check-run fields to override (such as another commit's
+    `head_sha`, or an empty `details_url` for a check without an Actions job).
+    A failed check's job reports `job_head_sha` (by default the checked head)
+    and its log is `job_log_output`, or a failed download with `job_log_error`.
     Setting `interrupt_after_comment_on` to an issue number kills the run once,
-    right after its next comment on that issue is stored.
+    right after its next comment on that issue is stored; `after_comment`, when
+    set, is called with the issue number and body after each issue comment.
     """
 
     def __init__(
@@ -185,6 +216,9 @@ class FakeGitHub:
         ci=("success",),
         check_names=("Canonical CI",),
         job_log_output="last CI log line",
+        job_log_error=None,
+        job_head_sha=None,
+        check_annotation="A check failed.",
     ):
         self.repository = repository
         self.login = login
@@ -195,9 +229,14 @@ class FakeGitHub:
         self.ci = list(ci)
         self.check_names = tuple(check_names)
         self.job_log_output = job_log_output
+        self.job_log_error = job_log_error
+        self.job_head_sha = job_head_sha
+        self.check_annotation = check_annotation
         self.checked_heads = []
+        self.job_log_requests = []
         self.revision = 0
         self.interrupt_after_comment_on = None
+        self.after_comment = None
 
     # Test setup and observation.
 
@@ -271,6 +310,8 @@ class FakeGitHub:
         if number == self.interrupt_after_comment_on:
             self.interrupt_after_comment_on = None
             raise RunInterrupted(f"interrupted after commenting on #{number}")
+        if self.after_comment is not None:
+            self.after_comment(number, body)
 
     def edit_issue_labels(self, number, add, remove):
         names = (self.labels(number) | {add}) - set(remove)
@@ -305,7 +346,7 @@ class FakeGitHub:
     def check_runs(self, head_sha):
         self.checked_heads.append(head_sha)
         ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
-        conclusions = ci_round if isinstance(ci_round, dict) else dict.fromkeys(self.check_names, ci_round)
+        checks = ci_round if isinstance(ci_round, dict) else dict.fromkeys(self.check_names, ci_round)
         return [
             {
                 "check_runs": [
@@ -314,13 +355,13 @@ class FakeGitHub:
                         "name": name,
                         "head_sha": head_sha,
                         "status": "completed",
-                        "conclusion": conclusions[name],
                         "details_url": (
                             f"https://github.com/{self.repository}/actions/runs/777/job/"
                             f"{1000 + index}"
                         ),
+                        **(check if isinstance(check, dict) else {"conclusion": check}),
                     }
-                    for index, name in enumerate(conclusions, start=1)
+                    for index, (name, check) in enumerate(checks.items(), start=1)
                 ]
             }
         ]
@@ -328,7 +369,7 @@ class FakeGitHub:
     def check_run(self, check_id):
         return self._completed(
             ["gh", "api", f"repos/{self.repository}/check-runs/{check_id}"],
-            json.dumps({"output": {"summary": "A check failed."}}),
+            json.dumps({"output": {"summary": self.check_annotation}}),
         )
 
     def actions_job(self, job_id):
@@ -336,7 +377,7 @@ class FakeGitHub:
         return self._completed(
             ["gh", "api", f"repos/{self.repository}/actions/jobs/{job_id}"],
             json.dumps({
-                "head_sha": self.checked_heads[-1],
+                "head_sha": self.job_head_sha or self.checked_heads[-1],
                 "check_run_url": (
                     f"https://api.github.com/repos/{self.repository}/check-runs/{check_id}"
                 ),
@@ -344,10 +385,11 @@ class FakeGitHub:
         )
 
     def job_log(self, job_id):
-        return self._completed(
-            ["gh", "run", "view", "--repo", self.repository, "--job", job_id, "--log"],
-            self.job_log_output,
-        )
+        self.job_log_requests.append(job_id)
+        arguments = ["gh", "run", "view", "--repo", self.repository, "--job", job_id, "--log"]
+        if self.job_log_error is not None:
+            return subprocess.CompletedProcess(arguments, 1, "", self.job_log_error)
+        return self._completed(arguments, self.job_log_output)
 
     @staticmethod
     def _completed(arguments, stdout):
@@ -356,12 +398,16 @@ class FakeGitHub:
 
 @dataclass(frozen=True)
 class ScriptedResult:
-    """One scripted agent session result; `commit` defaults to the outcome needing one."""
+    """One scripted agent session result; `commit` defaults to the outcome needing one.
+
+    The commit adds a new file, or changes `path` when given.
+    """
 
     outcome: str = "committed"
     summary: str = "Did the requested work."
     findings: tuple[str, ...] = ()
     commit: bool | None = None
+    path: str | None = None
 
 
 class ScriptedSessions:
@@ -386,7 +432,10 @@ class ScriptedSessions:
         before = self.repository.head()
         commit = session.commit if session.commit is not None else session.outcome == "committed"
         if commit:
-            name = f"{request.role.replace(' ', '-')}-{request.child}-{len(self.requests)}.txt"
+            name = session.path or (
+                f"{request.role.replace(' ', '-')}-{request.child}-{len(self.requests)}.txt"
+            )
+            (path / name).parent.mkdir(parents=True, exist_ok=True)
             (path / name).write_text(f"{session.summary}\n", encoding="utf-8")
             git(path, "add", name)
             git(path, "commit", "-m", f"{request.role} for #{request.child}")
@@ -402,6 +451,8 @@ class RunResult:
     exit_code: int
     stdout: str
     stderr: str
+    # Every wait the run asked for, in seconds; tests never actually wait.
+    sleeps: list[float]
 
 
 def start_run(mode, repository, github, sessions, *arguments):
@@ -416,10 +467,11 @@ def start_run(mode, repository, github, sessions, *arguments):
             loop_core.real_child_cycle_adapters(context), run_session=run_session
         )
 
+    sleeps = []
     adapters = loop_core.RunAdapters(
         github=lambda repository_root, name: github,
         child_cycle=child_cycle_adapters,
-        sleep=lambda seconds: None,
+        sleep=sleeps.append,
     )
     stdout, stderr = io.StringIO(), io.StringIO()
     with (
@@ -428,4 +480,4 @@ def start_run(mode, repository, github, sessions, *arguments):
         contextlib.redirect_stderr(stderr),
     ):
         exit_code = loop_core.run(mode, adapters, [str(argument) for argument in arguments])
-    return RunResult(exit_code, stdout.getvalue(), stderr.getvalue())
+    return RunResult(exit_code, stdout.getvalue(), stderr.getvalue(), sleeps)

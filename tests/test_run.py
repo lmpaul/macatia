@@ -1,9 +1,13 @@
 """In-memory run tests: the whole loop against a GitHub fake, scripted sessions, and real Git."""
 
 import json
+import os
 import pathlib
+import re
+import shlex
 import sys
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
@@ -353,6 +357,351 @@ class ParentCompletionTests(RunLevelTestCase):
                 self.assertEqual(
                     sum(marker in comment for comment in self.github.comments(PARENT)), 1
                 )
+
+
+CANONICAL_CHECK = "Canonical CI"
+DATABASE_CHECK = "PostgreSQL 16 and Redis acceptance"
+PERSISTENCE_PATH = "buyr-hono/prisma/schema.prisma"
+FRONTEND_PATH = "buyr-web/src/app/page.tsx"
+OTHER_COMMIT = "0" * 40
+CI_LOG = "\n".join([
+    "AssertionError: expected 42, received 0; token=ci-secret",
+    *(f"CI progress {index}" for index in range(100)),
+    "last CI log line",
+])
+# The secrets the scripted local gate prints when it fails; Ralph must never repeat them.
+GATE_SECRETS = ("super-secret", "hidden-token", "bearer-secret", "user:password", "```escaped fence")
+
+
+def evidence_files(prompt, stream):
+    return [pathlib.Path(path) for path in re.findall(rf"Full {stream}: (.+)", prompt)]
+
+
+class VerificationTestCase(RunLevelTestCase):
+    """One child under the parent; each test chooses its verification and CI."""
+
+    def new_child_run(self, *, local_gate_results=None, local_checks=True, ci_checks=True, **github):
+        self.repository = RunRepository(
+            self, local_gate_results=local_gate_results, local_checks=local_checks, ci_checks=ci_checks
+        )
+        self.github = FakeGitHub(**github)
+        self.github.add_issue(PARENT)
+        self.github.add_issue(CHILD, parent=PARENT)
+
+    def setUp(self):
+        self.new_child_run()
+
+    def roles(self):
+        return [request.role for request in self.sessions.requests]
+
+    def assert_implemented(self, result):
+        """The child is published as implemented; returns its evidence comment."""
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertFalse(self.github.pull_request().is_draft)
+        return self.github.comments(CHILD)[-1]
+
+    def assert_not_implemented(self, result, reason):
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(reason, result.stderr)
+        self.assertNotIn("implemented", self.github.labels(CHILD))
+        pull = self.github.pull_request()
+        self.assertTrue(pull is None or pull.is_draft)
+
+
+class LocalGateTests(VerificationTestCase):
+    def test_review_session_and_ci_only_see_a_head_that_passed_local_gates(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_child_run(local_gate_results=("fail", "pass"))
+                review = [ScriptedResult("no_changes")] if mode.review else []
+
+                result = self.start(
+                    mode, ScriptedResult("committed"), ScriptedResult("committed"), *review
+                )
+
+                self.assert_implemented(result)
+                implementation_head, gated_head = self.repository.commits_since(
+                    self.repository.base_sha
+                )
+                self.assertEqual(
+                    self.roles(),
+                    ["implementation", "local gate correction"] + (["review"] if mode.review else []),
+                )
+                self.assertEqual(self.repository.local_gate_heads(), [implementation_head, gated_head])
+                if mode.review:
+                    self.assertIn(f"{self.repository.base_sha}...{gated_head}`", self.sessions.prompts[2])
+                self.assertEqual(self.github.checked_heads, [gated_head])
+
+    def test_local_gate_correction_receives_the_complete_redacted_output(self):
+        self.new_child_run(local_gate_results=("fail", "pass"))
+
+        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+
+        self.assert_implemented(result)
+        prompt = self.sessions.prompts[1]
+        self.assertIn("Repair the failing local gate", prompt)
+        self.assertIn(f"Command: {shlex.join(self.repository.local_gate_command)}", prompt)
+        self.assertIn("Exit code: 1", prompt)
+        self.assertIn("AssertionError: expected local value 42, received 0", prompt)
+        self.assertIn("fixture gate failed:", prompt)
+        self.assertNotIn("local progress 50", prompt)
+        (stdout,), (stderr,) = evidence_files(prompt, "stdout"), evidence_files(prompt, "stderr")
+        self.assertIn("local progress 50", stdout.read_text())
+        self.assertIn("last local log line", stdout.read_text())
+        self.assertIn("[REDACTED]", stderr.read_text())
+        diagnostics = "".join(path.read_text() for path in stderr.parent.iterdir())
+        for secret in GATE_SECRETS:
+            self.assertNotIn(secret, prompt + diagnostics)
+
+
+class CIEvidenceTests(VerificationTestCase):
+    def setUp(self):
+        self.new_child_run(ci=("failure", "success"))
+
+    def test_ci_correction_receives_every_failed_check_and_its_verified_job_log(self):
+        self.new_child_run(
+            ci=("failure", "success"), check_names=(CANONICAL_CHECK, DATABASE_CHECK), job_log_output=CI_LOG
+        )
+
+        result = self.start(
+            loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH), ScriptedResult("committed")
+        )
+
+        self.assert_implemented(result)
+        commits = self.repository.commits_since(self.repository.base_sha)
+        self.assertEqual(self.roles(), ["implementation", "CI correction"])
+        prompt = self.sessions.prompts[1]
+        self.assertIn("Repair the failing CI check", prompt)
+        self.assertIn(f"{CANONICAL_CHECK} concluded failure", prompt)
+        self.assertIn(f"{DATABASE_CHECK} concluded failure", prompt)
+        self.assertIn("Repository check command: quality-gate", prompt)
+        self.assertIn("--job 1001 --log", prompt)
+        self.assertIn("--job 1002 --log", prompt)
+        self.assertIn("expected 42, received 0", prompt)
+        self.assertEqual(self.github.job_log_requests, ["1001", "1002"])
+        logs = evidence_files(prompt, "stdout")
+        self.assertEqual(len(logs), 2)
+        for log in logs:
+            self.assertIn("last CI log line", log.read_text())
+            self.assertNotIn("ci-secret", log.read_text())
+        self.assertNotIn("ci-secret", prompt)
+        self.assertEqual(
+            [(evidence["head_sha"], evidence["logs_available"]) for evidence in self.repository.ci_evidence()],
+            [(commits[0], True)] * 2,
+        )
+        self.assertEqual(self.github.checked_heads, commits)
+
+    def test_expired_job_logs_leave_explicit_evidence_and_a_job_reference(self):
+        self.new_child_run(ci=("failure", "success"), job_log_error="Job logs have expired")
+
+        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+
+        self.assert_implemented(result)
+        prompt = self.sessions.prompts[1]
+        self.assertIn("CI logs unavailable. Unable to download job logs.", prompt)
+        self.assertIn("Job logs have expired", prompt)
+        self.assertIn(f"Job URL: https://github.com/{self.github.repository}/actions/runs/777/job/1001", prompt)
+        (evidence,) = self.repository.ci_evidence()
+        self.assertFalse(evidence["logs_available"])
+        self.assertEqual(evidence["log_error"], "Unable to download job logs.")
+
+    def test_job_from_another_commit_is_never_used_as_evidence(self):
+        self.github.job_head_sha = self.repository.base_sha
+
+        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+
+        self.assert_implemented(result)
+        prompt = self.sessions.prompts[1]
+        self.assertIn("Job metadata does not match the failed commit and check", prompt)
+        self.assertNotIn("last CI log line", prompt)
+        self.assertEqual(self.github.job_log_requests, [])
+
+    def test_check_without_an_actions_url_keeps_its_annotations(self):
+        annotation = "A test assertion failed; logs have no job URL."
+        self.new_child_run(
+            ci=({CANONICAL_CHECK: {"conclusion": "failure", "details_url": ""}}, "success"),
+            check_annotation=annotation,
+        )
+
+        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+
+        self.assert_implemented(result)
+        prompt = self.sessions.prompts[1]
+        self.assertIn("Job URL: unavailable", prompt)
+        self.assertIn("CI logs unavailable. Actions job URL is unavailable", prompt)
+        self.assertIn(annotation, prompt)
+        self.assertEqual(self.github.job_log_requests, [])
+
+    def test_stale_ci_evidence_never_authorises_implemented(self):
+        self.github.ci = [{CANONICAL_CHECK: {"conclusion": "success", "head_sha": self.repository.base_sha}}]
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_not_implemented(result, "infrastructure retries exhausted")
+        self.assertIn(
+            f"no required current-SHA check evidence is available for: {CANONICAL_CHECK}", result.stderr
+        )
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.assertEqual(self.roles(), ["implementation"])
+
+    def test_branch_advancing_after_ci_never_authorises_implemented(self):
+        self.github.ci = ["success"]
+
+        def advance_the_branch(number, body):
+            if number == CHILD:
+                self.github.after_comment = None
+                self.commit_file("advance.txt", "Advance after CI")
+
+        self.github.after_comment = advance_the_branch
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_not_implemented(result, "branch advanced after canonical CI")
+
+    def test_no_changes_still_requires_ci_before_completion(self):
+        result = self.start(loop.MODE, ScriptedResult("no_changes"), ScriptedResult("committed"))
+
+        self.assert_implemented(result)
+        self.assertEqual(self.roles(), ["implementation", "CI correction"])
+        (correction,) = self.repository.commits_since(self.repository.base_sha)
+        self.assertEqual(self.github.checked_heads, [self.repository.base_sha, correction])
+
+    def test_ci_waits_the_default_poll_interval_for_github_actions(self):
+        self.new_child_run()
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop("RALPH_CI_POLL_SECONDS", None)
+            result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_implemented(result)
+        self.assertEqual(result.sleeps, [45.0])
+        self.assertIn("Waiting 45 seconds for GitHub Actions to start.", result.stdout)
+
+
+class ConditionalCITests(VerificationTestCase):
+    def setUp(self):
+        self.new_child_run(check_names=(CANONICAL_CHECK, DATABASE_CHECK))
+
+    def test_persistence_change_completes_with_a_green_database_check_for_its_head(self):
+        result = self.start(loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH))
+
+        self.assert_implemented(result)
+        self.assertEqual(self.roles(), ["implementation"])
+
+    def test_persistence_change_corrects_a_failed_or_skipped_database_check(self):
+        for conclusion in ("failure", "skipped"):
+            with self.subTest(conclusion):
+                self.new_child_run(
+                    ci=({CANONICAL_CHECK: "success", DATABASE_CHECK: conclusion}, "success"),
+                    check_names=(CANONICAL_CHECK, DATABASE_CHECK),
+                )
+
+                result = self.start(
+                    loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH), ScriptedResult("committed")
+                )
+
+                self.assert_implemented(result)
+                self.assertEqual(self.roles(), ["implementation", "CI correction"])
+                self.assertIn(f"{DATABASE_CHECK} concluded {conclusion}", self.sessions.prompts[1])
+                self.assertNotIn(f"{CANONICAL_CHECK} concluded", self.sessions.prompts[1])
+
+    def test_persistence_change_without_green_database_evidence_for_its_head_stops(self):
+        missing = f"no required current-SHA check evidence is available for: {DATABASE_CHECK}"
+        for name, database_check, reason in (
+            ("cancelled", {DATABASE_CHECK: "cancelled"}, f"{DATABASE_CHECK} concluded cancelled"),
+            (
+                "from another commit",
+                {DATABASE_CHECK: {"conclusion": "success", "head_sha": OTHER_COMMIT}},
+                missing,
+            ),
+            ("not reported", {}, missing),
+        ):
+            with self.subTest(name):
+                self.new_child_run(ci=({CANONICAL_CHECK: "success", **database_check},))
+
+                result = self.start(loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH))
+
+                self.assert_not_implemented(result, "infrastructure retries exhausted")
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(self.roles(), ["implementation"])
+
+    def test_frontend_only_change_does_not_require_the_database_check(self):
+        self.github.ci = [{CANONICAL_CHECK: "success", DATABASE_CHECK: "failure"}]
+
+        result = self.start(loop.MODE, ScriptedResult("committed", path=FRONTEND_PATH))
+
+        self.assert_implemented(result)
+        self.assertEqual(self.roles(), ["implementation"])
+
+
+class VerificationConfigurationTests(VerificationTestCase):
+    def test_local_only_run_publishes_with_local_evidence_without_querying_ci(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_child_run(ci_checks=False)
+
+                evidence = self.assert_implemented(self.start(mode, *passing_child_results(mode)))
+
+                head = self.repository.head()
+                self.assertEqual(self.github.checked_heads, [])
+                self.assertEqual(self.repository.local_gate_heads()[-1], head)
+                self.assertEqual(self.repository.pushed_head(), head)
+                self.assertIn(f"`{head}`; remote CI was not required.", evidence)
+                self.assertNotIn("CI are green", evidence)
+
+    def test_ci_runs_and_corrects_failures_with_local_gates_disabled(self):
+        self.new_child_run(local_checks=False, ci=("failure", "success"))
+
+        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+
+        evidence = self.assert_implemented(result)
+        self.assertEqual(self.roles(), ["implementation", "CI correction"])
+        self.assertIn("Local quality gates are disabled by Ralph configuration.", result.stdout)
+        self.assertEqual(self.repository.local_gate_heads(), [])
+        commits = self.repository.commits_since(self.repository.base_sha)
+        self.assertEqual(self.github.checked_heads, commits)
+        self.assertIn(
+            f"Canonical CI is green for exact head `{commits[-1]}`; local gates were explicitly disabled.",
+            evidence,
+        )
+
+    def test_run_without_automated_verification_warns_and_publishes_unverified_evidence(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                # No quality policy is installed, so loading it would stop the run.
+                self.new_child_run(local_checks=False, ci_checks=False)
+
+                result = self.start(mode, *passing_child_results(mode))
+
+                evidence = self.assert_implemented(result)
+                self.assertIn(mode.unverified_warning, result.stdout)
+                self.assertEqual(self.github.checked_heads, [])
+                self.assertEqual(self.repository.local_gate_heads(), [])
+                self.assertEqual(self.repository.pushed_head(), self.repository.head())
+                self.assertIn("automated local gates and remote CI were explicitly disabled", evidence)
+                self.assertNotIn("are green", evidence)
+
+
+class HandoffRedactionTests(VerificationTestCase):
+    def test_handoff_comments_keep_the_last_diagnostic_redacted(self):
+        corrections = [ScriptedResult("committed")] * 4
+        for name, run_options, shown, secrets in (
+            ("local gate", {"local_gate_results": ("fail",)}, "fixture gate failed:", GATE_SECRETS),
+            ("CI", {"ci": ("failure",), "job_log_output": CI_LOG}, "token=[REDACTED]", ("ci-secret",)),
+        ):
+            with self.subTest(name):
+                self.new_child_run(**run_options)
+
+                result = self.start(loop.MODE, *corrections)
+
+                self.assert_not_implemented(result, "correction limit of 3 exhausted")
+                handoff = self.github.comments(CHILD)[-1]
+                self.assertIn("Last diagnostic:", handoff)
+                self.assertIn(shown, handoff)
+                self.assertIn("[REDACTED]", handoff)
+                for secret in secrets:
+                    self.assertNotIn(secret, handoff)
 
 
 if __name__ == "__main__":
