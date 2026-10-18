@@ -537,6 +537,7 @@ class ScriptedEngine:
         return [call.engine for call in self.calls]
 
     def run(self, repository_root, arguments):
+        assert pathlib.Path(repository_root) == self.repository.path.resolve(), repository_root
         call = EngineCall(arguments[0], list(arguments))
         if not self.script:
             raise AssertionError(f"unscripted {call.engine} session: {call.prompt[:80]!r}")

@@ -853,7 +853,6 @@ class AgentSessionTestCase(VerificationTestCase):
 
     def start_engine(self, mode, *results):
         self.engine = ScriptedEngine(self.repository, *results)
-        self.sessions = self.engine
         return start_run(mode, self.repository, self.github, self.engine, PARENT)
 
     def session_file(self, index, name):
@@ -1071,11 +1070,11 @@ class HumanReviewEvidenceTests(AgentSessionTestCase):
 
 class SessionSummaryTests(AgentSessionTestCase):
     def test_long_and_multi_sentence_summaries_do_not_stop_a_verified_run(self):
+        multi_sentence = "One sentence. Two sentences. Three sentences."
         for name, summary, recorded in (
-            ("multi-sentence", "One sentence. Two sentences. Three sentences.", None),
+            ("multi-sentence", multi_sentence, multi_sentence),
             ("long", "x" * 501, loop_core.LONG_AGENT_SUMMARY),
         ):
-            recorded = recorded or summary
             with self.subTest(name):
                 self.new_child_run()
 
@@ -1157,6 +1156,8 @@ class EngineSelectionTests(AgentSessionTestCase):
         correction = self.engine.calls[1]
         self.assertEqual(correction.option("--model"), "gpt-5.6-terra")
         self.assertIn('model_reasoning_effort="medium"', correction.arguments)
+        self.assertIn("Use an empty findings array for committed or no_changes.", correction.prompt)
+        self.assertNotIn("$implement", correction.prompt)
 
     def test_configuration_without_an_engine_still_uses_codex(self):
         self.new_child_run(engines=dict.fromkeys(("implementation", "review", "correction")))
