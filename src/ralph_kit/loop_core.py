@@ -498,7 +498,7 @@ def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
         error,
         (
             ChildHandedToHumanReview,
-            ChildHeldByAnotherRun,
+            ChildAgentWorkingInAnotherRun,
             ChildLeftAgentWorking,
             DependencyDeadlock,
             NoRunnableChild,
@@ -518,9 +518,9 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
         {int(child["number"]) for child in error.children}
         if isinstance(error, ChildLeftAgentWorking) else set()
     )
-    held_by_another_run = (
+    agent_working_in_another_run = (
         {int(child["number"]) for child in error.children}
-        if isinstance(error, ChildHeldByAnotherRun) else set()
+        if isinstance(error, ChildAgentWorkingInAnotherRun) else set()
     )
     ready_label = configured_label(state, "ready_for_agent")
     rerun = rerun_instruction(state)
@@ -543,7 +543,7 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
                 "If no other run is working on this parent, inspect the branch, relabel "
                 f"#{number} {ready_label}, then {rerun}."
             )
-        elif number in held_by_another_run:
+        elif number in agent_working_in_another_run:
             reason = "agent working in another run on this parent"
             action = (
                 f"Another run is working on #{number}: find and stop the run that should "
@@ -738,7 +738,7 @@ class ChildHandedToHumanReview(RalphError):
 
 
 class ChildLeftAgentWorking(RalphError):
-    """Children are still agent working, left by an earlier run or held by a concurrent one.
+    """Children were agent working at startup, left by an earlier run or held by a concurrent one.
 
     `warning` is the startup warning, for the terminal summary.
     """
@@ -754,7 +754,7 @@ class ChildLeftAgentWorking(RalphError):
         self.warning = warning
 
 
-class ChildHeldByAnotherRun(RalphError):
+class ChildAgentWorkingInAnotherRun(RalphError):
     """Another run on the same parent is working on these children.
 
     A run releases its own child before selecting the next one, so any child
@@ -2207,12 +2207,13 @@ def run_children(
         siblings = state.github.sub_issues(parent_issue)
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
         # Best-effort guard, not a lock: another run can still take a child
-        # between this read and this run's own agent-working write.
-        if held_by_another_run := [
+        # between this read and this run's own agent-working write. It precedes
+        # recovery so that another run's published child is left to that run.
+        if agent_working_in_another_run := [
             child for child in siblings if child_is_agent_working(state, child)
         ]:
-            raise ChildHeldByAnotherRun(
-                held_by_another_run, configured_label(state, "agent_working")
+            raise ChildAgentWorkingInAnotherRun(
+                agent_working_in_another_run, configured_label(state, "agent_working")
             )
         if recover_published_child(state, siblings):
             continue
