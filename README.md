@@ -32,7 +32,12 @@ ralph-kit check                # readiness check (offers to create missing label
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
 ralph-kit run --review 123     # reviewed run: adds an independent review session per child
+ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ```
+
+`--caffeinate` holds an idle-sleep lock for the run: `caffeinate -i` on macOS,
+`systemd-inhibit --what=idle:sleep` on Linux, `SetThreadExecutionState` on Windows.
+Where none is available, the run warns and continues. The display may still turn off.
 
 Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean, dedicated branch (never the base branch).
 

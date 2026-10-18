@@ -9,9 +9,10 @@ import sys
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
+  run [--review] [--caffeinate] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
       Standard run: implement the children of PARENT_ISSUE, with at most RUN_BUDGET agent sessions.
       --review starts a reviewed run, which adds an independent review session per child.
+      --caffeinate keeps the machine from idle-sleeping until the run ends.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
   init [--force]
@@ -60,12 +61,19 @@ def main(argv: list[str] | None = None) -> int:
     command, arguments = argv[0], argv[1:]
     if command == "run":
         review = "--review" in arguments
-        arguments = [argument for argument in arguments if argument != "--review"]
+        caffeinate = "--caffeinate" in arguments
+        arguments = [argument for argument in arguments if argument not in {"--review", "--caffeinate"}]
         if review:
             from . import loop_review as loop
         else:
             from . import loop
-        return loop.run(arguments, prog="ralph-kit run" + (" --review" if review else ""))
+        prog = "ralph-kit run" + (" --review" if review else "")
+        if not caffeinate:
+            return loop.run(arguments, prog=prog)
+        from .keep_awake import keep_awake
+
+        with keep_awake():
+            return loop.run(arguments, prog=prog)
     if command == "check":
         from . import check
 
