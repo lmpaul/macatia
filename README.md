@@ -78,7 +78,36 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   with injected executable lookup and command runner. `tests/test_init.py`
   covers `ralph-kit init` the same way.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
-  and `claude`. It is opt-in and not written yet (#15).
+  and `claude`: `tests/test_live.py`, skipped unless `RALPH_LIVE=1` (see below).
+
+### Live suite
+
+Run it before a release and after upgrading `gh`, `codex` or `claude`. It needs
+an authenticated `gh` and engine CLIs, and spends a few tokens, so it is not part
+of the default suite, local gates or CI:
+
+```sh
+RALPH_LIVE=1 uv run python -m unittest discover -s tests -p test_live.py -v
+```
+
+It makes read-only `gh` calls of each shape a run parses (sub-issues, blockers,
+issue details, check runs) through Ralph's GitHub adapter, against the sub-issues
+of #5 in this repository (`RALPH_LIVE_REPOSITORY` and `RALPH_LIVE_PARENT` select
+another parent with sub-issues and blockers). It then starts one Claude Code and
+one Codex session in a scratch Git repository, with a trivial prompt, Ralph's
+real engine command and output schema, and checks that Ralph's result parsing
+accepts the result. A failed session reports the engine's exit code, stderr and
+stdout. `RALPH_LIVE_CLAUDE_MODEL` (default `haiku`) and `RALPH_LIVE_CODEX_MODEL`
+(default `gpt-5.6-luna`) select the models.
+
+To refresh the recorded engine outputs in `tests/fixtures/engines/` (after an
+engine upgrade), add `RALPH_LIVE_REFRESH=1`. Each passing session replaces its
+engine's output and records the CLI version, model and date in `recorded.json`;
+then run the default suite and commit the changed fixtures:
+
+```sh
+RALPH_LIVE=1 RALPH_LIVE_REFRESH=1 uv run python -m unittest discover -s tests -p test_live.py -v
+```
 
 ## The loop: `run` and `run --review`
 

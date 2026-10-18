@@ -14,6 +14,7 @@ KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ENGINE_FIXTURES = KIT_ROOT / "tests" / "fixtures" / "engines"
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
+from live_support import FORBIDDEN_FIXTURE_MARKERS
 from ralph_kit.agent import agent_command, session_prompt, write_agent_result
 from ralph_kit.config import AgentProfile
 from ralph_kit.loop_core import OUTCOME_SCHEMA_PATH, RalphError, parse_agent_result
@@ -47,7 +48,7 @@ class RecordedFixtureTests(unittest.TestCase):
     def test_fixtures_hold_no_machine_paths_or_credentials(self):
         recorded = (ENGINE_FIXTURES / "recorded.json").read_text(encoding="utf-8")
         for text in (CLAUDE_STDOUT, CODEX_RESULT, recorded):
-            for marker in ("/Users/", "/home/", "/tmp/", "/var/", "/private/", "sk-", "ghp_", "Bearer"):
+            for marker in FORBIDDEN_FIXTURE_MARKERS:
                 self.assertNotIn(marker, text)
 
 
