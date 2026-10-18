@@ -365,6 +365,28 @@ class ParentCompletionTests(RunLevelTestCase):
                 )
 
 
+class RepeatedRunTests(RunLevelTestCase):
+    def test_second_run_in_the_same_process_does_not_share_the_first_runs_state(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        first = self.start(loop.MODE, ScriptedResult("committed"))
+        self.assert_completed(first, sessions=1)
+
+        second = self.start(loop.MODE)
+
+        self.assert_completed(second, sessions=0)
+        self.assertEqual(self.sessions.requests, [])
+        first_summary, second_summary = (
+            comment for comment in self.github.comments(PARENT)
+            if loop.MODE.terminal_summary_marker in comment
+        )
+        self.assertIn("implemented children this run: 1;", first_summary)
+        self.assertIn("agent_sessions: 1;", first_summary)
+        self.assertIn("implemented children this run: 0;", second_summary)
+        self.assertIn("agent_sessions: 0;", second_summary)
+        runs = list((self.repository.path / ".ralph" / "diagnostics").glob("*/run.json"))
+        self.assertEqual(len(runs), 2)
+
+
 class StartupRejectionTestCase(RunLevelTestCase):
     """One ready child under the parent; each test breaks one startup condition."""
 
@@ -1257,6 +1279,26 @@ class NonZeroExitTests(AgentSessionTestCase):
                     result, "implementation exited non-zero without a committed outcome"
                 )
                 self.assertEqual(len(self.engine.calls), 1)
+
+
+    def test_claude_code_failure_without_a_result_reports_its_exit_code_and_stderr(self):
+        self.new_child_run(engines={"implementation": "claude"})
+
+        result = self.start_engine(
+            loop.MODE,
+            EngineResult(
+                returncode=1,
+                commit=False,
+                writes_result=False,
+                stdout="",
+                stderr="Error: --json-schema is not a valid JSON Schema\n",
+            ),
+        )
+
+        self.assert_stopped_without_publishing(
+            result, "Claude Code exited with code 1: Error: --json-schema is not a valid JSON Schema"
+        )
+        self.assertEqual(self.engine.engines(), ["claude"])
 
 
 class HumanReviewEvidenceTests(AgentSessionTestCase):

@@ -3,7 +3,6 @@
 import contextlib
 import io
 import json
-import os
 import pathlib
 import shutil
 import sys
@@ -17,7 +16,7 @@ SOURCE_DIRECTORY = KIT_ROOT / "src"
 FIXTURES = KIT_ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(SOURCE_DIRECTORY))
 
-from ralph_kit import check
+from ralph_kit import check, cli
 
 
 # Excerpts in the layout of the real help pages, so the tests need no engine installed.
@@ -305,13 +304,16 @@ class ReadinessTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         for review in ([], ["--review"]):
             with self.subTest(review=review):
-                result = subprocess.run(
-                    [sys.executable, "-m", "ralph_kit", "run", *review, "1"],
-                    cwd=self.root, capture_output=True, text=True,
-                    env=os.environ | {"PYTHONPATH": str(SOURCE_DIRECTORY)},
-                )
-                self.assertEqual(result.returncode, 1)
-                self.assertIn("ralph.toml not found: run `ralph-kit init` first", result.stderr)
+                stderr = io.StringIO()
+                with (
+                    contextlib.chdir(self.root),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(stderr),
+                    mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
+                ):
+                    code = cli.main(["run", *review, "1"])
+                self.assertEqual(code, 1)
+                self.assertIn("ralph.toml not found: run `ralph-kit init` first", stderr.getvalue())
 
     def test_missing_gh_skips_github_checks(self):
         code, output = self.run_check(missing="gh")

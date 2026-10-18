@@ -502,7 +502,7 @@ class EngineResult:
     file. `structured` replaces the reported result object, and with
     `writes_result` false the engine reports no result at all. Claude Code
     prints `stdout` instead of its result envelope when given, and flags the
-    envelope as an error with `is_error`.
+    envelope as an error with `is_error`. Either engine writes `stderr`.
     """
 
     outcome: str = "committed"
@@ -515,6 +515,7 @@ class EngineResult:
     writes_result: bool = True
     stdout: str | None = None
     is_error: bool = False
+    stderr: str = ""
 
 
 @dataclass(frozen=True)
@@ -578,7 +579,7 @@ class ScriptedEngine:
             if session.writes_result:
                 envelope["structured_output"] = result
             stdout = session.stdout if session.stdout is not None else json.dumps(envelope)
-        return subprocess.CompletedProcess(arguments, session.returncode, stdout, "")
+        return subprocess.CompletedProcess(arguments, session.returncode, stdout, session.stderr)
 
 
 @dataclass(frozen=True)

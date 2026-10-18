@@ -60,11 +60,25 @@ uv tool install -e .                          # `ralph-kit` now runs this checko
 uv run python -m unittest discover -s tests   # offline tests (~1 min), with dependencies
 ```
 
-Tests use temporary Git repositories and fake GitHub/Codex/Claude commands; they
-do not launch real agents or mutate remote issues. Run-level tests in
-`tests/test_run.py` start a whole run in memory through injected run adapters
-(`tests/run_support.py`: a GitHub fake and scripted sessions or engine
-processes over real Git).
+The default suite is offline: it never starts `ralph-kit run` as a subprocess,
+launches a real agent, or calls GitHub. Each rule is tested at one level:
+
+- **Child cycle rules** (correction limit, review session order, handoff on
+  missing commits, budget checks inside a cycle): `tests/test_child_cycle.py`,
+  in memory through the child cycle adapters.
+- **Run rules** (child selection, blockers, deadlock, recovery, publication,
+  parent completion, infrastructure retries, startup and trust):
+  `tests/test_run.py`, a whole run in memory through injected run adapters.
+  `tests/run_support.py` provides a GitHub fake, scripted sessions or engine
+  processes, and a real temporary Git repository with a bare `origin`.
+- **Engine translation** (the CLI command built for each session, and the
+  parsing of each engine's final result): `tests/test_agent.py`, pure functions
+  against outputs recorded from the real CLIs in `tests/fixtures/engines/`.
+- **Readiness check** (including the engine flag check): `tests/test_check.py`,
+  with injected executable lookup and command runner. `tests/test_init.py`
+  covers `ralph-kit init` the same way.
+- **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
+  and `claude`. It is opt-in and not written yet (#15).
 
 ## The loop: `run` and `run --review`
 
