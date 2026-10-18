@@ -16,7 +16,7 @@ from types import SimpleNamespace
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from live_support import (
-    FIXTURE_PROMPT,
+    FIXTURE_RESULT,
     KIT_ROOT,
     cli_version,
     record_engine_fixture,
@@ -38,8 +38,7 @@ SKIP_REASON = (
     "live suite against real gh, codex and claude; set RALPH_LIVE=1 to run it "
     "(spends tokens, see 'Live suite' in the README)"
 )
-# A parent with sub-issues and blockers that stay in place after they close.
-REPOSITORY = os.environ.get("RALPH_LIVE_REPOSITORY", "lmpaul/ralph-kit")
+# A parent issue of this repository whose children and blockers stay in place after they close.
 PARENT = int(os.environ.get("RALPH_LIVE_PARENT", "5"))
 CLAUDE_MODEL = os.environ.get("RALPH_LIVE_CLAUDE_MODEL", "haiku")
 CODEX_MODEL = os.environ.get("RALPH_LIVE_CODEX_MODEL", "gpt-5.6-luna")
@@ -52,7 +51,9 @@ class LiveGitHubTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        cls.github = GitHub(KIT_ROOT, REPOSITORY)
+        # A run resolves its repository the same way, from the checkout it runs in.
+        cls.repository = GitHub(KIT_ROOT, "unresolved").repository_name()
+        cls.github = GitHub(KIT_ROOT, cls.repository)
         # The run's parsing helpers only reach GitHub through `state.github`.
         cls.state = SimpleNamespace(github=cls.github)
 
@@ -62,10 +63,13 @@ class LiveGitHubTests(unittest.TestCase):
         self.assertIsInstance(issue["labels"], list)
         self.assertTrue(all(isinstance(name, str) for name in labels(issue)))
 
-    def test_sub_issues_list_each_child_with_its_number_state_and_labels(self):
+    def test_repository_name_is_the_owner_and_name_of_the_checkout(self):
+        self.assertRegex(self.repository, r"^[\w.-]+/[\w.-]+$")
+
+    def test_children_list_each_child_with_its_number_state_and_labels(self):
         children = self.github.sub_issues(PARENT)
 
-        self.assertTrue(children, f"#{PARENT} has no sub-issues in {REPOSITORY}")
+        self.assertTrue(children, f"parent issue #{PARENT} has no children in {self.repository}")
         for child in children:
             self.assert_issue_summary(child)
 
@@ -76,7 +80,7 @@ class LiveGitHubTests(unittest.TestCase):
             for blocker in self.github.blockers(child["number"])
         ]
 
-        self.assertTrue(blockers, f"no sub-issue of #{PARENT} has a blocker in {REPOSITORY}")
+        self.assertTrue(blockers, f"no child of parent issue #{PARENT} has a blocker in {self.repository}")
         for blocker in blockers:
             self.assert_issue_summary(blocker)
 
@@ -96,20 +100,20 @@ class LiveGitHubTests(unittest.TestCase):
 
     def test_check_runs_for_the_default_branch_head_pass_ralph_ci_classification(self):
         head = subprocess.run(
-            ["gh", "api", f"repos/{REPOSITORY}/commits/HEAD", "--jq", ".sha"],
+            ["gh", "api", f"repos/{self.repository}/commits/HEAD", "--jq", ".sha"],
             check=True, text=True, capture_output=True,
         ).stdout.strip()
 
         runs = check_runs_for_head(self.state, head)
 
-        self.assertTrue(runs, f"{REPOSITORY}@{head} has no check runs")
+        self.assertTrue(runs, f"{self.repository}@{head} has no check runs")
         for run in runs:
             self.assertEqual(run["head_sha"], head)
             self.assertIsInstance(run["id"], int)
             self.assertIsInstance(run["name"], str)
             self.assertIn("conclusion", run)
         passed = {run["name"]: "required" for run in runs if run["conclusion"] == "success"}
-        self.assertTrue(passed, f"{REPOSITORY}@{head} has no successful check run")
+        self.assertTrue(passed, f"{self.repository}@{head} has no successful check run")
         self.assertIsNone(classify_ci_failure(head, runs, passed))
 
 
@@ -120,16 +124,14 @@ class LiveEngineTests(unittest.TestCase):
     With RALPH_LIVE_REFRESH=1, each session also replaces that engine's recorded fixture.
     """
 
-    expected = {"outcome": "no_changes", "summary": "Fixture session: nothing to do.", "findings": []}
-
     def run_engine_session(self, engine, model):
         with tempfile.TemporaryDirectory(prefix="ralph-live-repository-") as directory:
             repository = scratch_repository(directory)
-            session = run_live_session(engine, model, REASONING_EFFORT, repository, prompt=FIXTURE_PROMPT)
+            session = run_live_session(engine, model, REASONING_EFFORT, repository)
             status = subprocess.run(
                 ["git", "status", "--porcelain"], cwd=repository, check=True, text=True, capture_output=True
             ).stdout
-        self.assertEqual(session.result, self.expected)
+        self.assertEqual(session.result, FIXTURE_RESULT)
         self.assertEqual(status, "", f"{engine} changed the scratch repository")
         if REFRESH:
             record_engine_fixture(

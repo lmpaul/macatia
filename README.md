@@ -90,20 +90,22 @@ of the default suite, local gates or CI:
 RALPH_LIVE=1 uv run python -m unittest discover -s tests -p test_live.py -v
 ```
 
-It makes read-only `gh` calls of each shape a run parses (sub-issues, blockers,
-issue details, check runs) through Ralph's GitHub adapter, against the sub-issues
-of #5 in this repository (`RALPH_LIVE_REPOSITORY` and `RALPH_LIVE_PARENT` select
-another parent with sub-issues and blockers). It then starts one Claude Code and
-one Codex session in a scratch Git repository, with a trivial prompt, Ralph's
-real engine command and output schema, and checks that Ralph's result parsing
-accepts the result. A failed session reports the engine's exit code, stderr and
-stdout. `RALPH_LIVE_CLAUDE_MODEL` (default `haiku`) and `RALPH_LIVE_CODEX_MODEL`
-(default `gpt-5.6-luna`) select the models.
+It makes read-only `gh` calls of each shape a run parses (repository, children,
+blockers, issue details, check runs) through Ralph's GitHub adapter, against the
+children of parent issue #5 in this repository (`RALPH_LIVE_PARENT` selects another
+parent issue with children and blockers) and the check runs of its default branch
+head. It then starts one Claude Code and one Codex session in a scratch Git
+repository, with a trivial prompt, Ralph's real engine command and output schema,
+and checks that Ralph's result parsing accepts the result. A failed session
+reports the engine's exit code, stderr and stdout. `RALPH_LIVE_CLAUDE_MODEL`
+(default `haiku`) and `RALPH_LIVE_CODEX_MODEL` (default `gpt-5.6-luna`) select the
+models. Without `RALPH_LIVE=1` its tests are skipped; `-v` shows the skip reason.
 
 To refresh the recorded engine outputs in `tests/fixtures/engines/` (after an
 engine upgrade), add `RALPH_LIVE_REFRESH=1`. Each passing session replaces its
 engine's output and records the CLI version, model and date in `recorded.json`;
-then run the default suite and commit the changed fixtures:
+commit the changed fixtures only when the whole live suite and the default suite
+pass:
 
 ```sh
 RALPH_LIVE=1 RALPH_LIVE_REFRESH=1 uv run python -m unittest discover -s tests -p test_live.py -v

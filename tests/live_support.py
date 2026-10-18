@@ -18,6 +18,7 @@ ENGINE_FIXTURES = KIT_ROOT / "tests" / "fixtures" / "engines"
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
 from ralph_kit.agent import agent_command, session_prompt, write_agent_result  # noqa: E402
+from ralph_kit.check import AGENT_CLIS  # noqa: E402
 from ralph_kit.commands import RalphError  # noqa: E402
 from ralph_kit.config import AgentProfile  # noqa: E402
 from ralph_kit.loop_core import OUTCOME_SCHEMA_PATH, RunAdapters, parse_agent_result  # noqa: E402
@@ -28,7 +29,7 @@ FIXTURE_PROMPT = (
     "Do not read or change any file and do not run any command. Reply only with the "
     'structured result: outcome "no_changes", summary "Fixture session: nothing to do.", findings [].'
 )
-ENGINE_LABELS = {"claude": "Claude Code", "codex": "Codex"}
+FIXTURE_RESULT = {"outcome": "no_changes", "summary": "Fixture session: nothing to do.", "findings": []}
 # Recorded outputs are committed, so they must not leak a machine or a credential.
 FORBIDDEN_FIXTURE_MARKERS = (
     "/Users/", "/home/", "/tmp/", "/var/", "/private/", "sk-", "ghp_", "Bearer",
@@ -47,21 +48,18 @@ class LiveSession:
     raw_output: str
 
 
-def run_live_session(
-    engine, model, reasoning_effort, repository_root, *,
-    prompt=FIXTURE_PROMPT, runner=RunAdapters.run_engine,
-):
+def run_live_session(engine, model, reasoning_effort, repository_root, *, runner=RunAdapters.run_engine):
     """Run one session exactly as a run does: `agent_command`, then Ralph's result parsing."""
-    profile = AgentProfile(model, model, reasoning_effort, engine)
+    profile = AgentProfile(name=model, display_name=model, reasoning_effort=reasoning_effort, engine=engine)
     with tempfile.TemporaryDirectory(prefix="ralph-live-") as directory:
         output_path = pathlib.Path(directory) / "result.json"
         arguments = agent_command(
-            profile, session_prompt(engine, prompt), repository_root, OUTCOME_SCHEMA_PATH, output_path
+            profile, session_prompt(engine, FIXTURE_PROMPT), repository_root, OUTCOME_SCHEMA_PATH, output_path
         )
         completed = runner(repository_root, arguments)
+        if completed.returncode != 0:
+            raise LiveSessionFailed(failure_report(engine, completed, "no result accepted from a failed process"))
         try:
-            if completed.returncode != 0:
-                raise RalphError("no result accepted from a failed process")
             write_agent_result(engine, completed.stdout, output_path)
             result = parse_agent_result(output_path)
         except (ValueError, RalphError) as error:
@@ -73,7 +71,7 @@ def run_live_session(
 def failure_report(engine, completed, error):
     stdout = sanitized_text(completed.stdout or "")[-MAX_REPORTED_STDOUT:]
     return (
-        f"{ENGINE_LABELS[engine]} exited with code {completed.returncode}: {error}\n"
+        f"{AGENT_CLIS[engine]} exited with code {completed.returncode}: {error}\n"
         f"stderr:\n{sanitized_text(completed.stderr or '').strip() or '(empty)'}\n"
         f"stdout (last {MAX_REPORTED_STDOUT} characters):\n{stdout.strip() or '(empty)'}"
     )
@@ -102,7 +100,7 @@ def record_engine_fixture(engine, session, *, model, reasoning_effort, version):
     for marker in FORBIDDEN_FIXTURE_MARKERS:
         if marker in session.raw_output:
             raise LiveSessionFailed(
-                f"{ENGINE_LABELS[engine]} output contains {marker!r}; not recorded as a fixture"
+                f"{AGENT_CLIS[engine]} output contains {marker!r}; not recorded as a fixture"
             )
     recorded_path = ENGINE_FIXTURES / "recorded.json"
     recorded = json.loads(recorded_path.read_text(encoding="utf-8"))
