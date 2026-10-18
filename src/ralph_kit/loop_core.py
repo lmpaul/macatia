@@ -35,7 +35,13 @@ from .child_cycle import (
     run_child_cycle,
 )
 from .commands import RalphError, command as run_command
-from .config import AgentProfile, RalphConfig, RalphConfigError, load_config
+from .config import (
+    DIAGNOSTICS_DIRECTORY,
+    AgentProfile,
+    RalphConfig,
+    RalphConfigError,
+    load_config,
+)
 from .github import GitHub
 from .sanitize import (
     format_findings,
@@ -117,7 +123,14 @@ class DiagnosticRecorder:
     def __init__(self, repository_root: pathlib.Path, loop_label: str):
         self.run_id = uuid.uuid4().hex
         self.repository_root = repository_root
-        self.directory = repository_root / ".ralph" / "diagnostics" / self.run_id
+        diagnostics_root = repository_root / DIAGNOSTICS_DIRECTORY
+        diagnostics_root.mkdir(exist_ok=True)
+        # Ignore the whole directory before writing anything else in it, whatever
+        # the repository's own ignore rules say; a maintainer's file is kept.
+        self_ignore = diagnostics_root / ".gitignore"
+        if not self_ignore.exists():
+            self_ignore.write_text("*\n", encoding="utf-8")
+        self.directory = diagnostics_root / "diagnostics" / self.run_id
         self.sessions_directory = self.directory / "sessions"
         self.sessions_directory.mkdir(parents=True)
         self.sequence = 0

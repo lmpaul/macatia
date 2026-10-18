@@ -2,7 +2,9 @@
 
 import io
 import json
+import os
 import pathlib
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -20,6 +22,7 @@ class InitTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = pathlib.Path(directory.name).resolve()
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True, env=self.git_environment())
         self.responses = {
             ("git", "rev-parse", "--show-toplevel"): str(self.root),
             ("gh", "auth", "status"): "",
@@ -41,7 +44,15 @@ class InitTests(unittest.TestCase):
         self.tools = {"git", "gh"}
         self.output = io.StringIO()
 
+    @staticmethod
+    def git_environment():
+        """Real Git for ignore rules, without the developer's own global excludes."""
+        return os.environ | {"GIT_CONFIG_GLOBAL": os.devnull, "GIT_CONFIG_NOSYSTEM": "1"}
+
     def command(self, *args):
+        if args[:2] == ("git", "check-ignore"):
+            completed = subprocess.run(args, cwd=self.root, capture_output=True, text=True, env=self.git_environment())
+            return completed.stdout.strip() if completed.returncode == 0 else None
         return self.responses.get(args)
 
     def run_init(self, answers=None, force=False):
@@ -58,6 +69,10 @@ class InitTests(unittest.TestCase):
         prompter = init.Prompter(interactive=answers is not None, read=read, output=self.output)
         path = init.run(self.root, prompter, force=force, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
         return load_config(path, self.root)
+
+    def gitignore(self):
+        path = self.root / ".gitignore"
+        return path.read_bytes().decode() if path.exists() else None
 
     def test_detected_values_are_not_asked(self):
         # Only the engine, two models and two efforts are asked; Enter keeps every default.
@@ -228,6 +243,55 @@ class InitTests(unittest.TestCase):
         with self.assertRaisesRegex(init.InitError, "root of a Git repository"):
             self.run_init(answers=[])
         self.assertFalse((self.root / "ralph.toml").exists())
+
+    def test_missing_gitignore_is_created_with_the_diagnostics_entry(self):
+        self.run_init(answers=[""] * 5)
+        self.assertEqual(self.gitignore(), ".ralph/\n")
+        self.assertIn("Next step: commit ralph.toml and .gitignore, then run `ralph-kit check`.", self.output.getvalue())
+
+    def test_entry_is_appended_keeping_content_and_line_endings(self):
+        for existing, expected in (
+            ("dist/\n", "dist/\n.ralph/\n"),
+            ("dist/", "dist/\n.ralph/\n"),
+            ("dist/\r\nbuild/", "dist/\r\nbuild/\r\n.ralph/\r\n"),
+        ):
+            with self.subTest(existing=existing):
+                (self.root / ".gitignore").write_bytes(existing.encode())
+                self.run_init(answers=[""] * 5, force=True)
+                self.assertEqual(self.gitignore(), expected)
+                self.assertIn("Added .ralph/ to .gitignore", self.output.getvalue())
+
+    def test_gitignore_is_unchanged_when_git_already_ignores_diagnostics(self):
+        for path, rules in (
+            (".gitignore", "/.ralph\n"),
+            (".gitignore", ".r*/**\n"),
+            (".git/info/exclude", ".ralph/\n"),
+        ):
+            with self.subTest(path=path, rules=rules):
+                self.output = io.StringIO()
+                (self.root / ".gitignore").unlink(missing_ok=True)
+                (self.root / ".git/info/exclude").write_text("")
+                (self.root / path).write_text(rules)
+                self.run_init(answers=[""] * 5, force=True)
+                self.assertEqual(self.gitignore(), rules if path == ".gitignore" else None)
+                self.assertNotIn("Added .ralph/", self.output.getvalue())
+                self.assertIn("Next step: commit ralph.toml, then run", self.output.getvalue())
+
+    def test_gitignore_is_unchanged_when_nothing_is_written(self):
+        (self.root / ".gitignore").write_text("dist/\n")
+        for name, configuration, tools, error in (
+            ("existing configuration", "keep", {"git", "gh"}, "already exists"),
+            ("interrupted questions", None, {"git", "gh"}, "init cancelled"),
+            ("missing prerequisites", None, {"git"}, "gh not found"),
+        ):
+            with self.subTest(name):
+                (self.root / "ralph.toml").unlink(missing_ok=True)
+                if configuration:
+                    (self.root / "ralph.toml").write_text(configuration)
+                self.tools = tools
+                with self.assertRaisesRegex((init.InitError, init.InitAborted), error):
+                    self.run_init(answers=["1"])
+                self.assertEqual(self.gitignore(), "dist/\n")
 
     def test_interrupted_questions_write_nothing(self):
         with self.assertRaises(init.InitAborted):
