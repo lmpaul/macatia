@@ -86,6 +86,13 @@ class RunRepository:
         assert len(runs) == 1, runs
         return runs[0]
 
+    def local_gate_heads(self):
+        """The head each recorded local gate ran on, in order."""
+        return [
+            json.loads((evidence / "command.json").read_text())["head_sha"]
+            for evidence in sorted((self.diagnostics() / "evidence").glob("*-local-gate"))
+        ]
+
 
 def quality_manifest(local_gate_command):
     return {
@@ -138,7 +145,8 @@ class FakeGitHub:
 
     Issues carry their state, labels, author, and comments; children and
     blockers link them. Every check-runs request answers with the next scripted
-    CI round for the requested head; the last round repeats.
+    CI round for the requested head; the last round repeats. A round is one
+    conclusion for every check, or a mapping from check name to conclusion.
     """
 
     def __init__(
@@ -148,7 +156,7 @@ class FakeGitHub:
         login=TRUSTED_LOGIN,
         ci=("success",),
         check_names=("Canonical CI",),
-        job_log="last CI log line",
+        job_log_output="last CI log line",
     ):
         self.repository = repository
         self.login = login
@@ -158,7 +166,7 @@ class FakeGitHub:
         self.pull_requests = []
         self.ci = list(ci)
         self.check_names = tuple(check_names)
-        self.job_log_text = job_log
+        self.job_log_output = job_log_output
         self.checked_heads = []
         self.revision = 0
 
@@ -264,7 +272,8 @@ class FakeGitHub:
 
     def check_runs(self, head_sha):
         self.checked_heads.append(head_sha)
-        conclusion = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
+        ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
+        conclusions = ci_round if isinstance(ci_round, dict) else dict.fromkeys(self.check_names, ci_round)
         return [
             {
                 "check_runs": [
@@ -273,13 +282,13 @@ class FakeGitHub:
                         "name": name,
                         "head_sha": head_sha,
                         "status": "completed",
-                        "conclusion": conclusion,
+                        "conclusion": conclusions[name],
                         "details_url": (
                             f"https://github.com/{self.repository}/actions/runs/777/job/"
                             f"{1000 + index}"
                         ),
                     }
-                    for index, name in enumerate(self.check_names, start=1)
+                    for index, name in enumerate(conclusions, start=1)
                 ]
             }
         ]
@@ -305,7 +314,7 @@ class FakeGitHub:
     def job_log(self, job_id):
         return self._completed(
             ["gh", "run", "view", "--repo", self.repository, "--job", job_id, "--log"],
-            self.job_log_text,
+            self.job_log_output,
         )
 
     @staticmethod
@@ -314,7 +323,7 @@ class FakeGitHub:
 
 
 @dataclass(frozen=True)
-class Session:
+class ScriptedResult:
     """One scripted agent session result; `commit` defaults to the outcome needing one."""
 
     outcome: str = "committed"

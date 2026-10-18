@@ -11,10 +11,11 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 from ralph_kit import loop, loop_review
 from run_support import (
     BRANCH,
+    TRUSTED_LOGIN,
     FakeGitHub,
     RunRepository,
+    ScriptedResult,
     ScriptedSessions,
-    Session,
     start_run,
 )
 
@@ -34,14 +35,14 @@ class SingleChildHappyPathTests(unittest.TestCase):
             CHILD,
             parent=PARENT,
             blocked_by=[CLOSED_BLOCKER],
-            comments=[{"author": {"login": "lmpaul"}, "body": "Owner requirement context."}],
+            comments=[{"author": {"login": TRUSTED_LOGIN}, "body": "Owner requirement context."}],
         )
 
-    def assert_child_published(self, result, *, commit_count):
+    def assert_child_published(self, result, *, sessions, commit_count):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertIn(
             f"Handled issue #{PARENT}: all 2 children complete; "
-            f"{commit_count} agent sessions and 0 infrastructure retries this run.",
+            f"{sessions} agent sessions and 0 infrastructure retries this run.",
             result.stdout,
         )
         base_sha = self.repository.base_sha
@@ -68,6 +69,7 @@ class SingleChildHappyPathTests(unittest.TestCase):
         self.assertIn(f"cumulative head `{head}`", parent_comments[-2])
         self.assertIn("final outcome: completed.", parent_comments[-1])
 
+        self.assertEqual(self.repository.local_gate_heads(), commits)
         timings = json.loads((self.repository.diagnostics() / "timings.json").read_text())
         self.assertTrue(
             {"local gates", "GitHub Actions wait"} <= {phase["label"] for phase in timings["phases"]}
@@ -75,26 +77,26 @@ class SingleChildHappyPathTests(unittest.TestCase):
         return commits, evidence
 
     def test_standard_run_publishes_the_verified_implementation(self):
-        sessions = ScriptedSessions(self.repository, Session("committed"))
+        sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
 
         result = start_run(loop.MODE, self.repository, self.github, sessions, PARENT)
 
-        commits, evidence = self.assert_child_published(result, commit_count=1)
+        commits, evidence = self.assert_child_published(result, sessions=1, commit_count=1)
         self.assertIn("ralph-experimental-implementation-evidence", evidence)
         self.assertIn("No separate Ralph review session was run.", evidence)
         self.assertIn(f"verified head `{commits[0]}` with no corrections", evidence)
         self.assertIn("<!-- ralph-experimental-parent-completion -->", self.github.comments(PARENT)[-2])
 
-    def test_reviewed_run_publishes_the_reviewed_correction(self):
+    def test_reviewed_run_publishes_the_review_session_fix(self):
         sessions = ScriptedSessions(
             self.repository,
-            Session("committed"),
-            Session("committed", "Reviewed the exact diff and committed one correction."),
+            ScriptedResult("committed"),
+            ScriptedResult("committed", "Reviewed the exact diff and committed one correction."),
         )
 
         result = start_run(loop_review.MODE, self.repository, self.github, sessions, PARENT, 4)
 
-        commits, evidence = self.assert_child_published(result, commit_count=2)
+        commits, evidence = self.assert_child_published(result, sessions=2, commit_count=2)
         self.assertIn("<!-- ralph-implementation-evidence: ", evidence)
         self.assertIn(f"corrective review commits `{commits[0]}..{commits[1]}`", evidence)
         self.assertIn("<!-- ralph-parent-completion -->", self.github.comments(PARENT)[-2])
