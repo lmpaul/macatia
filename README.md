@@ -366,7 +366,8 @@ interruption between two children publishes the same summary. A second
 interruption while Ralph publishes the summary exits immediately, leaving the
 cleanup unfinished. The interrupted child stays `agent-working`, so the next run
 stops on it as described above. `kill -9`, crashes, and power loss are never
-caught: they publish no interrupted summary.
+caught: they publish no interrupted summary. A signal ignored at launch, such as
+SIGHUP under `nohup`, stays ignored.
 
 ## Readiness check
 

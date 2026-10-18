@@ -1202,6 +1202,17 @@ class InterruptedRunTests(VerificationTestCase):
                 self.assertEqual(self.github.comments(CHILD), [])
                 self.assertIs(signal.getsignal(signal_number), handler)
 
+    def test_a_signal_ignored_at_launch_stays_ignored(self):
+        previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        self.addCleanup(signal.signal, signal.SIGHUP, previous)
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
+        self.sessions.before_session = lambda request: os.kill(os.getpid(), signal.SIGHUP)
+
+        result = start_run(loop.MODE, self.repository, self.github, self.sessions, PARENT)
+
+        self.assert_implemented(result)
+        self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+
     def test_interruption_between_two_children_publishes_the_same_summary(self):
         self.github.add_issue(DEPENDENT, parent=PARENT)
 

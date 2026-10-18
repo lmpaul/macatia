@@ -602,10 +602,13 @@ def interruptions_raised():
 
     Python already raises `KeyboardInterrupt` on SIGINT. Either exception ends
     the agent session in flight, whose engine process `subprocess.run` kills.
+    Like Python's SIGINT handling, a signal ignored at launch, such as SIGHUP
+    under `nohup`, stays ignored.
     """
     previous = {
         signal_number: signal.signal(signal_number, raise_interrupted)
         for signal_number in (signal.SIGTERM, signal.SIGHUP)
+        if signal.getsignal(signal_number) is not signal.SIG_IGN
     }
     try:
         yield
