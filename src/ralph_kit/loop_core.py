@@ -598,8 +598,11 @@ def raise_interrupted(signal_number: int, _frame: Any) -> None:
 
 @contextlib.contextmanager
 def interruptions_raised():
-    """Raise `Interrupted` on SIGTERM and SIGHUP while the run lasts, as Python raises
-    `KeyboardInterrupt` on SIGINT, so the agent session in flight ends with its engine process."""
+    """Raise `Interrupted` on SIGTERM and SIGHUP while the run lasts.
+
+    Python already raises `KeyboardInterrupt` on SIGINT. Either exception ends
+    the agent session in flight, whose engine process `subprocess.run` kills.
+    """
     previous = {
         signal_number: signal.signal(signal_number, raise_interrupted)
         for signal_number in (signal.SIGTERM, signal.SIGHUP)
@@ -611,7 +614,8 @@ def interruptions_raised():
             signal.signal(signal_number, handler)
 
 
-def as_interruption(error: BaseException) -> Interrupted:
+def as_interruption(error: KeyboardInterrupt | Interrupted) -> Interrupted:
+    """A `KeyboardInterrupt` is the SIGINT interruption."""
     return error if isinstance(error, Interrupted) else Interrupted(signal.SIGINT)
 
 

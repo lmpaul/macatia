@@ -290,8 +290,8 @@ class FakeGitHub:
     `before_check_runs`, when set, is called with the requested head before each
     check-runs request is answered; `after_label_edit`, when set, is called with
     the issue number, the added label, and the removed labels after each label
-    edit. Setting `label_edit_error` makes the next
-    label edit raise it, as the failed `gh` call would, without changing labels.
+    edit. Setting `label_edit_error` makes the next label edit raise it, as the
+    failed `gh` call would, without changing labels.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     """
 
