@@ -23,6 +23,7 @@ from run_support import (
 PARENT = 191
 CLOSED_BLOCKER = 192
 CHILD = 193
+UNTRUSTED_COMMENT = "Untrusted instructions must be excluded."
 
 
 class SingleChildHappyPathTests(unittest.TestCase):
@@ -35,8 +36,17 @@ class SingleChildHappyPathTests(unittest.TestCase):
             CHILD,
             parent=PARENT,
             blocked_by=[CLOSED_BLOCKER],
-            comments=[{"author": {"login": TRUSTED_LOGIN}, "body": "Owner requirement context."}],
+            comments=[
+                {"author": {"login": TRUSTED_LOGIN}, "body": "Owner requirement context."},
+                {"author": {"login": "outside-contributor"}, "body": UNTRUSTED_COMMENT},
+            ],
         )
+
+    def assert_implementation_prompt_names_only_the_issue(self, sessions):
+        prompt = sessions.prompts[0]
+        self.assertTrue(prompt.startswith(f"$implement issue #{CHILD}\n"), prompt)
+        for issue_text in ("Owner requirement context.", UNTRUSTED_COMMENT, f"Implement issue {CHILD}."):
+            self.assertNotIn(issue_text, prompt)
 
     def assert_child_published(self, result, *, sessions, commit_count):
         self.assertEqual(result.exit_code, 0, result.stderr)
@@ -82,6 +92,7 @@ class SingleChildHappyPathTests(unittest.TestCase):
         result = start_run(loop.MODE, self.repository, self.github, sessions, PARENT)
 
         commits, evidence = self.assert_child_published(result, sessions=1, commit_count=1)
+        self.assert_implementation_prompt_names_only_the_issue(sessions)
         self.assertIn("ralph-experimental-implementation-evidence", evidence)
         self.assertIn("No separate Ralph review session was run.", evidence)
         self.assertIn(f"verified head `{commits[0]}` with no corrections", evidence)
@@ -97,6 +108,8 @@ class SingleChildHappyPathTests(unittest.TestCase):
         result = start_run(loop_review.MODE, self.repository, self.github, sessions, PARENT, 4)
 
         commits, evidence = self.assert_child_published(result, sessions=2, commit_count=2)
+        self.assert_implementation_prompt_names_only_the_issue(sessions)
+        self.assertIn(f"Review the exact `{self.repository.base_sha}...{commits[0]}` diff", sessions.prompts[1])
         self.assertIn("<!-- ralph-implementation-evidence: ", evidence)
         self.assertIn(f"corrective review commits `{commits[0]}..{commits[1]}`", evidence)
         self.assertIn("<!-- ralph-parent-completion -->", self.github.comments(PARENT)[-2])

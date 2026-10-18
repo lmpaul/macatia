@@ -333,18 +333,23 @@ class ScriptedResult:
 
 
 class ScriptedSessions:
-    """Answers each agent session with the next scripted result, committing for real."""
+    """Answers each agent session with the next scripted result, committing for real.
+
+    `prompts` keeps the prompt Ralph would give the agent for each session, in order.
+    """
 
     def __init__(self, repository, *sessions):
         self.repository = repository
         self.script = list(sessions)
         self.requests = []
+        self.prompts = []
 
-    def run_session(self, request):
+    def run_session(self, request, prompt=""):
         if not self.script:
             raise AssertionError(f"unscripted {request.role} session for #{request.child}")
         session = self.script.pop(0)
         self.requests.append(request)
+        self.prompts.append(prompt)
         path = self.repository.path
         before = self.repository.head()
         commit = session.commit if session.commit is not None else session.outcome == "committed"
@@ -371,9 +376,12 @@ def start_run(mode, repository, github, sessions, *arguments):
     """Start one run from the repository root with in-memory GitHub and sessions."""
 
     def child_cycle_adapters(context):
+        def run_session(request):
+            prompt = loop_core.session_request_prompt(context.state, request)
+            return sessions.run_session(request, prompt)
+
         return dataclasses.replace(
-            loop_core.real_child_cycle_adapters(context),
-            run_session=sessions.run_session,
+            loop_core.real_child_cycle_adapters(context), run_session=run_session
         )
 
     adapters = loop_core.RunAdapters(

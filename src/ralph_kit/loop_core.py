@@ -1680,6 +1680,7 @@ def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
 
 
 def real_run_adapters() -> RunAdapters:
+    """The run adapters `ralph-kit run` uses: the `gh` CLI and the real child cycle adapters."""
     return RunAdapters(github=GitHub, child_cycle=real_child_cycle_adapters)
 
 
