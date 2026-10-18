@@ -136,9 +136,9 @@ correction that review causes. The loop of a standard run is:
 
 The optional final number is the run budget: the total number of agent
 sessions the run may start, shared by all children. The default is
-`max(4, ready_children * 5)`, where `ready_children` counts the children the
-run can work on when it starts: open, not `implemented`, with `ready-for-agent`
-as their only triage label and only lifecycle label, blocked or not. Closed,
+`max(4, ready_children * 5)`, where `ready_children` counts the ready children
+when the run starts: open, not `implemented`, with `ready-for-agent` as their
+only triage label and only lifecycle label, blocked or not. Closed,
 implemented, human-review, and ready-for-human children do not count, so
 resuming a parent with one child left gets 5 sessions.
 The count is taken once; relabelling a child during the run does not change its

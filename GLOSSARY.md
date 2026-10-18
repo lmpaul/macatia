@@ -16,11 +16,19 @@ _Avoid_: Sub-issue, ticket, task
 A child that another child depends on and that must be implemented first.
 _Avoid_: Prerequisite, dependency
 
+**Remaining child**:
+A child that is open and not yet implemented, whatever its other labels.
+_Avoid_: Incomplete child, open child
+
+**Ready child**:
+A remaining child whose only triage label and only lifecycle label is ready-for-agent, blocked or not.
+_Avoid_: Pending child, queued child
+
 **Runnable child**:
-A child that is open, ready for an agent, not yet implemented, and has no unsatisfied blocker.
+A ready child with no unsatisfied blocker.
 
 **Dependency deadlock**:
-The state where children remain but every one is waiting on a blocker that cannot complete.
+The state where remaining children exist but every one is waiting on a blocker that cannot complete.
 
 **Trusted author**:
 A GitHub account whose issues and evidence comments Ralph accepts; everything else is ignored.
@@ -74,7 +82,7 @@ A correction session that repairs a failed CI check.
 ## Limits
 
 **Run budget**:
-The maximum number of agent sessions a run may start, shared by all its children; counted in sessions, never tokens or time. Without an explicit value it is five sessions for each child that is open, ready for an agent, and not yet implemented when the run starts, blocked or not, and never fewer than four.
+The maximum number of agent sessions a run may start, shared by all its children; counted in sessions, never tokens or time. Without an explicit value it is five sessions for each ready child when the run starts, and never fewer than four.
 _Avoid_: Session budget, agent budget, iteration limit, token budget
 
 **Correction limit**:

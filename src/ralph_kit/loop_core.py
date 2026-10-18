@@ -532,7 +532,7 @@ def remaining_children(state: RunState, error: Exception) -> list[RemainingChild
                     f"({handoff}) reports, then close it or relabel it {ready_label}, "
                     f"and {rerun}."
                 )
-        elif not child_is_pending_and_ready(state, child):
+        elif not child_is_ready(state, child):
             other_labels = sorted(
                 child_labels & (state.config.triage_labels | state.config.lifecycle_labels)
                 - {ready_label}
@@ -833,7 +833,7 @@ def child_is_remaining(state: RunState, issue: dict[str, Any]) -> bool:
     )
 
 
-def child_is_pending_and_ready(state: RunState, issue: dict[str, Any]) -> bool:
+def child_is_ready(state: RunState, issue: dict[str, Any]) -> bool:
     if str(issue.get("state", "")).upper() != "OPEN":
         return False
     issue_labels = labels(issue)
@@ -860,7 +860,7 @@ def select_runnable_child(
         if not child_is_remaining(state, child):
             continue
         incomplete_children.append(child)
-        if not child_is_pending_and_ready(state, child):
+        if not child_is_ready(state, child):
             continue
         blockers = state.github.blockers(int(child["number"]))
         if all(blocker_is_satisfied(state, blocker) for blocker in blockers):
@@ -1019,7 +1019,7 @@ def mark_child_implemented(state: RunState, child_number: int) -> None:
 
 def recover_published_child(state: RunState, children: Iterable[dict[str, Any]]) -> bool:
     for child in children:
-        if not child_is_pending_and_ready(state, child):
+        if not child_is_ready(state, child):
             continue
         details = issue_details(state, int(child["number"]))
         require_trusted_issue(state, details)
@@ -1938,8 +1938,8 @@ def run_children(
     assert branch is not None
     require_trusted_issue(state, issue_details(state, parent_issue))
     siblings = state.github.sub_issues(parent_issue)
-    # The default counts the children the run can work on as it starts, once.
-    ready_children = [child for child in siblings if child_is_pending_and_ready(state, child)]
+    # The default counts the ready children once, as the run starts.
+    ready_children = [child for child in siblings if child_is_ready(state, child)]
     budget = RunBudget(run_budget or max(4, len(ready_children) * 5))
     infrastructure = InfrastructureRetryTracker(state)
     update_run_summary(state, parent_issue, siblings, budget, infrastructure)
