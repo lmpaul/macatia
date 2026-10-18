@@ -59,9 +59,10 @@ class RunRepository:
         git(self.path, "config", "user.name", "Ralph Test")
         git(self.path, "remote", "add", "origin", str(self.origin))
         configuration = (FIXTURES / "ralph.toml").read_text(encoding="utf-8")
+        flags = "local_checks = true\nci_checks = true"
+        assert flags in configuration, "the fixture configuration enables both verification paths"
         configuration = configuration.replace(
-            "local_checks = true\nci_checks = true",
-            f"local_checks = {str(local_checks).lower()}\nci_checks = {str(ci_checks).lower()}",
+            flags, f"local_checks = {str(local_checks).lower()}\nci_checks = {str(ci_checks).lower()}"
         )
         (self.path / "ralph.toml").write_text(configuration, encoding="utf-8")
         (self.path / ".gitignore").write_text(

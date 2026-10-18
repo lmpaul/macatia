@@ -507,7 +507,7 @@ class CIEvidenceTests(VerificationTestCase):
         self.assertEqual(evidence["log_error"], "Unable to download job logs.")
 
     def test_job_from_another_commit_is_never_used_as_evidence(self):
-        self.github.job_head_sha = self.repository.base_sha
+        self.new_child_run(ci=("failure", "success"), job_head_sha=OTHER_COMMIT)
 
         result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
 
@@ -533,8 +533,8 @@ class CIEvidenceTests(VerificationTestCase):
         self.assertIn(annotation, prompt)
         self.assertEqual(self.github.job_log_requests, [])
 
-    def test_stale_ci_evidence_never_authorises_implemented(self):
-        self.github.ci = [{CANONICAL_CHECK: {"conclusion": "success", "head_sha": self.repository.base_sha}}]
+    def test_stale_ci_evidence_never_authorizes_implemented(self):
+        self.new_child_run(ci=({CANONICAL_CHECK: {"conclusion": "success", "head_sha": OTHER_COMMIT}},))
 
         result = self.start(loop.MODE, ScriptedResult("committed"))
 
@@ -545,7 +545,7 @@ class CIEvidenceTests(VerificationTestCase):
         self.assertEqual(self.github.labels(CHILD), {"human-review"})
         self.assertEqual(self.roles(), ["implementation"])
 
-    def test_branch_advancing_after_ci_never_authorises_implemented(self):
+    def test_branch_advancing_after_ci_never_authorizes_implemented(self):
         self.github.ci = ["success"]
 
         def advance_the_branch(number, body):
@@ -695,7 +695,7 @@ class HandoffRedactionTests(VerificationTestCase):
 
                 result = self.start(loop.MODE, *corrections)
 
-                self.assert_not_implemented(result, "correction limit of 3 exhausted")
+                self.assert_not_implemented(result, "Ralph stopped")
                 handoff = self.github.comments(CHILD)[-1]
                 self.assertIn("Last diagnostic:", handoff)
                 self.assertIn(shown, handoff)
