@@ -365,6 +365,217 @@ class ParentCompletionTests(RunLevelTestCase):
                 )
 
 
+class StartupRejectionTestCase(RunLevelTestCase):
+    """One ready child under the parent; each test breaks one startup condition."""
+
+    def setUp(self):
+        super().setUp()
+        self.github.add_issue(CHILD, parent=PARENT)
+
+    def assert_rejected_at_startup(self, result, reason):
+        """The run stopped before reaching GitHub issues: nothing was read, written, or pushed."""
+        self.assertNotEqual(result.exit_code, 0)
+        self.assertIn(reason, result.stderr)
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(self.github.comments(PARENT), [])
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assertIsNone(self.github.pull_request())
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.repository.pushed_head()
+
+
+class PreflightTests(StartupRejectionTestCase):
+    def test_base_branch_is_rejected_before_any_session(self):
+        git(self.repository.path, "checkout", "main")
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(result, "main is not a safe Ralph branch")
+
+    def test_detached_head_is_rejected_before_any_session(self):
+        git(self.repository.path, "checkout", "--detach", self.repository.base_sha)
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(result, "detached HEAD is not allowed")
+
+    def test_dirty_worktree_is_rejected_before_any_session(self):
+        (self.repository.path / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(result, "worktree is dirty at startup")
+
+    def test_checkout_that_is_not_the_selected_worktree_is_rejected_before_any_session(self):
+        for name, directory in (
+            ("outside the repository", self.repository.path.parent),
+            ("inside the repository", self.repository.path / ".github"),
+        ):
+            with self.subTest(name):
+                self.sessions = ScriptedSessions(self.repository)
+
+                result = start_run(
+                    loop.MODE, self.repository, self.github, self.sessions, PARENT, cwd=directory
+                )
+
+                self.assert_rejected_at_startup(result, "wrong worktree")
+
+    def test_wrong_repository_is_rejected_before_any_session(self):
+        self.github.repository = "someone/else"
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(
+            result, "wrong repository: expected lmpaul/buyr, found someone/else"
+        )
+
+    def test_child_not_ready_for_an_agent_is_rejected_before_any_session(self):
+        self.github.edit_issue_labels(CHILD, "needs-info", ())
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(
+            result, f"parent issue #{PARENT} has children remaining but none is runnable"
+        )
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent", "needs-info"})
+
+    def test_arguments_must_be_positive_integers(self):
+        for arguments in (("0",), ("abc",), (PARENT, "0"), (PARENT, "abc")):
+            with self.subTest(arguments=arguments):
+                self.sessions = ScriptedSessions(self.repository)
+
+                result = start_run(loop.MODE, self.repository, self.github, self.sessions, *arguments)
+
+                self.assert_rejected_at_startup(result, "must be a positive integer")
+
+
+class ConfigurationRejectionTests(StartupRejectionTestCase):
+    def test_verification_flags_that_are_not_toml_booleans_are_rejected_before_any_session(self):
+        for key in ("local_checks", "ci_checks"):
+            for value in ('"true"', '"false"', "1", "0"):
+                with self.subTest(key=key, value=value):
+                    self.repository = RunRepository(self)
+                    self.repository.edit_configuration(f"{key} = true", f"{key} = {value}")
+
+                    result = self.start(loop.MODE)
+
+                    self.assert_rejected_at_startup(
+                        result, f"configuration.verification.{key} must be a boolean"
+                    )
+
+    def test_legacy_verification_keys_are_rejected_before_any_session(self):
+        self.repository.edit_configuration(
+            "local_checks = true\nci_checks = true", 'mode = "ci"\nlocal_gates = "enabled"'
+        )
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(result, "unknown keys: local_gates, mode")
+
+    def test_duplicate_toml_key_is_rejected_before_any_session(self):
+        self.repository.edit_configuration("ci_checks = true\n", "ci_checks = true\nci_checks = true\n")
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(result, "invalid TOML")
+
+    def test_unknown_engine_is_rejected_before_any_session(self):
+        self.repository = RunRepository(self, engines={"implementation": "unknown"})
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(
+            result, "configuration.models.implementation.engine must be codex or claude"
+        )
+
+    def test_effort_claude_code_does_not_support_is_rejected_before_any_session(self):
+        # Codex supports `minimal`; Claude Code does not.
+        self.repository = RunRepository(self, engines={"implementation": "claude"})
+        self.repository.edit_configuration(
+            'name = "claude-implementation"\ndisplay_name = "Terra"\nreasoning_effort = "medium"',
+            'name = "claude-implementation"\ndisplay_name = "Terra"\nreasoning_effort = "minimal"',
+        )
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(
+            result, "configuration.models.implementation.reasoning_effort must be one of"
+        )
+
+    def remove_review_profile(self):
+        configuration = (self.repository.path / "ralph.toml").read_text(encoding="utf-8")
+        review_profile = re.search(r"\[models\.review\]\n.*?\n\n", configuration, flags=re.S).group(0)
+        self.repository.edit_configuration(review_profile, "")
+
+    def test_review_profile_is_optional_for_a_standard_run(self):
+        self.remove_review_profile()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_review_profile_is_required_for_a_reviewed_run(self):
+        self.remove_review_profile()
+
+        result = self.start(loop_review.MODE, *passing_child_results(loop_review.MODE))
+
+        self.assert_rejected_at_startup(result, "configuration.models is missing keys: review")
+
+
+class ConfiguredTrustTests(RunLevelTestCase):
+    def test_repository_trusted_authors_remote_and_labels_come_from_the_configuration(self):
+        labels = {
+            "needs-triage": "r-needs-triage",
+            "needs-info": "r-needs-info",
+            "ready-for-agent": "r-ready-for-agent",
+            "ready-for-human": "r-ready-for-human",
+            "wontfix": "r-wontfix",
+            "human-review": "r-human-review",
+            "implemented": "r-implemented",
+        }
+        for default, configured in labels.items():
+            self.repository.edit_configuration(f'= "{default}"\n', f'= "{configured}"\n')
+        self.repository.edit_configuration('repository = "lmpaul/buyr"', 'repository = "acme/widget"')
+        self.repository.edit_configuration('remote = "origin"', 'remote = "upstream"')
+        self.repository.edit_configuration(
+            f'trusted_authors = ["{TRUSTED_LOGIN}"]', 'trusted_authors = ["maintainer"]'
+        )
+        git(self.repository.path, "remote", "add", "upstream", str(self.repository.origin))
+        git(self.repository.path, "remote", "remove", "origin")
+        self.github = FakeGitHub(repository="acme/widget", login="maintainer")
+        self.github.add_issue(PARENT, labels=("r-ready-for-agent",), author="maintainer")
+        self.github.add_issue(
+            CHILD,
+            parent=PARENT,
+            labels=("r-ready-for-agent",),
+            author="maintainer",
+            comments=[
+                {"author": {"login": "maintainer"}, "body": "Owner requirement context."},
+                # The default trusted author is not trusted by this configuration.
+                {"author": {"login": TRUSTED_LOGIN}, "body": UNTRUSTED_COMMENT},
+            ],
+        )
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.github.opened_for, ["acme/widget"])
+        self.assertEqual(self.github.labels(CHILD), {"r-implemented"})
+        self.assertEqual(self.github.labels(PARENT), {"r-human-review"})
+        self.assertEqual(git(self.repository.path, "config", f"branch.{BRANCH}.remote"), "upstream")
+        self.assertEqual(self.repository.pushed_head(), self.repository.head())
+        for prompt in self.sessions.prompts:
+            self.assertNotIn(UNTRUSTED_COMMENT, prompt)
+
+    def test_untrusted_issue_author_is_rejected_before_any_session(self):
+        self.github.add_issue(CHILD, parent=PARENT, author="outside-contributor")
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(result, "@lmpaul")
+
+
 CANONICAL_CHECK = "Canonical CI"
 DATABASE_CHECK = "PostgreSQL 16 and Redis acceptance"
 PERSISTENCE_PATH = "buyr-hono/prisma/schema.prisma"

@@ -161,24 +161,6 @@ class RalphProcessTestCase(unittest.TestCase):
         }
         self.github_state.write_text(json.dumps(state), encoding="utf-8")
 
-    def _child(
-        self,
-        number,
-        *,
-        state="open",
-        labels=("ready-for-agent",),
-        comments=(),
-    ):
-        return {
-            "number": number,
-            "title": f"Child {number}",
-            "body": f"Implement child {number}.",
-            "state": state,
-            "labels": [{"name": label} for label in labels],
-            "author": {"login": "lmpaul"},
-            "comments": list(comments),
-        }
-
     def _install_real_loop(self):
         shutil.copyfile(FIXTURES / "ralph.toml", self.repository / "ralph.toml")
 
@@ -340,26 +322,14 @@ class RalphProcessTestCase(unittest.TestCase):
                 log.write(json.dumps(arguments) + "\n")
 
             if arguments[:2] == ["repo", "view"]:
-                print(json.dumps({
-                    "nameWithOwner": os.environ.get(
-                        "RALPH_TEST_REPOSITORY", "lmpaul/buyr"
-                    )
-                }))
+                print(json.dumps({"nameWithOwner": "lmpaul/buyr"}))
             elif arguments[:2] == ["issue", "view"]:
                 number = int(arguments[2])
                 print(json.dumps(issue(number)))
             elif arguments[0] == "api":
                 endpoint = arguments[1]
                 if endpoint.endswith("/issues/191/sub_issues"):
-                    children = state["children"]
-                    override = os.environ.get("RALPH_TEST_CHILD_LABELS")
-                    if override:
-                        for child in children:
-                            if child["number"] == 193:
-                                child["labels"] = [
-                                    {"name": name} for name in override.split(",")
-                                ]
-                    print(json.dumps(children))
+                    print(json.dumps(state["children"]))
                 elif endpoint.endswith("/dependencies/blocked_by"):
                     number = endpoint.split("/issues/", 1)[1].split("/", 1)[0]
                     print(json.dumps([
@@ -466,29 +436,6 @@ class RalphProcessTestCase(unittest.TestCase):
             check=False,
         )
 
-    def _configure_verification(self, *, ci_checks, local_checks):
-        config_path = self.repository / "ralph.toml"
-        contents = config_path.read_text(encoding="utf-8")
-        contents = contents.replace('ci_checks = true\n', f'ci_checks = {str(ci_checks).lower()}\n')
-        contents = contents.replace(
-            'local_checks = true\n',
-            f'local_checks = {str(local_checks).lower()}\n',
-        )
-        config_path.write_text(contents, encoding="utf-8")
-        run(["git", "add", "ralph.toml"], cwd=self.repository)
-        run(
-            [
-                "git",
-                "commit",
-                "-m",
-                f"Configure Ralph CI checks {ci_checks} and local checks {local_checks}",
-            ],
-            cwd=self.repository,
-        )
-        self.base_sha = run(
-            ["git", "rev-parse", "HEAD"], cwd=self.repository
-        ).stdout.strip()
-
     def _install_fake_claude(self):
         # Share the simulated Git effects, but exercise Claude's real CLI envelope.
         source = (self.fake_bin / "codex").read_text()
@@ -536,7 +483,3 @@ print(json.dumps({
         run(["git", "add", "ralph.toml"], cwd=self.repository)
         run(["git", "commit", "-m", "Configure agent engines"], cwd=self.repository)
         self.base_sha = run(["git", "rev-parse", "HEAD"], cwd=self.repository).stdout.strip()
-
-    def assert_codex_did_not_start(self):
-        self.assertFalse(self.codex_log.exists())
-        self.assertFalse(self.claude_log.exists())

@@ -96,6 +96,14 @@ class RunRepository:
         git(self.path, "checkout", "-b", BRANCH)
         self.base_sha = self.head()
 
+    def edit_configuration(self, old, new):
+        """Replace text in `ralph.toml` and commit it, keeping the worktree clean."""
+        path = self.path / "ralph.toml"
+        configuration = path.read_text(encoding="utf-8")
+        assert old in configuration, old
+        path.write_text(configuration.replace(old, new), encoding="utf-8")
+        git(self.path, "commit", "-am", "Edit the Ralph configuration")
+
     def head(self):
         return git(self.path, "rev-parse", "HEAD")
 
@@ -242,6 +250,7 @@ class FakeGitHub:
     Setting `interrupt_after_comment_on` to an issue number kills the run once,
     right after its next comment on that issue is stored; `after_comment`, when
     set, is called with the issue number and body after each issue comment.
+    `opened_for` keeps the configured repository each run opened GitHub access for.
     """
 
     def __init__(
@@ -273,6 +282,7 @@ class FakeGitHub:
         self.revision = 0
         self.interrupt_after_comment_on = None
         self.after_comment = None
+        self.opened_for = []
 
     # Test setup and observation.
 
@@ -580,12 +590,17 @@ class RunResult:
     sleeps: list[float]
 
 
-def start_run(mode, repository, github, sessions, *arguments):
-    """Start one run from the repository root with in-memory GitHub and sessions.
+def start_run(mode, repository, github, sessions, *arguments, cwd=None):
+    """Start one run with in-memory GitHub and sessions, from `cwd` or the repository root.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
+    A command-line usage error ends the run with argparse's exit code.
     """
+
+    def open_github(repository_root, name):
+        github.opened_for.append(name)
+        return github
 
     def child_cycle_adapters(context):
         def run_session(request):
@@ -599,22 +614,25 @@ def start_run(mode, repository, github, sessions, *arguments):
     sleeps = []
     if isinstance(sessions, ScriptedEngine):
         adapters = loop_core.RunAdapters(
-            github=lambda repository_root, name: github,
+            github=open_github,
             child_cycle=loop_core.real_child_cycle_adapters,
             sleep=sleeps.append,
             run_engine=sessions.run,
         )
     else:
         adapters = loop_core.RunAdapters(
-            github=lambda repository_root, name: github,
+            github=open_github,
             child_cycle=child_cycle_adapters,
             sleep=sleeps.append,
         )
     stdout, stderr = io.StringIO(), io.StringIO()
     with (
-        contextlib.chdir(repository.path),
+        contextlib.chdir(cwd or repository.path),
         contextlib.redirect_stdout(stdout),
         contextlib.redirect_stderr(stderr),
     ):
-        exit_code = loop_core.run(mode, adapters, [str(argument) for argument in arguments])
+        try:
+            exit_code = loop_core.run(mode, adapters, [str(argument) for argument in arguments])
+        except SystemExit as usage_error:
+            exit_code = usage_error.code
     return RunResult(exit_code, stdout.getvalue(), stderr.getvalue(), sleeps)
