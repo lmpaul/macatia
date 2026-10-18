@@ -115,29 +115,12 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertIn("Complete the remaining requirements", prompts[3])
         self.assertIn("Correction attempt 3/3", prompts[3])
 
-    def test_budget_stop_retains_the_local_evidence(self):
-        result = self.run_loop(budget=1, RALPH_TEST_FAIL_GATE_COUNT="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(self.calls()), 1)
-        self.assertIn("Full stdout:", self.child()["comments"][-1]["body"])
-        self.assertIsNone(self.state()["pull_request"])
-
     def test_ci_correction_requires_a_new_commit(self):
         result = self.run_loop(
             RALPH_TEST_CI_OUTCOMES="failure", RALPH_TEST_CI_CORRECTION_NO_CHANGES="1",
         )
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("CI correction did not create a new commit", result.stderr)
-        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
-
-    def test_infrastructure_retries_do_not_launch_a_correction(self):
-        self.assert_completed(self.run_loop(RALPH_TEST_CI_OUTCOMES="cancelled,success"), 1)
-
-    def test_local_only_budget_stop_does_not_publish(self):
-        self._configure_verification(ci_checks=False, local_checks=True)
-        result = self.run_loop(budget=1, RALPH_TEST_FAIL_GATE_COUNT="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIsNone(self.state()["pull_request"])
         self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
 
     def test_review_profile_is_optional_for_a_standard_run(self):
@@ -157,13 +140,6 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("configuration.models is missing keys: review", result.stderr)
         self.assertFalse(self.codex_log.exists())
-
-    def test_ci_budget_stop_keeps_logs_for_the_human_handoff(self):
-        result = self.run_loop(budget=1, RALPH_TEST_CI_OUTCOMES="failure")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertEqual(len(self.calls()), 1)
-        self.assertIn("expected 42, received 0", self.child()["comments"][-1]["body"])
-        self.assertIn("Full stdout:", self.child()["comments"][-1]["body"])
 
     def test_dirty_agent_output_cannot_be_published(self):
         result = self.run_loop(RALPH_TEST_LEAVE_DIRTY="1")

@@ -5,6 +5,7 @@ import os
 import pathlib
 import re
 import shlex
+import subprocess
 import sys
 import unittest
 from unittest import mock
@@ -13,6 +14,7 @@ from unittest import mock
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from ralph_kit import loop, loop_review
+from ralph_kit.commands import RalphError
 from run_support import (
     BRANCH,
     TRUSTED_LOGIN,
@@ -143,9 +145,10 @@ class RunLevelTestCase(unittest.TestCase):
     def setUp(self):
         self.new_run()
 
-    def start(self, mode, *results):
+    def start(self, mode, *results, budget=None):
         self.sessions = ScriptedSessions(self.repository, *results)
-        return start_run(mode, self.repository, self.github, self.sessions, PARENT)
+        budget_argument = () if budget is None else (budget,)
+        return start_run(mode, self.repository, self.github, self.sessions, PARENT, *budget_argument)
 
     def session_children(self):
         return [request.child for request in self.sessions.requests]
@@ -702,6 +705,138 @@ class HandoffRedactionTests(VerificationTestCase):
                 self.assertIn("[REDACTED]", handoff)
                 for secret in secrets:
                     self.assertNotIn(secret, handoff)
+
+
+class InfrastructureRetryTests(VerificationTestCase):
+    def assert_stopped_after_infrastructure_retries(self, result, diagnostic):
+        """The run stopped safely after every retry, without another session or publication."""
+        self.assert_not_implemented(
+            result, f"infrastructure retries exhausted for canonical CI after 3 retries: {diagnostic}"
+        )
+        self.assertEqual(self.roles(), ["implementation"])
+        self.assertEqual(self.github.checked_heads, [self.repository.head()] * 4)
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.assertIn(
+            "without changing the implementation or consuming another agent session",
+            self.github.comments(CHILD)[-1],
+        )
+        self.assertIn(f"Last infrastructure diagnostic: {diagnostic}", self.github.comments(CHILD)[-1])
+        self.assertIn("final outcome: stopped safely.", self.github.comments(PARENT)[-1])
+        self.assertIn("final outcome: stopped safely.", self.github.pull_request().comments[-1])
+
+    def test_unavailable_cancelled_and_timed_out_ci_is_retried_without_another_session(self):
+        for conclusion in ("unavailable", "cancelled", "timed_out"):
+            with self.subTest(conclusion):
+                self.new_child_run(ci=(conclusion,))
+
+                with mock.patch.dict(os.environ, {"RALPH_INFRA_RETRY_SECONDS": "30"}):
+                    result = self.start(loop.MODE, ScriptedResult("committed"))
+
+                self.assert_stopped_after_infrastructure_retries(
+                    result, f"{CANONICAL_CHECK} concluded {conclusion}"
+                )
+                self.assertEqual(result.sleeps[-3:], [30.0] * 3)
+                self.assertIn("Checking canonical CI (attempt 4/4).", result.stdout)
+
+    def test_authentication_failures_and_service_outages_are_infrastructure_failures(self):
+        for failure in ("HTTP 401: Bad credentials", "HTTP 503: Service Unavailable"):
+            with self.subTest(failure):
+                self.new_child_run(ci=(RalphError(f"gh api failed: {failure}"),))
+
+                result = self.start(loop.MODE, ScriptedResult("committed"))
+
+                self.assert_stopped_after_infrastructure_retries(result, f"gh api failed: {failure}")
+
+    def test_infrastructure_retry_that_succeeds_does_not_consume_the_run_budget(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_child_run(ci=("cancelled", "success"))
+                sessions = passing_child_results(mode)
+
+                result = self.start(mode, *sessions, budget=len(sessions))
+
+                self.assert_implemented(result)
+                self.assertIn(
+                    f"{len(sessions)} agent sessions and 1 infrastructure retries this run.", result.stdout
+                )
+                self.assertIn("Canonical CI is not ready; the next check is in", result.stdout)
+                self.assertIn("Checking canonical CI (attempt 2/4).", result.stdout)
+                self.assertEqual(self.github.checked_heads, [self.repository.head()] * 2)
+
+
+class RunBudgetTests(VerificationTestCase):
+    def new_two_child_run(self):
+        self.new_run()
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+
+    def assert_budget_stop(self, result, child, *, role, budget):
+        """The run stopped on the shared budget and handed `child` to human review."""
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(f"run budget exhausted before {role}", result.stderr)
+        self.assertEqual(len(self.sessions.requests), budget)
+        self.assertEqual(self.github.labels(child), {"human-review"})
+        handoff = self.github.comments(child)[-1]
+        self.assertIn(
+            f"run budget of {budget} agent sessions was exhausted after {budget} sessions", handoff
+        )
+        self.assertIn("final outcome: stopped safely.", self.github.comments(PARENT)[-1])
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+        return handoff
+
+    def test_default_budget_allows_five_sessions_per_child_across_the_run(self):
+        self.new_two_child_run()
+        committed = ScriptedResult("committed")
+        findings = ScriptedResult("needs_correction", findings=("Expose freshness for each section.",))
+        # Implementation, then two reviews with findings, each followed by an issue correction.
+        reviewed_twice = [committed, findings, committed, findings, committed]
+
+        result = self.start(
+            loop_review.MODE, *reviewed_twice, ScriptedResult("no_changes"), *reviewed_twice[:4]
+        )
+
+        self.assert_budget_stop(result, DEPENDENT, role="issue correction", budget=10)
+        self.assertEqual(self.session_children(), [CHILD] * 6 + [DEPENDENT] * 4)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertTrue(self.github.pull_request().is_draft)
+
+    def test_explicit_budget_replaces_the_default_across_children(self):
+        self.new_two_child_run()
+        results = [*passing_child_results(loop_review.MODE), ScriptedResult("committed")]
+
+        result = self.start(loop_review.MODE, *results, budget=3)
+
+        self.assert_budget_stop(result, DEPENDENT, role="review", budget=3)
+        self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertTrue(self.github.pull_request().is_draft)
+
+    def test_budget_stops_keep_the_last_evidence_for_the_handoff_and_do_not_publish(self):
+        local_gate = ("local gate correction", "fixture gate failed:", False)
+        for name, run_options, (role, evidence, pushed) in (
+            ("local gate", {"local_gate_results": ("fail",)}, local_gate),
+            ("local gate with CI disabled", {"local_gate_results": ("fail",), "ci_checks": False}, local_gate),
+            (
+                "CI",
+                {"ci": ("failure",), "job_log_output": CI_LOG},
+                ("CI correction", "expected 42, received 0", True),
+            ),
+        ):
+            with self.subTest(name):
+                self.new_child_run(**run_options)
+
+                result = self.start(loop.MODE, ScriptedResult("committed"), budget=1)
+
+                handoff = self.assert_budget_stop(result, CHILD, role=role, budget=1)
+                self.assertIn(evidence, handoff)
+                self.assertIn("Full stdout:", handoff)
+                pull = self.github.pull_request()
+                if pushed:
+                    self.assertTrue(pull.is_draft)
+                else:
+                    self.assertIsNone(pull)
+                    with self.assertRaises(subprocess.CalledProcessError):
+                        self.repository.pushed_head()
 
 
 if __name__ == "__main__":

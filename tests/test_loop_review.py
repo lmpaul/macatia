@@ -393,13 +393,6 @@ class ReviewLoopTests(RalphProcessTestCase):
         )
         self.assertEqual({label["name"] for label in child["labels"]}, {"implemented"})
 
-    def test_run_budget_is_checked_before_each_agent_session(self):
-        completed = self._run_loop("191", "1")
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("run budget exhausted before review", completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 1)
-
     def test_local_gate_correction_session_is_announced_with_its_profile(self):
         environment = self.environment.copy()
         environment["RALPH_TEST_FAIL_GATE_COUNT"] = "1"
@@ -452,48 +445,6 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertIn("completed work and successful checks in summary", completed.stderr)
         self.assertEqual(len(self._json_lines(self.codex_log)), 2)
         self.assert_only_safe_terminal_summary_was_published()
-
-    def test_repeated_local_gate_failure_exhausts_the_run_budget(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_FAIL_GATE_COUNT"] = "99"
-
-        completed = self._run_loop("191", "3", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("run budget exhausted before local gate correction", completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 3)
-        self.assertFalse(
-            any(
-                call[:2] == ["issue", "edit"] and "implemented" in call
-                for call in self._json_lines(self.github_log)
-            )
-        )
-        state = json.loads(self.github_state.read_text(encoding="utf-8"))
-        child = next(child for child in state["children"] if child["number"] == 193)
-        self.assertEqual(
-            {label["name"] for label in child["labels"]}, {"human-review"}
-        )
-        self.assertIn("run budget of 3 agent sessions", child["comments"][-1]["body"])
-        self.assertNotIn("super-secret", child["comments"][-1]["body"])
-        self.assertNotIn("hidden-token", child["comments"][-1]["body"])
-
-    def test_default_budget_allows_five_sessions_per_child(self):
-        self._write_github_state(children=[self._child(193)], blockers={})
-        environment = self.environment.copy()
-        finding = "Expose freshness for each dossier section."
-        environment["RALPH_TEST_AGENT_RESULTS"] = json.dumps([
-            {"outcome": "committed"},
-            {"outcome": "needs_correction", "findings": [finding]},
-            {"outcome": "committed"},
-            {"outcome": "needs_correction", "findings": [finding]},
-            {"outcome": "committed"},
-        ])
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("run budget exhausted before review", completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 5)
 
     def test_blocked_agent_leaves_precise_human_review_evidence(self):
         environment = self.environment.copy()
@@ -716,24 +667,6 @@ class ReviewLoopTests(RalphProcessTestCase):
         self.assertEqual(len(self._json_lines(self.codex_log)), 1)
         self.assert_only_safe_terminal_summary_was_published()
 
-    def test_explicit_budget_replaces_the_larger_default_across_children(self):
-        self._write_github_state(
-            children=[self._child(193), self._child(194)],
-            blockers={},
-        )
-
-        completed = self._run_loop("191", "3")
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("run budget exhausted before review", completed.stderr)
-        calls = self._json_lines(self.codex_log)
-        self.assertEqual(len(calls), 3)
-        self.assertIn("issue #193", calls[0]["prompt"])
-        self.assertIn("issue #194", calls[2]["prompt"])
-        self.assertTrue(
-            all("issue #194" not in call["prompt"] for call in calls[0:2])
-        )
-
     def test_more_than_two_summary_sentences_do_not_stop_a_verified_run(self):
         environment = self.environment.copy()
         environment["RALPH_TEST_SUMMARY"] = "One sentence. Two sentences. Three sentences."
@@ -760,80 +693,6 @@ class ReviewLoopTests(RalphProcessTestCase):
                 for record in records
             )
         )
-
-    def test_cancelled_and_timed_out_ci_runs_retry_as_infrastructure_failures(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CI_OUTCOMES"] = "cancelled,timed_out"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("infrastructure retries exhausted", completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 2)
-        child = next(
-            child
-            for child in json.loads(self.github_state.read_text())["children"]
-            if child["number"] == 193
-        )
-        self.assertEqual(
-            {label["name"] for label in child["labels"]}, {"human-review"}
-        )
-
-    def test_unavailable_ci_retries_without_another_agent_session(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CI_OUTCOMES"] = "unavailable"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("infrastructure retries exhausted", completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 2)
-        github_calls = self._json_lines(self.github_log)
-        self.assertTrue(
-            any(
-                call[:3] == ["issue", "comment", "191"]
-                and "Ralph summary:" in call[-1]
-                and "final outcome: stopped safely." in call[-1]
-                for call in github_calls
-            )
-        )
-        self.assertTrue(
-            any(
-                call[:3] == ["pr", "comment", "1"]
-                and "final outcome: stopped safely." in call[-1]
-                for call in github_calls
-            )
-        )
-        self.assertFalse(any(call[:2] == ["pr", "ready"] for call in github_calls))
-
-    def test_authentication_and_service_outages_are_infrastructure_failures(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CI_OUTCOMES"] = "authentication_failed,service_outage"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertNotEqual(completed.returncode, 0)
-        self.assertIn("infrastructure retries exhausted", completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 2)
-
-    def test_infrastructure_retry_can_succeed_without_consuming_the_run_budget(self):
-        environment = self.environment.copy()
-        environment["RALPH_TEST_CI_OUTCOMES"] = "cancelled,success"
-
-        completed = self._run_loop("191", environment=environment)
-
-        self.assertEqual(completed.returncode, 0, completed.stderr)
-        self.assertEqual(len(self._json_lines(self.codex_log)), 2)
-        self.assertIn("1 infrastructure retries", completed.stdout)
-        self.assertIn(
-            "⏳ Waiting 0 seconds for GitHub Actions to start.", completed.stdout
-        )
-        self.assertIn("🔎 Checking canonical CI (attempt 1/4).", completed.stdout)
-        self.assertIn(
-            "⚠️ Canonical CI is not ready; the next check is in 0 seconds.",
-            completed.stdout,
-        )
-        self.assertIn("🔎 Checking canonical CI (attempt 2/4).", completed.stdout)
 
     def test_ci_correction_without_a_commit_stops_before_rechecking_failed_sha(self):
         environment = self.environment.copy()

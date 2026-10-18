@@ -463,11 +463,6 @@ class RalphProcessTestCase(unittest.TestCase):
                         "RALPH_TEST_CI_OUTCOMES", "success"
                     ).split(",")
                     outcome = outcomes[min(responses, len(outcomes) - 1)]
-                    if outcome in {"authentication_failed", "service_outage"}:
-                        raise SystemExit(f"simulated {outcome}")
-                    if outcome == "unavailable":
-                        print(json.dumps({"check_runs": []}))
-                        raise SystemExit(0)
                     print(json.dumps({
                         "check_runs": [
                             {

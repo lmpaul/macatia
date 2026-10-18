@@ -24,6 +24,7 @@ sys.path.insert(0, str(KIT_ROOT / "src"))
 
 from ralph_kit import loop_core  # noqa: E402
 from ralph_kit.child_cycle import SessionResult  # noqa: E402
+from ralph_kit.commands import RalphError  # noqa: E402
 
 
 REPOSITORY = "lmpaul/buyr"
@@ -202,6 +203,7 @@ class FakeGitHub:
     conclusion for every check, or a mapping from check name to either a
     conclusion or the check-run fields to override (such as another commit's
     `head_sha`, or an empty `details_url` for a check without an Actions job).
+    A round can also be a `RalphError`, raised as the failed `gh` call would.
     A failed check's job reports `job_head_sha` (by default the checked head)
     and its log is `job_log_output`, or a failed download with `job_log_error`.
     Setting `interrupt_after_comment_on` to an issue number kills the run once,
@@ -347,6 +349,8 @@ class FakeGitHub:
     def check_runs(self, head_sha):
         self.checked_heads.append(head_sha)
         ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
+        if isinstance(ci_round, RalphError):
+            raise ci_round
         checks = ci_round if isinstance(ci_round, dict) else dict.fromkeys(self.check_names, ci_round)
         return [
             {
