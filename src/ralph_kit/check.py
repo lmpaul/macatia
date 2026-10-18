@@ -95,26 +95,32 @@ def prerequisites(which, engines=None):
             yield tool(executable)
 
 
-OPTION = r"-[\w-]+(?:[ =]?[<\[][^>\]]*[>\]])?"
-OPTION_LINE = re.compile(rf"{OPTION}(?:, {OPTION})*(?=\s{{2,}}|$)")
+OPTION = r"-[\w-]+(?:[ =]?[<\[][^>\]]*[>\]](?:\.\.\.)?)?"
+OPTION_LINE = re.compile(rf"( *)({OPTION}(?:, {OPTION})*)(?=\s{{2,}}|$)")
+FLAG = re.compile(r"(?<![\w\[-])-{1,2}\w[\w-]*")
+SHORT_FLAG_COLUMN = len("-c, ")
 
 
 def listed_flags(help_text):
-    """Flags a CLI help page defines: lines that start with option names, not flags mentioned in descriptions."""
-    flags = set()
-    for line in help_text.splitlines():
-        if match := OPTION_LINE.match(line.strip()):
-            flags.update(re.findall(r"(?<![\w\[-])-{1,2}\w[\w-]*", match.group()))
-    return flags
+    """Flags a CLI help page defines.
+
+    Option lines sit at the shallowest option indent, or one short-flag column deeper for long-only options;
+    flags mentioned in descriptions, including wrapped description lines, are not listed.
+    """
+    options = [(len(match[1]), match[2]) for line in help_text.splitlines() if (match := OPTION_LINE.match(line))]
+    if not options:
+        return set()
+    indent = min(depth for depth, _ in options)
+    return {flag for depth, names in options if depth <= indent + SHORT_FLAG_COLUMN for flag in FLAG.findall(names)}
 
 
 def check_engine_flags(command, engine):
     """Confirm the installed engine's help lists every flag Ralph passes to it; no network or tokens."""
     help_command, flags = engine_flags(engine, PACKAGE_DIRECTORY / "outcome-schema.json")
     listed = listed_flags(command(*help_command))
+    missing = [flag for flag in flags if flag not in listed]
     name = AGENT_CLIS[engine]
-    for flag in flags:
-        require(flag in listed, f"{name} does not list {flag} in {' '.join(help_command)}", f"update {name}, or check that ralph-kit supports the installed version")
+    require(not missing, f"{name} does not list {', '.join(missing)} in {' '.join(help_command)}", f"update {name}, or check that ralph-kit supports the installed version")
     return f"{len(flags)} flags listed"
 
 

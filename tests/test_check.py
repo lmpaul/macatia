@@ -249,29 +249,31 @@ class ReadinessTests(unittest.TestCase):
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.help_requests(), expected)
 
-    def test_flag_missing_from_codex_help_blocks_with_engine_flag_and_fix(self):
-        self.help[("codex", "exec", "--help")] = CODEX_HELP.replace("--output-schema", "--output-format")
-        code, output = self.run_check()
-        self.assertEqual(code, 1)
-        output = " ".join(output.split())
-        self.assertIn("Codex does not list --output-schema in codex exec --help", output)
-        self.assertIn("→ update Codex, or check that ralph-kit supports the installed version", output)
+    def test_flags_missing_from_help_block_with_engine_flags_and_fix(self):
+        wrapped = "  --bare                                Minimal mode; still honours\n                                        --json-schema, --add-dir\n"
+        for engine, page, expected in (
+            ("codex", CODEX_HELP.replace("--output-schema", "--output-format"), "Codex does not list --output-schema in codex exec --help"),
+            ("codex", CODEX_HELP.replace("--cd <DIR>", "--dir <DIR>").replace("-o, --output-last-message", "-o, --last-message"), "Codex does not list --cd, --output-last-message in codex exec --help"),
+            ("claude", CLAUDE_HELP.replace("--json-schema", "--json"), "Claude Code does not list --json-schema in claude --help"),
+            # Flags only mentioned in descriptions, on the option's own line or a wrapped line, are not listed.
+            ("claude", CLAUDE_HELP.replace("  -p, --print     ", "  --no-print      "), "Claude Code does not list -p in claude --help"),
+            ("claude", CLAUDE_HELP.replace("--json-schema", "--json") + wrapped, "Claude Code does not list --json-schema in claude --help"),
+        ):
+            with self.subTest(expected=expected):
+                self.setUp()
+                self.use_engines(engine, engine)
+                help_command = ("codex", "exec", "--help") if engine == "codex" else ("claude", "--help")
+                self.help[help_command] = page
+                code, output = self.run_check()
+                self.assertEqual(code, 1)
+                output = " ".join(output.split())
+                self.assertIn(expected, output)
+                self.assertIn(f"→ update {check.AGENT_CLIS[engine]}, or check that ralph-kit supports the installed version", output)
 
-    def test_flag_missing_from_claude_help_blocks_with_engine_flag_and_fix(self):
-        self.use_engines("claude", "claude")
-        self.help[("claude", "--help")] = CLAUDE_HELP.replace("--json-schema", "--json")
+    def test_variadic_option_is_listed(self):
+        self.help[("codex", "exec", "--help")] = CODEX_HELP.replace("  -C, --cd <DIR>", "  -C, --cd <DIR>...")
         code, output = self.run_check()
-        self.assertEqual(code, 1)
-        output = " ".join(output.split())
-        self.assertIn("Claude Code does not list --json-schema in claude --help", output)
-        self.assertIn("→ update Claude Code, or check that ralph-kit supports the installed version", output)
-
-    def test_flag_mentioned_only_in_a_description_is_not_listed(self):
-        self.use_engines("claude", "claude")
-        self.help[("claude", "--help")] = CLAUDE_HELP.replace("  -p, --print     ", "  --no-print      ")
-        code, output = self.run_check()
-        self.assertEqual(code, 1)
-        self.assertIn("Claude Code does not list -p in claude --help", " ".join(output.split()))
+        self.assertEqual(code, 0, output)
 
     def test_failing_or_missing_help_command_is_a_readiness_error(self):
         for error in (RuntimeError("codex exec --help failed; check access and authentication"), FileNotFoundError(2, "No such file or directory", "codex")):

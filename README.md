@@ -286,7 +286,9 @@ ralph-kit check --review
 Commit the prepared files and use a dedicated branch first. The readiness check validates
 TOML and placeholders, Python and required CLI availability, Git branch/remote
 and clean worktree, GitHub access/repository/trusted account/write permission/labels,
-the packaged result schema, the implement skill for each engine, and the enabled quality policy.
+the packaged result schema, the implement skill for each engine, the flags Ralph passes
+to each configured engine (listed in the engine's own help, so an update that drops one
+blocks before a run), and the enabled quality policy.
 It inspects local gate commands and CI check names without executing them.
 Disabled verification may keep placeholder entries; when both are disabled the
 quality policy is not loaded.
@@ -296,7 +298,8 @@ as not verified instead of failing. Colors are dropped when the output is not a
 terminal (or with `NO_COLOR`).
 A nonzero exit code means a blocking check failed. In a terminal, missing labels
 are offered for creation after the report (Yes / Later); that is the only GitHub
-write. No agent, project check, CI run, push, issue or PR mutation occurs. The configured
+write. Engines only print their help; no agent session, project check, CI run, push,
+issue or PR mutation occurs. The configured
 quality module is imported: it must be trusted and have no import-time side effects.
 
 A successful readiness check does not validate agent authentication/model access,
