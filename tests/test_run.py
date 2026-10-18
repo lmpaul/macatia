@@ -1170,28 +1170,74 @@ class CrashedRunTests(VerificationTestCase):
 class InterruptedRunTests(VerificationTestCase):
     """Ctrl-C, SIGTERM, and SIGHUP end a run with an interrupted terminal summary."""
 
-    def assert_interrupted(self, result, exit_code, signal_name):
+    def assert_interrupted(self, result, exit_code, signal_name, *, rerun_action=True):
+        """The interrupted summary was published and printed; `rerun_action` says
+        whether the run's own next action is to rerun, which a handed-off child's
+        action replaces."""
         self.assertEqual(result.exit_code, exit_code, result.stderr)
         summary = self.github.comments(PARENT)[-1]
+        rerun = f"Ralph was interrupted: run `ralph-kit run {PARENT}` again to continue."
         for published in (summary, result.stderr):
             self.assertIn("- final outcome: interrupted", published)
             self.assertIn(f"Stop reason: interrupted by {signal_name}", published)
+            if rerun_action:
+                self.assertIn(rerun, published)
+            else:
+                self.assertNotIn(rerun, published)
+
+    def assert_handed_back_unverified(self, result, base, head):
+        """The child went to human review naming the commits nobody verified."""
+        unverified = f"{base}..{head}"
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.assertEqual(len(self.github.comments(CHILD)), 1)
+        handoff = self.github.comments(CHILD)[0]
+        self.assertTrue(handoff.startswith("Ralph stopped because the run was interrupted"))
+        self.assertIn(unverified, handoff)
+        summary = self.github.comments(PARENT)[-1]
+        for published in (summary, result.stderr):
             self.assertIn(
-                f"Ralph was interrupted: run `ralph-kit run {PARENT}` again to continue.",
+                f"- #{CHILD}: interrupted and handed to human review with the unverified "
+                f"commits {unverified} ({self.github.latest_comment_url(CHILD)}).",
+                published,
+            )
+            self.assertIn(
+                f"- #{CHILD} was interrupted: inspect the unverified commits {unverified}, "
+                f"then close it or relabel it ready-for-agent and run "
+                f"`ralph-kit run {PARENT}` again.",
                 published,
             )
 
-    def test_ctrl_c_during_an_agent_session_publishes_an_interrupted_summary(self):
+    def test_ctrl_c_before_the_first_commit_returns_the_child_to_ready_for_agent(self):
         result = self.start(loop.MODE, KeyboardInterrupt())
 
         self.assert_interrupted(result, 130, "SIGINT")
         self.assertEqual(self.roles(), ["implementation"])
         self.assertIsNone(self.github.pull_request())
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
         self.assertEqual(self.github.comments(CHILD), [])
+        self.assertIn(f"- #{CHILD}: runnable.", self.github.comments(PARENT)[-1])
+
+    def interrupt_while_waiting_for_ci(self, signal_number):
+        """Interrupt the run once the child's commit waits for CI, as Ctrl-C or `kill` would."""
+
+        def interrupt(head):
+            os.kill(os.getpid(), signal_number)
+
+        self.github.before_check_runs = interrupt
+
+    def test_ctrl_c_after_a_commit_hands_the_child_to_human_review(self):
+        base = self.repository.head()
+        self.interrupt_while_waiting_for_ci(signal.SIGINT)
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_interrupted(result, 130, "SIGINT", rerun_action=False)
+        self.assertEqual(self.roles(), ["implementation"])
+        self.assert_handed_back_unverified(result, base, self.repository.head())
 
     def test_sigterm_and_sighup_during_an_agent_session_behave_like_ctrl_c(self):
         for signal_number, exit_code in ((signal.SIGTERM, 143), (signal.SIGHUP, 129)):
-            with self.subTest(signal_number.name):
+            with self.subTest(signal_number.name, commit=False):
                 self.new_child_run()
                 handler = signal.getsignal(signal_number)
 
@@ -1199,19 +1245,20 @@ class InterruptedRunTests(VerificationTestCase):
 
                 self.assert_interrupted(result, exit_code, signal_number.name)
                 self.assertEqual(self.roles(), ["implementation"])
+                self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
                 self.assertEqual(self.github.comments(CHILD), [])
                 self.assertIs(signal.getsignal(signal_number), handler)
+            with self.subTest(signal_number.name, commit=True):
+                self.new_child_run()
+                base = self.repository.head()
+                self.interrupt_while_waiting_for_ci(signal_number)
 
-    def test_a_signal_ignored_at_launch_stays_ignored(self):
-        previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
-        self.addCleanup(signal.signal, signal.SIGHUP, previous)
-        self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
-        self.sessions.before_session = lambda request: os.kill(os.getpid(), signal.SIGHUP)
+                result = self.start(loop.MODE, ScriptedResult("committed"))
 
-        result = start_run(loop.MODE, self.repository, self.github, self.sessions, PARENT)
-
-        self.assert_implemented(result)
-        self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+                self.assert_interrupted(
+                    result, exit_code, signal_number.name, rerun_action=False
+                )
+                self.assert_handed_back_unverified(result, base, self.repository.head())
 
     def test_interruption_between_two_children_publishes_the_same_summary(self):
         self.github.add_issue(DEPENDENT, parent=PARENT)
@@ -1245,6 +1292,23 @@ class InterruptedRunTests(VerificationTestCase):
             "Ralph was interrupted again; exiting without finishing the cleanup.", result.stderr
         )
         self.assertNotIn("Ralph summary", result.stderr)
+
+    def test_second_interruption_during_the_release_leaves_the_child_agent_working(self):
+        def interrupt_again(number, body):
+            if number == CHILD:
+                raise KeyboardInterrupt
+
+        self.github.after_comment = interrupt_again
+        self.interrupt_while_waiting_for_ci(signal.SIGINT)
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assertEqual(result.exit_code, 130)
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
+        self.assertEqual(self.github.comments(PARENT), [])
+        self.assertIn(
+            "Ralph was interrupted again; exiting without finishing the cleanup.", result.stderr
+        )
 
     def test_simulated_process_death_is_neither_caught_nor_reported(self):
         with self.assertRaises(RunInterrupted):

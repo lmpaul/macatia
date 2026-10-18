@@ -332,6 +332,8 @@ class RunState:
     rerun_command: str | None = None
     initial_implemented_children: set[int] | None = None
     summary: RunSummary = field(default_factory=RunSummary)
+    # The child the run holds agent working, with its base commit, until it leaves that state.
+    working_child: tuple[int, str] | None = None
 
     @property
     def config(self) -> RalphConfig:
@@ -474,6 +476,8 @@ def rerun_instruction(state: RunState) -> str:
 def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
     """The next action for the stop itself, when no remaining child's own action covers it."""
     if isinstance(error, Interrupted):
+        if error.unverified is not None:
+            return []
         return [f"Ralph was interrupted: {rerun_instruction(state)} to continue."]
     if not isinstance(error, RalphError):
         directory = (
@@ -512,6 +516,22 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
             action = (
                 f"#{number} is part of a dependency deadlock with {blockers}: remove a "
                 f"blocked-by link from the cycle, relabel it {ready_label}, then {rerun}."
+            )
+        elif (
+            isinstance(error, Interrupted)
+            and error.unverified is not None
+            and error.unverified.child_number == number
+            and configured_label(state, "human_review") in child_labels
+        ):
+            handoff = handoff_comment_url(state, number) or "no handoff comment found"
+            commits = error.unverified.commits
+            reason = (
+                f"interrupted and handed to human review with the unverified commits "
+                f"{commits} ({handoff})"
+            )
+            action = (
+                f"#{number} was interrupted: inspect the unverified commits {commits}, then "
+                f"close it or relabel it {ready_label} and {rerun}."
             )
         elif configured_label(state, "human_review") in child_labels:
             handoff = handoff_comment_url(state, number) or "no handoff comment found"
@@ -590,6 +610,16 @@ class Interrupted(BaseException):
     def __init__(self, signal_number: int):
         super().__init__(f"interrupted by {signal.Signals(signal_number).name}")
         self.exit_code = 128 + signal_number
+        # Set once the release has handed the interrupted child to human review.
+        self.unverified: UnverifiedCommits | None = None
+
+
+@dataclass(frozen=True)
+class UnverifiedCommits:
+    """The commits an interrupted child cycle made that no verification covered."""
+
+    child_number: int
+    commits: str
 
 
 def raise_interrupted(signal_number: int, _frame: Any) -> None:
@@ -620,6 +650,37 @@ def interruptions_raised():
 def as_interruption(error: KeyboardInterrupt | Interrupted) -> Interrupted:
     """A `KeyboardInterrupt` is the SIGINT interruption."""
     return error if isinstance(error, Interrupted) else Interrupted(signal.SIGINT)
+
+
+def release_interrupted_child(state: RunState, interruption: Interrupted) -> None:
+    """Release the child the run still holds agent working when it is interrupted.
+
+    A child whose branch has not moved goes back to ready-for-agent; one with
+    commits goes to human review naming them, since nothing verified them.
+    """
+    if state.working_child is None:
+        return
+    child_number, base = state.working_child
+    if configured_label(state, "agent_working") not in labels(
+        issue_details(state, child_number)
+    ):
+        return
+    head = current_head(state)
+    if head == base:
+        set_child_lifecycle(state, child_number, "ready_for_agent")
+    else:
+        commits = f"{base}..{head}"
+        send_child_to_human_review(
+            state,
+            child_number,
+            f"Ralph stopped because the run was interrupted ({interruption}) before it "
+            f"verified this child. The unverified commits {commits} are on the branch: "
+            "inspect them, then close this child or relabel it "
+            f"{configured_label(state, 'ready_for_agent')} and rerun. This child remains "
+            "open for human review.",
+        )
+        interruption.unverified = UnverifiedCommits(child_number, commits)
+    state.working_child = None
 
 
 class NoRunnableChild(RalphError):
@@ -2067,13 +2128,15 @@ def run_children(
         child_number = int(selected_child["number"])
         print(f"▶️  Starting child #{child_number}.", flush=True)
         require_trusted_issue(state, issue_details(state, child_number))
-        mark_child_agent_working(state, child_number)
         base_sha = current_head(state)
+        state.working_child = (child_number, base_sha)
+        mark_child_agent_working(state, child_number)
         state.diagnostics.issue_bases[child_number] = base_sha
         cycle = run_child_cycle(
             child_number, base_sha, budget, adapters, review=state.mode.review
         )
         if isinstance(cycle, HandedToHumanReview):
+            state.working_child = None
             raise ChildHandedToHumanReview(child_number, cycle)
 
         implementation_head = cycle.implementation_head
@@ -2091,6 +2154,7 @@ def run_children(
             correction_range,
             verified_head,
         )
+        state.working_child = None
         print(f"✅ Completed child #{child_number}", flush=True)
         print("🔄 Selecting the next runnable child.", flush=True)
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
@@ -2115,8 +2179,8 @@ def run(
     """Start a run from repository_root, by default the current directory.
 
     The run reaches GitHub and agents through adapters. SIGINT, SIGTERM, and
-    SIGHUP end it with an interrupted terminal summary and the shell's exit code
-    for the signal.
+    SIGHUP release the child it is working on, then end it with an interrupted
+    terminal summary and the shell's exit code for the signal.
     """
     state = RunState(
         mode=mode,
@@ -2142,6 +2206,13 @@ def run(
                 print(f"Ralph {interruption}.", file=sys.stderr)
             # A second interruption leaves the cleanup unfinished: the next startup handles it.
             try:
+                try:
+                    release_interrupted_child(state, interruption)
+                except RalphError as release_error:
+                    print(
+                        f"Ralph could not release the interrupted child: {release_error}",
+                        file=sys.stderr,
+                    )
                 report_stop(state, "interrupted", interruption)
             except (KeyboardInterrupt, Interrupted) as second:
                 print(
