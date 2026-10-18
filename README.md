@@ -376,6 +376,19 @@ Without one (`nohup`, a scheduler, redirected output), Ralph takes the Stop path
 and puts the warning in the terminal summary. Ctrl-C at the prompt counts as
 Stop.
 
+A run always releases its own child before it selects the next one. So if,
+while selecting its next child, a run finds a remaining child `agent-working`,
+that child belongs to another run started on the same parent. The run stops
+safely, without a prompt, before any further agent session, and leaves that
+child as it is, even if its implementation evidence is already published. The
+stop reason and the terminal summary name the child, listed as "agent working
+in another run on this parent", so you can find and stop the run that should not
+be running. This guard is best-effort, not a lock: there is no run marker, no run
+identifier, and no read-after-write check. Two runs that read the labels before
+either writes `agent-working` can still both take the same child, and a run
+started on the same parent is only noticed at startup or at its next child
+selection.
+
 Ctrl-C (SIGINT), `kill` (SIGTERM), and closing the terminal (SIGHUP) all
 interrupt a run the same way. Ralph ends the agent session in flight,
 terminating its engine process, and releases the child it was working on. If the

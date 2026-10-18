@@ -561,6 +561,88 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
 
+LATER_CHILD = 195
+
+
+class ConcurrentRunTests(RunLevelTestCase):
+    """A run that finds another run's child agent working at its next child selection stops."""
+
+    def start_with_another_run(self, mode, *results, published=False):
+        """Start a run during whose first session another run takes DEPENDENT.
+
+        With `published`, the other run has also published DEPENDENT's
+        implementation evidence but not yet marked it implemented.
+        """
+        self.sessions = ScriptedSessions(self.repository, *results)
+
+        def another_run_takes_dependent(request):
+            if self.github.labels(DEPENDENT) == {"ready-for-agent"}:
+                self.github.edit_issue_labels(
+                    DEPENDENT, add="agent-working", remove=["ready-for-agent"]
+                )
+                if published:
+                    self.github.comment_on_issue(
+                        DEPENDENT, implementation_evidence(mode, self.repository.base_sha)["body"]
+                    )
+
+        self.sessions.before_session = another_run_takes_dependent
+        return start_run(mode, self.repository, self.github, self.sessions, PARENT)
+
+    def assert_stopped_on_another_run(self, result, *, dependent_comments=0):
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.session_children(), [CHILD])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertEqual(self.github.labels(DEPENDENT), {"agent-working"})
+        self.assertEqual(len(self.github.comments(DEPENDENT)), dependent_comments)
+        summary = self.github.comments(PARENT)[-1]
+        for published in (summary, result.stderr):
+            self.assertIn("- final outcome: stopped safely", published)
+            self.assertIn(
+                f"Stop reason: #{DEPENDENT} labelled agent-working: another run on this "
+                "parent is working on it",
+                published,
+            )
+            self.assertIn(
+                f"- #{DEPENDENT}: agent working in another run on this parent.", published
+            )
+            self.assertIn(
+                f"- Another run is working on #{DEPENDENT}: find and stop the run that should "
+                f"not be running, then run `ralph-kit run {PARENT}` again if this one should "
+                "continue.",
+                published,
+            )
+            self.assertNotIn("Fix the stop reason", published)
+
+    def test_run_stops_at_its_next_child_selection_without_another_session(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+        self.github.add_issue(LATER_CHILD, parent=PARENT)
+
+        result = self.start_with_another_run(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_stopped_on_another_run(result)
+        self.assertEqual(self.github.labels(LATER_CHILD), {"ready-for-agent"})
+
+    def test_published_child_of_another_run_is_left_to_that_run(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+
+        result = self.start_with_another_run(
+            loop.MODE, *passing_child_results(loop.MODE), published=True
+        )
+
+        self.assert_stopped_on_another_run(result, dependent_comments=1)
+
+    def test_own_agent_working_child_does_not_stop_the_run(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+
+        result = self.start(loop_review.MODE, *passing_child_results(loop_review.MODE) * 2)
+
+        self.assert_completed(result, sessions=4)
+        self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT, DEPENDENT])
+
+
 class StartupChoiceCommandLineTests(unittest.TestCase):
     """`ralph-kit run` asks the startup question with the arrow keys only in a terminal."""
 

@@ -496,7 +496,13 @@ def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
         ]
     if isinstance(
         error,
-        (ChildHandedToHumanReview, ChildLeftAgentWorking, DependencyDeadlock, NoRunnableChild),
+        (
+            ChildHandedToHumanReview,
+            ChildHeldByAnotherRun,
+            ChildLeftAgentWorking,
+            DependencyDeadlock,
+            NoRunnableChild,
+        ),
     ):
         return []
     return [f"Fix the stop reason, then {rerun_instruction(state)}."]
@@ -511,6 +517,10 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
     left_agent_working = (
         {int(child["number"]) for child in error.children}
         if isinstance(error, ChildLeftAgentWorking) else set()
+    )
+    held_by_another_run = (
+        {int(child["number"]) for child in error.children}
+        if isinstance(error, ChildHeldByAnotherRun) else set()
     )
     ready_label = configured_label(state, "ready_for_agent")
     rerun = rerun_instruction(state)
@@ -532,6 +542,12 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
             action = (
                 "If no other run is working on this parent, inspect the branch, relabel "
                 f"#{number} {ready_label}, then {rerun}."
+            )
+        elif number in held_by_another_run:
+            reason = "agent working in another run on this parent"
+            action = (
+                f"Another run is working on #{number}: find and stop the run that should "
+                f"not be running, then {rerun} if this one should continue."
             )
         elif (
             isinstance(error, Interrupted)
@@ -736,6 +752,21 @@ class ChildLeftAgentWorking(RalphError):
         )
         self.children = children
         self.warning = warning
+
+
+class ChildHeldByAnotherRun(RalphError):
+    """Another run on the same parent is working on these children.
+
+    A run releases its own child before selecting the next one, so any child
+    still agent working at that point belongs to another run.
+    """
+
+    def __init__(self, children: list[dict[str, Any]], label: str):
+        super().__init__(
+            f"{child_numbers(children)} labelled {label}: another run on this parent is "
+            "working on it"
+        )
+        self.children = children
 
 
 def child_numbers(children: Iterable[dict[str, Any]]) -> str:
@@ -2175,14 +2206,16 @@ def run_children(
     while True:
         siblings = state.github.sub_issues(parent_issue)
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
-        if recover_published_child(state, siblings):
-            continue
-        if left_agent_working := [
+        # Best-effort guard, not a lock: another run can still take a child
+        # between this read and this run's own agent-working write.
+        if held_by_another_run := [
             child for child in siblings if child_is_agent_working(state, child)
         ]:
-            raise ChildLeftAgentWorking(
-                left_agent_working, configured_label(state, "agent_working")
+            raise ChildHeldByAnotherRun(
+                held_by_another_run, configured_label(state, "agent_working")
             )
+        if recover_published_child(state, siblings):
+            continue
         try:
             selected_child, _blockers, siblings = select_runnable_child(state, parent_issue)
         except DependencyDeadlock as error:
