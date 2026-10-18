@@ -20,6 +20,7 @@ from rich.table import Table
 from rich.text import Text
 
 from . import __version__
+from .agent import engine_help_command_and_flags
 from .config import MissingConfigError, RalphConfigError, load_config
 
 
@@ -51,6 +52,9 @@ LABEL_DESCRIPTIONS = {
     "implemented": "Implemented by Ralph",
 }
 ERRORS = (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, ImportError, SyntaxError)
+# Older gh prints an empty job log, with success, when the run's log archive has no step logs.
+MINIMUM_GH_VERSION = (2, 70, 0)
+GH_VERSION = re.compile(r"^gh version (\d+)\.(\d+)\.(\d+)\b")
 
 
 def placeholder(value):
@@ -71,9 +75,10 @@ class Prerequisite:
     fix: str | None = None
 
 
-def prerequisites(which, engines=None):
+def prerequisites(which, read_version, engines=None):
     """Tools init and check both need.
 
+    read_version(executable) -> its `--version` output, or None when it cannot be read.
     Without engines (init), any installed agent CLI is enough; otherwise each configured engine's CLI is required.
     """
     version = ".".join(map(str, sys.version_info[:3]))
@@ -84,7 +89,7 @@ def prerequisites(which, engines=None):
         return Prerequisite(executable, path or "", None if path else f"{executable} not found in PATH", INSTALL_HINTS[executable])
 
     yield tool("git")
-    yield tool("gh")
+    yield gh_prerequisite(which, read_version)
     if engines is None:
         found = [executable for executable in AGENT_CLIS if which(executable)]
         names = " or ".join(f"{executable} ({name})" for executable, name in AGENT_CLIS.items())
@@ -92,6 +97,48 @@ def prerequisites(which, engines=None):
     else:
         for executable in sorted(engines):
             yield tool(executable)
+
+
+def gh_prerequisite(which, read_version):
+    path = which("gh")
+    if not path:
+        return Prerequisite("gh", "", "gh not found in PATH", INSTALL_HINTS["gh"])
+    match = GH_VERSION.match(read_version("gh") or "")
+    if not match:
+        return Prerequisite("gh", path, "gh --version is unreadable", INSTALL_HINTS["gh"])
+    found = tuple(map(int, match.groups()))
+    minimum = ".".join(map(str, MINIMUM_GH_VERSION))
+    problem = None if found >= MINIMUM_GH_VERSION else f"gh {'.'.join(map(str, found))}, {minimum} or newer required"
+    return Prerequisite("gh", f"{'.'.join(map(str, found))} ({path})", problem, f"update GitHub CLI to {minimum} or newer: https://cli.github.com")
+
+
+OPTION = r"-[\w-]+(?:[ =]?[<\[][^>\]]*[>\]](?:\.\.\.)?)?"
+OPTION_LINE = re.compile(rf"( *)({OPTION}(?:, {OPTION})*)(?=\s{{2,}}|$)")
+FLAG = re.compile(r"(?<![\w\[-])-{1,2}\w[\w-]*")
+SHORT_FLAG_COLUMN = len("-c, ")
+
+
+def listed_flags(help_text):
+    """Flags a CLI help page defines.
+
+    Option lines sit at the shallowest option indent, or one short-flag column deeper for long-only options;
+    flags mentioned in descriptions, including wrapped description lines, are not listed.
+    """
+    options = [(len(match[1]), match[2]) for line in help_text.splitlines() if (match := OPTION_LINE.match(line))]
+    if not options:
+        return set()
+    indent = min(depth for depth, _ in options)
+    return {flag for depth, names in options if depth <= indent + SHORT_FLAG_COLUMN for flag in FLAG.findall(names)}
+
+
+def check_engine_flags(command, engine):
+    """Confirm the installed engine's help lists every flag Ralph passes to it; no network or tokens."""
+    help_command, flags = engine_help_command_and_flags(engine, PACKAGE_DIRECTORY / "outcome-schema.json")
+    listed = listed_flags(command(*help_command))
+    missing = [flag for flag in flags if flag not in listed]
+    name = AGENT_CLIS[engine]
+    require(not missing, f"{name} does not list {', '.join(missing)} in {' '.join(help_command)}", f"update {name}, or check that ralph-kit supports the installed version")
+    return f"{len(flags)} flags listed"
 
 
 def missing_labels(command, repository, wanted):
@@ -272,10 +319,14 @@ def check_policy(config, root):
     return ", ".join(found) + " (not run)"
 
 
-def run(root, config_path, *, with_review=False, console=None, confirm=None):
-    """confirm(question) -> bool offers to create missing labels; None never writes to GitHub."""
+def run(root, config_path, *, with_review=False, console=None, confirm=None, command=None):
+    """confirm(question) -> bool offers to create missing labels; None never writes to GitHub.
+
+    command(*args) -> stdout runs git, gh and engine help commands; it raises on failure.
+    """
     console = console or Console(highlight=False)
     report = Readiness(root)
+    command = command or report.command
     report.section("Configuration")
     try:
         config = load_config(config_path, root, require_review=with_review)
@@ -294,7 +345,13 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None):
     report.section("Tools")
     engines = {config.models[role].engine for role in roles}
     available = set()
-    for item in prerequisites(shutil.which, engines):
+    def read_version(executable):
+        try:
+            return command(executable, "--version")
+        except ERRORS:
+            return None
+
+    for item in prerequisites(shutil.which, read_version, engines):
         if report.add("fail" if item.problem else "ok", item.name, item.problem or item.detail, item.fix if item.problem else None):
             available.add(item.name)
 
@@ -310,20 +367,20 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None):
             report.skip(label, "git missing")
     else:
         def repository_root():
-            toplevel = pathlib.Path(report.command("git", "rev-parse", "--show-toplevel")).resolve()
+            toplevel = pathlib.Path(command("git", "rev-parse", "--show-toplevel")).resolve()
             require(toplevel == root, f"run from a subdirectory of {toplevel}", f"cd {shlex.quote(str(toplevel))}")
             return str(root)
         report.check("Repository root", repository_root)
 
         def remote():
-            url = report.command("git", "remote", "get-url", config.remote)
+            url = command("git", "remote", "get-url", config.remote)
             return f"{config.remote} → {re.sub(r'//[^/@]+@', '//', url)}"  # Hide credentials embedded in HTTPS URLs.
         report.check("Remote", remote, f"git remote add {config.remote} <url>, or fix remote in ralph.toml")
 
         def branch():
-            report.command("git", "check-ref-format", "--branch", config.base_branch)
+            command("git", "check-ref-format", "--branch", config.base_branch)
             try:
-                current = report.command("git", "symbolic-ref", "--quiet", "--short", "HEAD")
+                current = command("git", "symbolic-ref", "--quiet", "--short", "HEAD")
             except RuntimeError:
                 raise Blocked("detached HEAD, no active branch", "git switch -c <branch-name>") from None
             require(current != config.base_branch, f"on the base branch {current}", "git switch -c <branch-name>")
@@ -331,7 +388,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None):
         report.check("Branch", branch)
 
         def worktree():
-            changes = report.command("git", "status", "--porcelain").splitlines()
+            changes = command("git", "status", "--porcelain").splitlines()
             count = len(changes)
             require(not changes, f"{count} modified or untracked file{'s' if count > 1 else ''}", "commit the changes, or stash them with git stash")
             return "clean"
@@ -345,7 +402,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None):
     else:
         def repository():
             # Default repo must match, because a run uses gh repo view the same way.
-            detected = json.loads(report.command("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
+            detected = json.loads(command("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
             require(detected == config.repository, f"gh detects {detected}, ralph.toml says {config.repository}", f"fix repository in ralph.toml, or gh repo set-default {config.repository}")
             return config.repository
         report.check("Repository", repository)
@@ -354,20 +411,20 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None):
 
         def account():
             nonlocal login
-            login = json.loads(report.command("gh", "api", "user"))["login"]
+            login = json.loads(command("gh", "api", "user"))["login"]
             return login
         if report.check("gh account", account, "gh auth login"):
             report.check("Trusted account", lambda: require(login in config.trusted_authors, f"{login} is not in trusted_authors", f"add {login} to trusted_authors in ralph.toml") or "in trusted_authors")
 
             def write_access():
-                details = json.loads(report.command("gh", "api", f"repos/{config.repository}"))
+                details = json.loads(command("gh", "api", f"repos/{config.repository}"))
                 require(details.get("permissions", {}).get("push"), f"{login} has no write access", f"ask for write access to {config.repository}")
                 return "push allowed"
             report.check("Write access", write_access)
 
             def labels():
                 wanted = set(config.labels.values())
-                missing[:] = missing_labels(report.command, config.repository, wanted)
+                missing[:] = missing_labels(command, config.repository, wanted)
                 names = " ".join(shlex.quote(name) for name in missing)
                 fix = f"gh label create {names}" if len(missing) == 1 else f'for label in {names}; do gh label create "$label"; done'
                 require(not missing, f"{len(missing)} missing: {', '.join(missing)}", fix)
@@ -382,6 +439,10 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None):
         directory = ".claude/skills" if engine == "claude" else ".agents/skills"
         path = f"{directory}/implement/SKILL.md"
         report.check(f"Skill implement ({engine})", lambda path=path, directory=directory: require((root / path).is_file(), f"{path} missing or broken link", f"add the implement skill to {directory}/") or path)
+        if engine in available:
+            report.check(f"Flags ({engine})", lambda engine=engine: check_engine_flags(command, engine), f"reinstall {AGENT_CLIS[engine]}")
+        else:
+            report.skip(f"Flags ({engine})", f"{engine} missing")
 
     report.section("Quality checks")
     if config.verification.needs_quality_policy:
@@ -401,7 +462,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None):
         count = f"{len(missing)} missing label{'s' if len(missing) > 1 else ''}"
         if confirm(f"Create the {count} on {config.repository}?"):
             roles = {name: role for role, name in config.labels.items()}
-            failed = create_labels(report.command, config.repository, {roles[name]: name for name in missing})
+            failed = create_labels(command, config.repository, {roles[name]: name for name in missing})
             for name in missing:
                 console.print(Text(f"✗ {name} not created", style="red") if name in failed else Text(f"✓ {name} created", style="green"))
             errors -= not failed

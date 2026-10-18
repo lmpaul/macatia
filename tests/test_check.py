@@ -3,7 +3,6 @@
 import contextlib
 import io
 import json
-import os
 import pathlib
 import shutil
 import sys
@@ -17,7 +16,45 @@ SOURCE_DIRECTORY = KIT_ROOT / "src"
 FIXTURES = KIT_ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(SOURCE_DIRECTORY))
 
-from ralph_kit import check
+from ralph_kit import check, cli
+
+
+# Excerpts in the layout of the real help pages, so the tests need no engine installed.
+CODEX_HELP = """Run Codex non-interactively
+
+Usage: codex exec [OPTIONS] [PROMPT]
+
+Options:
+  -c, --config <key=value>
+          Override a configuration value
+  -m, --model <MODEL>
+          Model the agent should use
+      --dangerously-bypass-approvals-and-sandbox
+          Skip all confirmation prompts
+  -C, --cd <DIR>
+          Tell the agent to use the specified directory as its working root
+      --output-schema <FILE>
+          Path to a JSON Schema file describing the model's final response shape
+  -o, --output-last-message <FILE>
+          Specifies file where the last message from the agent should be written
+  -h, --help
+          Print help
+"""
+CLAUDE_HELP = """Usage: claude [options] [command] [prompt]
+
+Options:
+  --append-system-prompt <prompt>       Append a system prompt to the default
+                                        system prompt
+  --dangerously-skip-permissions        Bypass all permission checks.
+  --effort <level>                      Effort level for the current session
+  --json-schema <schema>                JSON Schema for structured output
+  --model <model>                       Model for the current session.
+  --output-format <format>              Output format (only works with --print):
+                                        "text", "json", or "stream-json"
+  -p, --print                           Print response and exit (useful for
+                                        pipes); also used with --verbose
+  -h, --help                            Display help for command
+"""
 
 
 class ReadinessTests(unittest.TestCase):
@@ -50,10 +87,15 @@ class ReadinessTests(unittest.TestCase):
         self.repo = "example/project"
         self.login = "reader"
         self.permission = True
+        self.gh_version = "gh version 2.70.0 (2025-04-15)\nhttps://github.com/cli/cli/releases/tag/v2.70.0"
         self.labels = ["needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix", "human-review", "implemented"]
         self.commands = []
+        self.help = {
+            ("codex", "exec", "--help"): CODEX_HELP,
+            ("claude", "--help"): CLAUDE_HELP,
+        }
 
-    def command(self, report, *args):
+    def command(self, *args):
         self.commands.append(args)
         responses = {
             ("git", "rev-parse", "--show-toplevel"): str(self.root),
@@ -63,9 +105,14 @@ class ReadinessTests(unittest.TestCase):
             ("git", "status", "--porcelain"): self.dirty,
             ("gh", "repo", "view", "--json", "nameWithOwner"): json.dumps({"nameWithOwner": self.repo}),
             ("gh", "api", "user"): json.dumps({"login": self.login}),
+            ("gh", "--version"): self.gh_version,
             ("gh", "api", "repos/example/project"): json.dumps({"permissions": {"push": self.permission}}),
             ("gh", "api", "--paginate", "--slurp", "repos/example/project/labels"): json.dumps([[{"name": name} for name in self.labels]]),
         }
+        if args[-1] == "--help":
+            if isinstance(self.help[args], Exception):
+                raise self.help[args]
+            return self.help[args]
         if args[:3] == ("gh", "label", "create"):
             if args[3] == "broken":
                 raise RuntimeError("gh label create failed")
@@ -76,8 +123,8 @@ class ReadinessTests(unittest.TestCase):
 
     def run_check(self, missing=None, confirm=None):
         output = io.StringIO()
-        with mock.patch.object(pathlib.Path, "cwd", return_value=self.root), mock.patch.object(self.checker.shutil, "which", side_effect=lambda name: None if name == missing else f"/tools/{name}"), mock.patch.object(self.checker.Readiness, "command", autospec=True, side_effect=self.command), contextlib.redirect_stdout(output):
-            code = self.checker.run(self.root, self.config, confirm=confirm)
+        with mock.patch.object(pathlib.Path, "cwd", return_value=self.root), mock.patch.object(self.checker.shutil, "which", side_effect=lambda name: None if name == missing else f"/tools/{name}"), contextlib.redirect_stdout(output):
+            code = self.checker.run(self.root, self.config, confirm=confirm, command=self.command)
         return code, output.getvalue()
 
     def flags(self, local, ci):
@@ -179,6 +226,72 @@ class ReadinessTests(unittest.TestCase):
         (self.root / ".agents/skills/implement/SKILL.md").unlink()
         self.assertEqual(self.run_check()[0], 1)
 
+    def use_engines(self, implementation, correction):
+        text = self.config.read_text()
+        for role, engine in (("implementation", implementation), ("correction", correction)):
+            text = text.replace(f'[models.{role}]\nengine = "codex"', f'[models.{role}]\nengine = "{engine}"')
+        self.config.write_text(text)
+        (self.root / ".claude/skills").mkdir(parents=True, exist_ok=True)
+        (self.root / ".claude/skills/implement").symlink_to("../../.agents/skills/implement")
+
+    def help_requests(self):
+        return [args for args in self.commands if args[-1] == "--help"]
+
+    def test_only_the_configured_engines_have_their_flags_checked(self):
+        for implementation, correction, expected in (
+            ("codex", "codex", [("codex", "exec", "--help")]),
+            ("claude", "claude", [("claude", "--help")]),
+            ("codex", "claude", [("claude", "--help"), ("codex", "exec", "--help")]),
+        ):
+            with self.subTest(implementation=implementation, correction=correction):
+                self.setUp()
+                self.use_engines(implementation, correction)
+                code, output = self.run_check()
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.help_requests(), expected)
+
+    def test_flags_missing_from_help_block_with_engine_flags_and_fix(self):
+        wrapped = "  --bare                                Minimal mode; still honours\n                                        --json-schema, --add-dir\n"
+        for engine, page, expected in (
+            ("codex", CODEX_HELP.replace("--output-schema", "--output-format"), "Codex does not list --output-schema in codex exec --help"),
+            ("codex", CODEX_HELP.replace("--cd <DIR>", "--dir <DIR>").replace("-o, --output-last-message", "-o, --last-message"), "Codex does not list --cd, --output-last-message in codex exec --help"),
+            ("claude", CLAUDE_HELP.replace("--json-schema", "--json"), "Claude Code does not list --json-schema in claude --help"),
+            # Flags only mentioned in descriptions, on the option's own line or a wrapped line, are not listed.
+            ("claude", CLAUDE_HELP.replace("  -p, --print     ", "  --no-print      "), "Claude Code does not list -p in claude --help"),
+            ("claude", CLAUDE_HELP.replace("--json-schema", "--json") + wrapped, "Claude Code does not list --json-schema in claude --help"),
+        ):
+            with self.subTest(expected=expected):
+                self.setUp()
+                self.use_engines(engine, engine)
+                help_command = ("codex", "exec", "--help") if engine == "codex" else ("claude", "--help")
+                self.help[help_command] = page
+                code, output = self.run_check()
+                self.assertEqual(code, 1)
+                output = " ".join(output.split())
+                self.assertIn(expected, output)
+                self.assertIn(f"→ update {check.AGENT_CLIS[engine]}, or check that ralph-kit supports the installed version", output)
+
+    def test_variadic_option_is_listed(self):
+        self.help[("codex", "exec", "--help")] = CODEX_HELP.replace("  -C, --cd <DIR>", "  -C, --cd <DIR>...")
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+
+    def test_failing_or_missing_help_command_is_a_readiness_error(self):
+        for error in (RuntimeError("codex exec --help failed; check access and authentication"), FileNotFoundError(2, "No such file or directory", "codex")):
+            with self.subTest(error=error):
+                self.help[("codex", "exec", "--help")] = error
+                code, output = self.run_check()
+                self.assertEqual(code, 1)
+                self.assertIn("Flags (codex)", output)
+                self.assertIn("→ reinstall Codex", output)
+                self.assertIn("1 blocker", output)
+
+    def test_missing_engine_skips_its_flag_check(self):
+        code, output = self.run_check(missing="codex")
+        self.assertEqual(code, 1)
+        self.assertEqual(self.help_requests(), [])
+        self.assertIn("not verified: codex missing", output)
+
     def test_missing_config_points_to_init(self):
         self.config.unlink()
         code, output = self.run_check()
@@ -193,13 +306,17 @@ class ReadinessTests(unittest.TestCase):
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         for review in ([], ["--review"]):
             with self.subTest(review=review):
-                result = subprocess.run(
-                    [sys.executable, "-m", "ralph_kit", "run", *review, "1"],
-                    cwd=self.root, capture_output=True, text=True,
-                    env=os.environ | {"PYTHONPATH": str(SOURCE_DIRECTORY)},
-                )
-                self.assertEqual(result.returncode, 1)
-                self.assertIn("ralph.toml not found: run `ralph-kit init` first", result.stderr)
+                stderr = io.StringIO()
+                with (
+                    contextlib.chdir(self.root),
+                    contextlib.redirect_stdout(io.StringIO()),
+                    contextlib.redirect_stderr(stderr),
+                    # The CLI turns bytecode writing off for the whole process.
+                    mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
+                ):
+                    code = cli.main(["run", *review, "1"])
+                self.assertEqual(code, 1)
+                self.assertIn("ralph.toml not found: run `ralph-kit init` first", stderr.getvalue())
 
     def test_missing_gh_skips_github_checks(self):
         code, output = self.run_check(missing="gh")
@@ -208,6 +325,19 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("install GitHub CLI", output)
         self.assertEqual(output.count("not verified: gh missing"), 5)
         self.assertIn("1 blocker", output)
+
+    def test_gh_older_than_the_minimum_version_blocks_and_skips_github_checks(self):
+        self.gh_version = "gh version 2.67.0 (2025-02-11)"
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("gh 2.67.0, 2.70.0 or newer required", output)
+        self.assertIn("update GitHub CLI to 2.70.0 or newer", output)
+        self.assertEqual(output.count("not verified: gh missing"), 5)
+
+    def test_gh_version_is_shown_when_it_is_recent_enough(self):
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertIn("2.70.0 (/tools/gh)", output)
 
     def test_failures_show_the_fix(self):
         self.labels.remove("implemented")

@@ -289,6 +289,16 @@ class HumanReviewTests(unittest.TestCase):
             tools, result, "run budget exhausted before CI correction", "lint failed"
         )
 
+    def test_run_budget_stop_before_issue_correction_keeps_the_remaining_findings(self):
+        tools = FakeTools({"implementation": [needs_correction("reversible ordering", commits=1)]})
+
+        result, _ = cycle(tools, budget=1)
+
+        self.assert_handed_off(
+            tools, result, "run budget exhausted before issue correction", "- reversible ordering"
+        )
+        self.assertEqual(tools.gate_heads, [])
+
     def test_unavailable_ci_is_handed_off_without_a_session(self):
         tools = FakeTools(
             {"implementation": [committed()]},
@@ -301,6 +311,20 @@ class HumanReviewTests(unittest.TestCase):
             tools, result, "infrastructure retries exhausted", "checks never started"
         )
         self.assertEqual(budget.sessions, 1)
+
+    def test_failed_issue_correction_handoff_keeps_the_original_findings(self):
+        tools = FakeTools({
+            "implementation": [needs_correction("expose freshness", commits=1)],
+            "issue correction": [("failed", 0, [], "the toolchain crashed")],
+        })
+
+        result, _ = cycle(tools)
+
+        self.assert_handed_off(
+            tools, result,
+            "issue correction stopped with failed: the toolchain crashed",
+            "- expose freshness",
+        )
 
     def test_gate_correction_reporting_needs_correction_is_handed_off(self):
         tools = FakeTools(
@@ -373,6 +397,7 @@ class NewCommitRuleTests(unittest.TestCase):
         self.assert_no_commit_handoff(tools, result, "CI correction")
         self.assertIn("- flaky check", tools.handoffs[0][1])
         self.assertIn("lint failed", tools.handoffs[0][1])
+        self.assertEqual(tools.ci_heads, ["implementation-1-0"])
 
 
 class ChildWorkStopTests(unittest.TestCase):

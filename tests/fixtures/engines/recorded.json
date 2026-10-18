@@ -1,0 +1,19 @@
+{
+  "recorded_at": "2026-10-18",
+  "prompt": "Do not read or change any file and do not run any command. Reply only with the structured result: outcome \"no_changes\", summary \"Fixture session: nothing to do.\", findings [].",
+  "schema": "src/ralph_kit/outcome-schema.json",
+  "claude": {
+    "version": "2.1.302 (Claude Code)",
+    "model": "haiku",
+    "reasoning_effort": "low",
+    "output": "claude-stdout.json",
+    "source": "stdout of the agent_command translation, unchanged"
+  },
+  "codex": {
+    "version": "codex-cli 0.152.1",
+    "model": "gpt-5.6-luna",
+    "reasoning_effort": "low",
+    "output": "codex-result.json",
+    "source": "--output-last-message file of the agent_command translation, unchanged"
+  }
+}

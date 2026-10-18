@@ -28,4 +28,4 @@ MODE = loop_core.RunMode(
 
 
 def run(argv: list[str] | None = None, prog: str | None = None) -> int:
-    return loop_core.run(MODE, argv, prog)
+    return loop_core.run(MODE, loop_core.real_run_adapters(), argv, prog)

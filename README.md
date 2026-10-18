@@ -11,8 +11,8 @@ its quality module and manifest).
 
 ## Install
 
-Requires Python 3.11+ (uv can provide it), Git, an authenticated `gh`, and the
-CLI of each configured agent engine.
+Requires Python 3.11+ (uv can provide it), Git, an authenticated `gh` 2.70.0 or
+newer, and the CLI of each configured agent engine.
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh        # once per machine
@@ -36,7 +36,7 @@ ralph-kit run --review 123     # reviewed run: adds an independent review sessio
 
 Commit `ralph.toml` and run on a clean, dedicated branch (never the base branch).
 
-`init` first requires `git`, an authenticated `gh` and at least one agent CLI
+`init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats
 these requirements, requiring the CLI of each configured engine, so it is the command
 to run when reusing a committed `ralph.toml` on another machine.
@@ -57,11 +57,60 @@ diagnostics to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 ```sh
 git clone git@github.com:lmpaul/ralph-kit.git && cd ralph-kit
 uv tool install -e .                          # `ralph-kit` now runs this checkout
-uv run python -m unittest discover -s tests   # offline tests (~5 min), with dependencies
+uv run python -m unittest discover -s tests   # offline tests (~35 s), with dependencies
 ```
 
-Tests use temporary Git repositories and fake GitHub/Codex/Claude commands; they
-do not launch real agents or mutate remote issues.
+The default suite is offline: it never starts `ralph-kit run` as a subprocess,
+launches a real agent, or calls GitHub. Each rule is tested at one level:
+
+- **Child cycle rules** (correction limit, review session order, handoff on
+  missing commits, run budget checks inside a cycle): `tests/test_child_cycle.py`,
+  in memory through the child cycle adapters.
+- **Run rules** (child selection, blockers, deadlock, recovery, publication,
+  parent completion, infrastructure retries, startup and trust):
+  `tests/test_run.py`, a whole run in memory through injected run adapters.
+  `tests/run_support.py` provides a GitHub fake, scripted sessions or engine
+  processes, and a real temporary Git repository with a bare `origin`.
+- **Engine translation** (the CLI command built for each session, and the
+  parsing of each engine's final result): `tests/test_agent.py`, pure functions
+  against outputs recorded from the real CLIs in `tests/fixtures/engines/`.
+- **Readiness check** (including the engine flag check): `tests/test_check.py`,
+  with injected executable lookup and command runner. `tests/test_init.py`
+  covers `ralph-kit init` the same way.
+- **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
+  and `claude`: `tests/test_live.py`, skipped unless `RALPH_LIVE=1` (see below).
+
+### Live suite
+
+Run it before a release and after upgrading `gh`, `codex` or `claude`. It needs
+an authenticated `gh` and engine CLIs, and spends a few tokens, so it is not part
+of the default suite, local gates or CI:
+
+```sh
+RALPH_LIVE=1 uv run python -m unittest discover -s tests -p test_live.py -v
+```
+
+It makes read-only `gh` calls of each shape a run parses (repository, children,
+blockers, issue details, open pull requests, check runs, and the Actions job, job
+log and check run behind a check) through Ralph's GitHub adapter, against the
+children of parent issue #5 in this repository (`RALPH_LIVE_PARENT` selects another
+parent issue with children and blockers) and the check runs of its default branch
+head. It then starts one Claude Code and one Codex session in a scratch Git
+repository, with a trivial prompt, Ralph's real engine command and output schema,
+and checks that Ralph's result parsing accepts the result. A failed session
+reports the engine's exit code, stderr and stdout. `RALPH_LIVE_CLAUDE_MODEL`
+(default `haiku`) and `RALPH_LIVE_CODEX_MODEL` (default `gpt-5.6-luna`) select the
+models. Without `RALPH_LIVE=1` its tests are skipped; `-v` shows the skip reason.
+
+To refresh the recorded engine outputs in `tests/fixtures/engines/` (after an
+engine upgrade), add `RALPH_LIVE_REFRESH=1`. Each passing session replaces its
+engine's output and records the CLI version, model and date in `recorded.json`;
+commit the changed fixtures only when the whole live suite and the default suite
+pass:
+
+```sh
+RALPH_LIVE=1 RALPH_LIVE_REFRESH=1 uv run python -m unittest discover -s tests -p test_live.py -v
+```
 
 ## The loop: `run` and `run --review`
 
@@ -111,7 +160,9 @@ to its complete result and outputs. Failure evidence includes:
 - CI: every currently failed CI check, its job URL, the repository check
   command, job/step metadata, and complete job logs fetched with
   [`gh run view --job … --log`](https://cli.github.com/manual/gh_run_view).
-  Job metadata must match the failed commit and check before logs are used.
+  Job metadata must match the failed commit and check before logs are used, and
+  an empty log counts as unavailable. Older `gh` versions print an empty log,
+  with success, when the run's log archive has no step logs; hence `gh` 2.70.0.
   If logs cannot be fetched, the prompt records that limitation, the retrieval
   error, and references for further diagnosis.
 
@@ -173,7 +224,7 @@ display_name = "Claude correction"
 reasoning_effort = "medium"
 ```
 
-Python 3.11+, Git, authenticated `gh`, and the authenticated CLI for each selected
+Python 3.11+, Git, authenticated `gh` 2.70.0 or newer, and the authenticated CLI for each selected
 engine must be available on `PATH`. Project test tools are still required.
 Claude efforts are `low`, `medium`, `high`, `xhigh`, or `max`; the selected model
 may support only a subset. Codex retains its existing effort options. Model and
@@ -284,9 +335,11 @@ ralph-kit check --review
 ```
 
 Commit the prepared files and use a dedicated branch first. The readiness check validates
-TOML and placeholders, Python and required CLI availability, Git branch/remote
+TOML and placeholders, Python and required CLI availability (and the minimum `gh` version), Git branch/remote
 and clean worktree, GitHub access/repository/trusted account/write permission/labels,
-the packaged result schema, the implement skill for each engine, and the enabled quality policy.
+the packaged result schema, the implement skill for each engine, the flags Ralph passes
+to each configured engine (listed in the engine's own help, so an update that drops one
+blocks before a run), and the enabled quality policy.
 It inspects local gate commands and CI check names without executing them.
 Disabled verification may keep placeholder entries; when both are disabled the
 quality policy is not loaded.
@@ -296,7 +349,8 @@ as not verified instead of failing. Colors are dropped when the output is not a
 terminal (or with `NO_COLOR`).
 A nonzero exit code means a blocking check failed. In a terminal, missing labels
 are offered for creation after the report (Yes / Later); that is the only GitHub
-write. No agent, project check, CI run, push, issue or PR mutation occurs. The configured
+write. Engines only print their help; no agent session, project check, CI run, push,
+issue or PR mutation occurs. The configured
 quality module is imported: it must be trusted and have no import-time side effects.
 
 A successful readiness check does not validate agent authentication/model access,

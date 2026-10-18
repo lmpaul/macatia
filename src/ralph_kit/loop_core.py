@@ -15,8 +15,8 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Iterable
-from dataclasses import dataclass
+from collections.abc import Callable, Iterable
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 
@@ -34,7 +34,9 @@ from .child_cycle import (
     SessionResult,
     run_child_cycle,
 )
+from .commands import RalphError, command as run_command
 from .config import AgentProfile, RalphConfig, RalphConfigError, load_config
+from .github import GitHub
 from .sanitize import (
     format_findings,
     sanitized_diagnostic,
@@ -64,8 +66,6 @@ class RunMode:
     unverified_warning: str
 
 
-# Ralph runs against the repository it is started from, not where it is installed.
-REPOSITORY_ROOT = pathlib.Path.cwd().resolve()
 DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
 ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
@@ -88,31 +88,15 @@ LONG_AGENT_SUMMARY = (
 )
 
 
-CONFIG: RalphConfig | None = None
-MODE: RunMode | None = None
+def agent_result_guidance(state: RunState) -> str:
+    return AGENT_RESULT_GUIDANCE.format(follow_up_role=state.mode.follow_up_role)
 
 
-def active_config() -> RalphConfig:
-    if CONFIG is None:
-        raise RalphError("Ralph configuration was not initialized")
-    return CONFIG
+def configured_label(state: RunState, role: str) -> str:
+    return state.config.labels[role]
 
 
-def active_mode() -> RunMode:
-    if MODE is None:
-        raise RalphError("Ralph run mode was not initialized")
-    return MODE
-
-
-def agent_result_guidance() -> str:
-    return AGENT_RESULT_GUIDANCE.format(follow_up_role=active_mode().follow_up_role)
-
-
-def configured_label(role: str) -> str:
-    return active_config().labels[role]
-
-
-def agent_profile(role: str) -> AgentProfile:
+def agent_profile(state: RunState, role: str) -> AgentProfile:
     profile = {
         "implementation": "implementation",
         "review": "review",
@@ -120,7 +104,7 @@ def agent_profile(role: str) -> AgentProfile:
         "issue correction": "correction",
         "CI correction": "correction",
     }[role]
-    return active_config().models[profile]
+    return state.config.models[profile]
 
 
 def utc_timestamp() -> str:
@@ -130,9 +114,10 @@ def utc_timestamp() -> str:
 class DiagnosticRecorder:
     """Keeps untracked evidence for one Ralph invocation and its agents."""
 
-    def __init__(self):
+    def __init__(self, repository_root: pathlib.Path, loop_label: str):
         self.run_id = uuid.uuid4().hex
-        self.directory = REPOSITORY_ROOT / ".ralph" / "diagnostics" / self.run_id
+        self.repository_root = repository_root
+        self.directory = repository_root / ".ralph" / "diagnostics" / self.run_id
         self.sessions_directory = self.directory / "sessions"
         self.sessions_directory.mkdir(parents=True)
         self.sequence = 0
@@ -142,7 +127,7 @@ class DiagnosticRecorder:
         self.phases: list[dict[str, Any]] = []
         self._write_json(
             self.directory / "run.json",
-            {"run_id": self.run_id, "started_at": utc_timestamp(), "loop": active_mode().diagnostics_label},
+            {"run_id": self.run_id, "started_at": utc_timestamp(), "loop": loop_label},
         )
 
     @staticmethod
@@ -168,7 +153,7 @@ class DiagnosticRecorder:
             )
         self._write_json(directory / "command.json", {
             "command": arguments,
-            "cwd": str(REPOSITORY_ROOT),
+            "cwd": str(self.repository_root),
             "returncode": completed.returncode,
             **metadata,
         })
@@ -253,17 +238,80 @@ class DiagnosticRecorder:
         )
 
 
-DIAGNOSTICS: DiagnosticRecorder | None = None
-RUN_STARTED_AT: float | None = None
-RUN_BRANCH: str | None = None
-RUN_INITIAL_IMPLEMENTED_CHILDREN: set[int] | None = None
-RUN_SUMMARY: dict[str, int | None] = {
-    "parent": None,
-    "implemented": 0,
-    "remaining": 0,
-    "agent_sessions": 0,
-    "infra_retries": 0,
-}
+@dataclass
+class RunSummary:
+    """The counts the terminal summary reports; `parent` is set once the run reads its children."""
+
+    parent: int | None = None
+    implemented: int = 0
+    remaining: int = 0
+    agent_sessions: int = 0
+    infra_retries: int = 0
+
+
+@dataclass(frozen=True)
+class ChildCycleContext:
+    """What the child cycle adapters of one run need once its startup checks pass."""
+
+    state: RunState
+    quality: Any
+    manifest: dict[str, Any] | None
+    branch: str
+    parent_issue: int
+    infrastructure: InfrastructureRetryTracker
+
+
+@dataclass(frozen=True)
+class RunAdapters:
+    """Everything a run reaches outside its process, except Git.
+
+    GitHub access is built once the configuration names the repository, and the
+    child cycle adapters once the startup checks have accepted the branch.
+    """
+
+    # (repository root, configured repository) -> GitHub access
+    github: Callable[[pathlib.Path, str], GitHub]
+    child_cycle: Callable[[ChildCycleContext], ChildCycleAdapters]
+    # Waits between CI polls and infrastructure retries.
+    sleep: Callable[[float], None] = time.sleep
+    # (repository root, engine command) -> the finished engine process, run without a check.
+    run_engine: Callable[[pathlib.Path, list[str]], subprocess.CompletedProcess[str]] = (
+        functools.partial(run_command, check=False)
+    )
+
+
+@dataclass
+class RunState:
+    """Everything one run knows about itself; nothing is shared between runs.
+
+    The configuration and the GitHub adapter exist once the configuration is
+    loaded, the diagnostics once the run has started recording, and the branch
+    once the startup checks have accepted it.
+    """
+
+    mode: RunMode
+    adapters: RunAdapters
+    # Ralph runs against the repository it is started from, not where it is installed.
+    repository_root: pathlib.Path
+    started_at: float
+    loaded_config: RalphConfig | None = None
+    loaded_github: GitHub | None = None
+    diagnostics: DiagnosticRecorder | None = None
+    branch: str | None = None
+    initial_implemented_children: set[int] | None = None
+    summary: RunSummary = field(default_factory=RunSummary)
+
+    @property
+    def config(self) -> RalphConfig:
+        if self.loaded_config is None:
+            raise RalphError("Ralph configuration was not initialized")
+        return self.loaded_config
+
+    @property
+    def github(self) -> GitHub:
+        if self.loaded_github is None:
+            raise RalphError("Ralph GitHub access was not initialized")
+        return self.loaded_github
 
 
 def format_elapsed_duration(seconds: int) -> str:
@@ -272,19 +320,19 @@ def format_elapsed_duration(seconds: int) -> str:
     return f"{hours:02}:{minutes:02}:{seconds:02}"
 
 
-def terminal_summary(outcome: str) -> str:
+def terminal_summary(state: RunState, outcome: str) -> str:
     elapsed_seconds = (
-        int(time.monotonic() - RUN_STARTED_AT) if RUN_STARTED_AT is not None else 0
+        int(time.monotonic() - state.started_at)
     )
     phase_summary = (
-        DIAGNOSTICS.timing_summary() if DIAGNOSTICS is not None else "unavailable"
+        state.diagnostics.timing_summary() if state.diagnostics is not None else "unavailable"
     )
     return (
         "Ralph summary: "
-        f"parent #{RUN_SUMMARY['parent']}; implemented children this run: "
-        f"{RUN_SUMMARY['implemented']}; remaining children: {RUN_SUMMARY['remaining']}; "
-        f"agent_sessions: {RUN_SUMMARY['agent_sessions']}; "
-        f"infra_retries: {RUN_SUMMARY['infra_retries']}; "
+        f"parent #{state.summary.parent}; implemented children this run: "
+        f"{state.summary.implemented}; remaining children: {state.summary.remaining}; "
+        f"agent_sessions: {state.summary.agent_sessions}; "
+        f"infra_retries: {state.summary.infra_retries}; "
         f"total duration: {format_elapsed_duration(elapsed_seconds)}; "
         f"phase timings: {phase_summary}; "
         f"final outcome: {outcome}."
@@ -292,79 +340,63 @@ def terminal_summary(outcome: str) -> str:
 
 
 def update_run_summary(
+    state: RunState,
     parent_issue: int,
     children: Iterable[dict[str, Any]],
     budget: RunBudget,
     infrastructure: InfrastructureRetryTracker,
 ) -> None:
-    global RUN_INITIAL_IMPLEMENTED_CHILDREN
     child_list = list(children)
     implemented_children = {
         int(child["number"])
         for child in child_list
-        if configured_label("implemented") in labels(child)
+        if configured_label(state, "implemented") in labels(child)
     }
-    if RUN_INITIAL_IMPLEMENTED_CHILDREN is None:
-        RUN_INITIAL_IMPLEMENTED_CHILDREN = set(implemented_children)
-    RUN_SUMMARY.update(
-        {
-            "parent": parent_issue,
-            "implemented": len(
-                implemented_children - RUN_INITIAL_IMPLEMENTED_CHILDREN
-            ),
-            "remaining": sum(
-                str(child.get("state", "")).upper() == "OPEN"
-                and configured_label("implemented") not in labels(child)
-                for child in child_list
-            ),
-            "agent_sessions": budget.sessions,
-            "infra_retries": infrastructure.infra_retries,
-        }
+    if state.initial_implemented_children is None:
+        state.initial_implemented_children = set(implemented_children)
+    state.summary = RunSummary(
+        parent=parent_issue,
+        implemented=len(implemented_children - state.initial_implemented_children),
+        remaining=sum(
+            str(child.get("state", "")).upper() == "OPEN"
+            and configured_label(state, "implemented") not in labels(child)
+            for child in child_list
+        ),
+        agent_sessions=budget.sessions,
+        infra_retries=infrastructure.infra_retries,
     )
 
 
-def print_terminal_summary(outcome: str, *, stream: Any = sys.stdout) -> None:
-    if RUN_SUMMARY["parent"] is None:
+def print_terminal_summary(state: RunState, outcome: str, *, stream: Any = None) -> None:
+    if state.summary.parent is None:
         return
-    print(terminal_summary(outcome), file=stream)
+    print(terminal_summary(state, outcome), file=stream or sys.stdout)
 
 
-def publish_terminal_summary(outcome: str) -> None:
-    if RUN_SUMMARY["parent"] is None or RUN_BRANCH is None:
+def publish_terminal_summary(state: RunState, outcome: str) -> None:
+    if state.summary.parent is None or state.branch is None:
         return
-    summary = f"{active_mode().terminal_summary_marker}\n{terminal_summary(outcome)}"
-    command(["gh", "issue", "comment", str(RUN_SUMMARY["parent"]), "--body", summary])
-    pulls = github_json(
-        [
-            "pr",
-            "list",
-            "--head",
-            RUN_BRANCH,
-            "--base",
-            active_config().base_branch,
-            "--state",
-            "open",
-            "--json",
-            "number,isDraft,url",
-        ]
-    )
+    summary = f"{state.mode.terminal_summary_marker}\n{terminal_summary(state, outcome)}"
+    state.github.comment_on_issue(state.summary.parent, summary)
+    pull = open_pull_request(state, state.branch)
+    if pull is not None:
+        state.github.comment_on_pull_request(pull["number"], summary)
+
+
+def open_pull_request(state: RunState, branch: str) -> dict[str, Any] | None:
+    pulls = state.github.open_pull_requests(branch, state.config.base_branch)
     if not isinstance(pulls, list):
         raise RalphError("GitHub pull request lookup returned invalid data")
     if len(pulls) > 1:
-        raise RalphError(f"branch {RUN_BRANCH} has more than one open pull request")
-    if pulls:
-        command(["gh", "pr", "comment", str(pulls[0]["number"]), "--body", summary])
+        raise RalphError(f"branch {branch} has more than one open pull request")
+    return pulls[0] if pulls else None
 
 
-def safely_publish_terminal_summary(outcome: str) -> None:
+def safely_publish_terminal_summary(state: RunState, outcome: str) -> None:
     try:
-        publish_terminal_summary(outcome)
+        publish_terminal_summary(state, outcome)
     except RalphError as error:
         print(f"Ralph could not publish terminal summary: {error}", file=sys.stderr)
-
-
-class RalphError(RuntimeError):
-    """A safe terminal stop that must not advance issue state."""
 
 
 class DependencyDeadlock(RalphError):
@@ -418,7 +450,8 @@ class InfrastructureRetryTracker:
 
     maximum_retries = 3
 
-    def __init__(self):
+    def __init__(self, state: RunState):
+        self.state = state
         self.infra_retries = 0
 
     def run(self, operation, *, initial_delay_seconds: float):
@@ -429,9 +462,9 @@ class InfrastructureRetryTracker:
             flush=True,
         )
         if initial_delay_seconds:
-            time.sleep(initial_delay_seconds)
+            self.state.adapters.sleep(initial_delay_seconds)
         while True:
-            expected_head = current_head()
+            expected_head = current_head(self.state)
             try:
                 print(
                     "🔎 Checking canonical CI "
@@ -440,7 +473,7 @@ class InfrastructureRetryTracker:
                 )
                 return operation()
             except InfrastructureFailure as failure:
-                if current_head() != expected_head:
+                if current_head(self.state) != expected_head:
                     raise RalphError(
                         "branch advanced during an infrastructure retry"
                     ) from failure
@@ -457,40 +490,23 @@ class InfrastructureRetryTracker:
                     flush=True,
                 )
                 if retry_seconds:
-                    time.sleep(retry_seconds)
+                    self.state.adapters.sleep(retry_seconds)
 
 
 def command(
+    state: RunState,
     arguments: list[str],
     *,
     check: bool = True,
     capture_output: bool = True,
 ) -> subprocess.CompletedProcess[str]:
-    completed = subprocess.run(
-        arguments,
-        cwd=REPOSITORY_ROOT,
-        check=False,
-        text=True,
-        capture_output=capture_output,
+    return run_command(
+        state.repository_root, arguments, check=check, capture_output=capture_output
     )
-    if check and completed.returncode != 0:
-        detail = (completed.stderr or "").strip() or (completed.stdout or "").strip()
-        raise RalphError(f"command failed ({' '.join(arguments)}): {detail}")
-    return completed
 
 
-def git(*arguments: str, check: bool = True) -> str:
-    return command(["git", *arguments], check=check).stdout.strip()
-
-
-def github_json(arguments: list[str]) -> Any:
-    output = command(["gh", *arguments]).stdout
-    try:
-        return json.loads(output)
-    except json.JSONDecodeError as error:
-        raise RalphError(
-            f"GitHub returned invalid JSON for {' '.join(arguments)}"
-        ) from error
+def git(state: RunState, *arguments: str, check: bool = True) -> str:
+    return command(state, ["git", *arguments], check=check).stdout.strip()
 
 
 def positive_integer(value: str) -> int:
@@ -503,10 +519,12 @@ def positive_integer(value: str) -> int:
     return parsed
 
 
-def parse_arguments(argv: list[str] | None = None, prog: str | None = None) -> argparse.Namespace:
+def parse_arguments(
+    state: RunState, argv: list[str] | None = None, prog: str | None = None
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description=active_mode().description,
+        description=state.mode.description,
     )
     parser.add_argument(
         "--config",
@@ -533,33 +551,34 @@ def load_quality_module(path: pathlib.Path):
     return module
 
 
-def current_head() -> str:
-    return git("rev-parse", "HEAD")
+def current_head(state: RunState) -> str:
+    return git(state, "rev-parse", "HEAD")
 
 
-def require_clean_worktree(context: str) -> None:
-    if git("status", "--porcelain"):
+def require_clean_worktree(state: RunState, context: str) -> None:
+    if git(state, "status", "--porcelain"):
         raise RalphError(f"worktree is dirty {context}")
 
 
-def require_repository_root() -> None:
-    completed = command(["git", "rev-parse", "--show-toplevel"], check=False)
+def require_repository_root(state: RunState) -> None:
+    completed = command(state, ["git", "rev-parse", "--show-toplevel"], check=False)
     actual_root = (
         pathlib.Path(completed.stdout.strip()).resolve()
         if completed.returncode == 0
         else None
     )
-    if actual_root != REPOSITORY_ROOT:
+    if actual_root != state.repository_root:
         raise RalphError(
-            f"wrong worktree: start ralph-kit from the repository root, not {REPOSITORY_ROOT}"
+            f"wrong worktree: start ralph-kit from the repository root, not {state.repository_root}"
         )
 
 
-def preflight() -> str:
-    configuration = active_config()
-    require_repository_root()
+def preflight(state: RunState) -> str:
+    configuration = state.config
+    require_repository_root(state)
 
     if command(
+        state,
         ["git", "check-ref-format", "--branch", configuration.base_branch],
         check=False,
     ).returncode != 0:
@@ -568,11 +587,13 @@ def preflight() -> str:
             f"{configuration.base_branch}"
         )
     if command(
+        state,
         ["git", "remote", "get-url", configuration.remote], check=False
     ).returncode != 0:
         raise RalphError(f"configured Git remote does not exist: {configuration.remote}")
 
     branch_result = command(
+        state,
         ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], check=False
     )
     if branch_result.returncode != 0:
@@ -580,22 +601,22 @@ def preflight() -> str:
     branch = branch_result.stdout.strip()
     if branch == configuration.base_branch:
         raise RalphError(f"{configuration.base_branch} is not a safe Ralph branch")
-    require_clean_worktree("at startup")
+    require_clean_worktree(state, "at startup")
 
-    worktrees = git("worktree", "list", "--porcelain")
+    worktrees = git(state, "worktree", "list", "--porcelain")
     expected_entry = (
-        f"worktree {REPOSITORY_ROOT}\n"
-        f"HEAD {current_head()}\n"
+        f"worktree {state.repository_root}\n"
+        f"HEAD {current_head(state)}\n"
         f"branch refs/heads/{branch}"
     )
     if expected_entry not in worktrees:
         raise RalphError("current checkout does not match the selected Git worktree")
 
-    repository = github_json(["repo", "view", "--json", "nameWithOwner"])
-    if repository.get("nameWithOwner") != configuration.repository:
+    repository = state.github.repository_name()
+    if repository != configuration.repository:
         raise RalphError(
             "wrong repository: expected "
-            f"{configuration.repository}, found {repository.get('nameWithOwner')}"
+            f"{configuration.repository}, found {repository}"
         )
     return branch
 
@@ -607,64 +628,48 @@ def labels(issue: dict[str, Any]) -> set[str]:
     }
 
 
-def lifecycle_labels(issue: dict[str, Any]) -> set[str]:
-    return labels(issue) & active_config().lifecycle_labels
+def lifecycle_labels(state: RunState, issue: dict[str, Any]) -> set[str]:
+    return labels(issue) & state.config.lifecycle_labels
 
 
-def child_is_pending_and_ready(issue: dict[str, Any]) -> bool:
+def child_is_pending_and_ready(state: RunState, issue: dict[str, Any]) -> bool:
     if str(issue.get("state", "")).upper() != "OPEN":
         return False
     issue_labels = labels(issue)
-    ready_label = configured_label("ready_for_agent")
+    ready_label = configured_label(state, "ready_for_agent")
     return (
-        configured_label("implemented") not in issue_labels
-        and issue_labels & active_config().triage_labels == {ready_label}
-        and lifecycle_labels(issue) == {ready_label}
+        configured_label(state, "implemented") not in issue_labels
+        and issue_labels & state.config.triage_labels == {ready_label}
+        and lifecycle_labels(state, issue) == {ready_label}
     )
 
 
-def flatten_pages(value: Any) -> list[dict[str, Any]]:
-    if not isinstance(value, list):
-        raise RalphError("GitHub list endpoint returned a non-list response")
-    if value and isinstance(value[0], list):
-        return [item for page in value for item in page]
-    return value
-
-
-def github_list(endpoint: str) -> list[dict[str, Any]]:
-    return flatten_pages(github_json(["api", endpoint, "--paginate", "--slurp"]))
-
-
 def select_runnable_child(
+    state: RunState,
     parent_issue: int,
 ) -> tuple[
     dict[str, Any] | None,
     list[dict[str, Any]],
     list[dict[str, Any]],
 ]:
-    children = github_list(
-        f"repos/{active_config().repository}/issues/{parent_issue}/sub_issues"
-    )
+    children = state.github.sub_issues(parent_issue)
     incomplete_children = []
     blocked_children = []
     for child in children:
         if str(child.get("state", "")).upper() != "OPEN":
             continue
         child_labels = labels(child)
-        if configured_label("implemented") in child_labels:
+        if configured_label(state, "implemented") in child_labels:
             continue
         incomplete_children.append(child)
-        if not child_is_pending_and_ready(child):
+        if not child_is_pending_and_ready(state, child):
             continue
-        blockers = github_list(
-            f"repos/{active_config().repository}/issues/{child['number']}"
-            "/dependencies/blocked_by"
-        )
-        if all(blocker_is_satisfied(blocker) for blocker in blockers):
+        blockers = state.github.blockers(int(child["number"]))
+        if all(blocker_is_satisfied(state, blocker) for blocker in blockers):
             return child, blockers, children
         if any(
             str(blocker.get("state", "")).upper() == "OPEN"
-            and configured_label("implemented") not in labels(blocker)
+            and configured_label(state, "implemented") not in labels(blocker)
             for blocker in blockers
         ):
             blocked_children.append(child)
@@ -677,32 +682,24 @@ def select_runnable_child(
     )
 
 
-def issue_details(issue_number: int) -> dict[str, Any]:
-    details = github_json(
-        [
-            "issue",
-            "view",
-            str(issue_number),
-            "--comments",
-            "--json",
-            "number,title,body,state,labels,author,comments,updatedAt",
-        ]
-    )
+def issue_details(state: RunState, issue_number: int) -> dict[str, Any]:
+    details = state.github.issue(issue_number)
     if int(details.get("number", 0)) != issue_number:
         raise RalphError(f"GitHub returned the wrong issue for #{issue_number}")
     return details
 
 
-def trusted_comment(comment: dict[str, Any]) -> bool:
+def trusted_comment(state: RunState, comment: dict[str, Any]) -> bool:
     author = comment.get("author", {})
     login = author.get("login") if isinstance(author, dict) else None
-    return login in active_config().trusted_authors
+    return login in state.config.trusted_authors
 
 
 def parse_implementation_evidence(
+    state: RunState,
     body: str, *, allow_original: bool = False
 ) -> list[str] | None:
-    mode = active_mode()
+    mode = state.mode
     # The review loop writes the original format, so it always accepts it.
     allow_original = allow_original or mode.review
     pattern = re.escape(mode.implementation_evidence_prefix) + r"([^\n]+) -->"
@@ -749,11 +746,12 @@ def parse_implementation_evidence(
     return heads
 
 
-def verified_implementation_heads(issue: dict[str, Any]) -> list[str] | None:
+def verified_implementation_heads(state: RunState, issue: dict[str, Any]) -> list[str] | None:
     for comment in reversed(issue.get("comments", [])):
-        if not trusted_comment(comment):
+        if not trusted_comment(state, comment):
             continue
         heads = parse_implementation_evidence(
+            state,
             str(comment.get("body", "")), allow_original=True
         )
         if heads is not None:
@@ -761,40 +759,42 @@ def verified_implementation_heads(issue: dict[str, Any]) -> list[str] | None:
     return None
 
 
-def recoverable_implementation_heads(issue: dict[str, Any]) -> list[str] | None:
+def recoverable_implementation_heads(state: RunState, issue: dict[str, Any]) -> list[str] | None:
     updated_at = issue.get("updatedAt")
     if not isinstance(updated_at, str):
         return None
     for comment in reversed(issue.get("comments", [])):
-        if not trusted_comment(comment):
+        if not trusted_comment(state, comment):
             continue
         body = str(comment.get("body", ""))
-        if active_mode().implementation_evidence_prefix not in body:
+        if state.mode.implementation_evidence_prefix not in body:
             continue
         if comment.get("createdAt") != updated_at:
             return None
-        return parse_implementation_evidence(body)
+        return parse_implementation_evidence(state, body)
     return None
 
 
 def latest_update_is_trusted_marker_comment(
+    state: RunState,
     issue: dict[str, Any], *markers: str
 ) -> bool:
     updated_at = issue.get("updatedAt")
     if not isinstance(updated_at, str):
         return False
     return any(
-        trusted_comment(comment)
+        trusted_comment(state, comment)
         and any(marker in str(comment.get("body", "")) for marker in markers)
         and comment.get("createdAt") == updated_at
         for comment in reversed(issue.get("comments", []))
     )
 
 
-def heads_are_on_current_branch(heads: Iterable[str]) -> bool:
-    branch_head = current_head()
+def heads_are_on_current_branch(state: RunState, heads: Iterable[str]) -> bool:
+    branch_head = current_head(state)
     return all(
         command(
+            state,
             ["git", "merge-base", "--is-ancestor", head, branch_head],
             check=False,
         ).returncode
@@ -803,52 +803,45 @@ def heads_are_on_current_branch(heads: Iterable[str]) -> bool:
     )
 
 
-def blocker_is_satisfied(blocker: dict[str, Any]) -> bool:
+def blocker_is_satisfied(state: RunState, blocker: dict[str, Any]) -> bool:
     if str(blocker.get("state", "")).upper() == "CLOSED":
         return True
-    if configured_label("implemented") not in labels(blocker):
+    if configured_label(state, "implemented") not in labels(blocker):
         return False
-    details = issue_details(int(blocker["number"]))
-    heads = verified_implementation_heads(details)
-    return heads is not None and heads_are_on_current_branch(heads)
+    details = issue_details(state, int(blocker["number"]))
+    heads = verified_implementation_heads(state, details)
+    return heads is not None and heads_are_on_current_branch(state, heads)
 
 
-def mark_child_implemented(child_number: int) -> None:
-    command(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(child_number),
-            "--add-label",
-            configured_label("implemented"),
-            "--remove-label",
-            configured_label("ready_for_agent"),
-        ]
+def mark_child_implemented(state: RunState, child_number: int) -> None:
+    state.github.edit_issue_labels(
+        child_number,
+        add=configured_label(state, "implemented"),
+        remove=[configured_label(state, "ready_for_agent")],
     )
 
 
-def recover_published_child(children: Iterable[dict[str, Any]]) -> bool:
+def recover_published_child(state: RunState, children: Iterable[dict[str, Any]]) -> bool:
     for child in children:
-        if not child_is_pending_and_ready(child):
+        if not child_is_pending_and_ready(state, child):
             continue
-        details = issue_details(int(child["number"]))
-        require_trusted_issue(details)
-        heads = recoverable_implementation_heads(details)
-        if heads is None or not heads_are_on_current_branch(heads):
+        details = issue_details(state, int(child["number"]))
+        require_trusted_issue(state, details)
+        heads = recoverable_implementation_heads(state, details)
+        if heads is None or not heads_are_on_current_branch(state, heads):
             continue
-        mark_child_implemented(int(child["number"]))
+        mark_child_implemented(state, int(child["number"]))
         return True
     return False
 
 
-def require_trusted_issue(issue: dict[str, Any]) -> None:
+def require_trusted_issue(state: RunState, issue: dict[str, Any]) -> None:
     author = issue.get("author", {})
     login = author.get("login") if isinstance(author, dict) else None
-    if login not in active_config().trusted_authors:
+    if login not in state.config.trusted_authors:
         raise RalphError(
             f"issue #{issue['number']} must be authored by one of: "
-            + ", ".join(f"@{author}" for author in sorted(active_config().trusted_authors))
+            + ", ".join(f"@{author}" for author in sorted(state.config.trusted_authors))
         )
 
 
@@ -894,19 +887,21 @@ def parse_agent_result(path: pathlib.Path) -> dict[str, Any]:
 
 
 def verify_agent_git_effect(
+    state: RunState,
     role: str,
     before_head: str,
     result: dict[str, Any],
 ) -> tuple[str, list[str]]:
-    after_head = current_head()
-    if git("status", "--porcelain"):
+    after_head = current_head(state)
+    if git(state, "status", "--porcelain"):
         raise ChildWorkRejected(f"worktree is dirty after {role}")
     if command(
+        state,
         ["git", "merge-base", "--is-ancestor", before_head, after_head],
         check=False,
     ).returncode != 0:
         raise ChildWorkRejected(f"{role} rewrote or replaced the verified commit base")
-    commits = git("rev-list", "--reverse", f"{before_head}..{after_head}").splitlines()
+    commits = git(state, "rev-list", "--reverse", f"{before_head}..{after_head}").splitlines()
     if result["outcome"] == "committed" and not commits:
         raise ChildWorkRejected(f"{role} claimed committed without creating a Git commit")
     if result["outcome"] == "no_changes" and commits:
@@ -926,11 +921,12 @@ def agent_exit_detail(
 
 
 def run_agent(
+    state: RunState,
     role: str, prompt: str, issue_number: int
 ) -> tuple[dict[str, Any], str, list[str]]:
-    if DIAGNOSTICS is None:
+    if state.diagnostics is None:
         raise RalphError("diagnostics were not initialized")
-    before_head = current_head()
+    before_head = current_head(state)
     session_kind = {
         "implementation": "implementation",
         "review": "review",
@@ -938,14 +934,14 @@ def run_agent(
         "issue correction": "issue correction",
         "CI correction": "CI correction",
     }[role]
-    profile = agent_profile(role)
+    profile = agent_profile(state, role)
     engine_label = "Claude Code" if profile.engine == "claude" else "Codex"
     session_label = f"{profile.display_name} - {profile.reasoning_effort.title()}"
-    session_directory, record = DIAGNOSTICS.start_session(
+    session_directory, record = state.diagnostics.start_session(
         role, issue_number, before_head
     )
     prompt = session_prompt(profile.engine, prompt)
-    prompt += session_context(issue_number, before_head)
+    prompt += session_context(state, issue_number, before_head)
     (session_directory / "prompt.txt").write_text(sanitized_text(prompt), encoding="utf-8")
     record["engine"] = profile.engine
     record["model"] = profile.name
@@ -962,11 +958,11 @@ def run_agent(
                 f"#{issue_number}.",
                 flush=True,
             )
-            completed = command(
+            completed = state.adapters.run_engine(
+                state.repository_root,
                 agent_command(
-                    profile, prompt, REPOSITORY_ROOT, OUTCOME_SCHEMA_PATH, output_path
+                    profile, prompt, state.repository_root, OUTCOME_SCHEMA_PATH, output_path
                 ),
-                check=False,
             )
             record["returncode"] = completed.returncode
             record["structured_result"] = None
@@ -988,8 +984,8 @@ def run_agent(
                 raise RalphError(
                     f"{role} exited non-zero without a committed outcome"
                 )
-            after_head, commits = verify_agent_git_effect(role, before_head, result)
-            DIAGNOSTICS.latest_sessions[issue_number] = (session_directory, result["summary"])
+            after_head, commits = verify_agent_git_effect(state, role, before_head, result)
+            state.diagnostics.latest_sessions[issue_number] = (session_directory, result["summary"])
             validation.append("Git effect and clean-worktree checks passed.")
             if completed.returncode != 0:
                 validation.append(
@@ -1008,11 +1004,11 @@ def run_agent(
         finally:
             duration_seconds = time.monotonic() - started_at
             record["duration_seconds"] = round(duration_seconds, 3)
-            DIAGNOSTICS.record_phase(
+            state.diagnostics.record_phase(
                 "agent", role, duration_seconds, issue_number=issue_number
             )
-            record["observed_head"] = current_head()
-            DIAGNOSTICS.finish_session(
+            record["observed_head"] = current_head(state)
+            state.diagnostics.finish_session(
                 session_directory,
                 record,
                 stdout=completed.stdout if completed else "",
@@ -1022,18 +1018,18 @@ def run_agent(
             )
 
 
-def session_context(issue_number: int, head_sha: str) -> str:
+def session_context(state: RunState, issue_number: int, head_sha: str) -> str:
     """Pass durable references and a small summary, without replaying a session."""
-    assert DIAGNOSTICS is not None
-    repository = active_config().repository
+    assert state.diagnostics is not None
+    repository = state.config.repository
     context = (
         f"\n\nShared context:\nIssue: https://github.com/{repository}/issues/{issue_number}\n"
-        f"Parent: https://github.com/{repository}/issues/{RUN_SUMMARY['parent']}\n"
-        f"Issue base commit: {DIAGNOSTICS.issue_bases.get(issue_number, head_sha)}\n"
-        f"Current commit: {head_sha}\nWorking directory: {REPOSITORY_ROOT}\n"
-        f"Verification evidence (command metadata identifies each commit): {DIAGNOSTICS.directory / 'evidence'}\n"
+        f"Parent: https://github.com/{repository}/issues/{state.summary.parent}\n"
+        f"Issue base commit: {state.diagnostics.issue_bases.get(issue_number, head_sha)}\n"
+        f"Current commit: {head_sha}\nWorking directory: {state.repository_root}\n"
+        f"Verification evidence (command metadata identifies each commit): {state.diagnostics.directory / 'evidence'}\n"
     )
-    previous = DIAGNOSTICS.latest_sessions.get(issue_number)
+    previous = state.diagnostics.latest_sessions.get(issue_number)
     if previous is not None:
         directory, summary = previous
         context += (
@@ -1048,16 +1044,16 @@ def session_context(issue_number: int, head_sha: str) -> str:
     )
 
 
-def implementation_prompt(child_number: int) -> str:
+def implementation_prompt(state: RunState, child_number: int) -> str:
     return f"""$implement issue #{child_number}
 
 Do not push or change GitHub issue or pull request state. Return a result that
 matches the supplied JSON schema.
 
-{agent_result_guidance()}"""
+{agent_result_guidance(state)}"""
 
 
-def review_prompt(child_number: int, base_sha: str, head_sha: str) -> str:
+def review_prompt(state: RunState, child_number: int, base_sha: str, head_sha: str) -> str:
     return f"""A previous agent implemented GitHub issue #{child_number}.
 
 Review the exact `{base_sha}...{head_sha}` diff. Read the issue with `gh`. Check
@@ -1068,15 +1064,16 @@ make no change. Do not push or change GitHub issue or pull request state.
 
 Return a result that matches the supplied JSON schema.
 
-{agent_result_guidance()}"""
+{agent_result_guidance(state)}"""
 
 
 def evidence_diagnostic(
+    state: RunState,
     arguments: list[str], completed: subprocess.CompletedProcess[str], directory: pathlib.Path
 ) -> str:
     return (
         f"Command: {sanitized_text(shlex.join(arguments))}\n"
-        f"Working directory: {REPOSITORY_ROOT}\nExit code: {completed.returncode}\n"
+        f"Working directory: {state.repository_root}\nExit code: {completed.returncode}\n"
         f"Full stdout: {directory / 'stdout.txt'}\n"
         f"Full stderr: {directory / 'stderr.txt'}\n"
         f"Metadata: {directory / 'command.json'}\n"
@@ -1085,7 +1082,9 @@ def evidence_diagnostic(
     )
 
 
-def issue_correction_prompt(child_number: int, attempt: int, findings: list[str]) -> str:
+def issue_correction_prompt(
+    state: RunState, child_number: int, attempt: int, findings: list[str]
+) -> str:
     return f"""Complete the remaining requirements of GitHub issue #{child_number}.
 
 Correction attempt {attempt}/{MAX_CORRECTIONS}: read the issue with gh and
@@ -1100,10 +1099,11 @@ Remaining findings:
 
 Return a result that matches the supplied JSON schema.
 
-{agent_result_guidance()}"""
+{agent_result_guidance(state)}"""
 
 
 def correction_prompt(
+    state: RunState,
     child_number: int,
     attempt: int,
     gate_description: str,
@@ -1122,17 +1122,17 @@ Sanitized local-gate diagnostic:
 {diagnostic}
 ```
 
-For this session, the requested work is the failing local gate. {active_mode().gate_correction_scope}
+For this session, the requested work is the failing local gate. {state.mode.gate_correction_scope}
 
 Return a result that matches the supplied JSON schema.
 
-{agent_result_guidance()}
+{agent_result_guidance(state)}
 
 Successful correction example:
 {{"outcome": "committed", "summary": "Fixed and verified the failing gate.", "findings": []}}"""
 
 
-def ci_correction_prompt(child_number: int, attempt: int, diagnostic: str) -> str:
+def ci_correction_prompt(state: RunState, child_number: int, attempt: int, diagnostic: str) -> str:
     return f"""Repair the failing CI check after work on GitHub issue #{child_number}.
 
 Correction attempt {attempt}/{MAX_CORRECTIONS}: fix only the failure described below.
@@ -1147,18 +1147,19 @@ Sanitized CI diagnostic:
 
 Return a result that matches the supplied JSON schema.
 
-{agent_result_guidance()}"""
+{agent_result_guidance(state)}"""
 
 
 def run_local_gates(
+    state: RunState,
     quality: Any,
     manifest: dict[str, Any],
     base: str,
     head: str,
     child_number: int,
 ) -> None:
-    if current_head() != head:
-        raise RalphError(f"local gates expected head {head}, found {current_head()}")
+    if current_head(state) != head:
+        raise RalphError(f"local gates expected head {head}, found {current_head(state)}")
     changed_paths = quality.changed_paths(base, head)
     gates = [
         gate
@@ -1169,11 +1170,11 @@ def run_local_gates(
         print(f"Running local gate: {gate['description']}", flush=True)
         started_at = time.monotonic()
         try:
-            completed = command(list(gate["command"]), check=False)
+            completed = command(state, list(gate["command"]), check=False)
         finally:
             duration_seconds = time.monotonic() - started_at
-            if DIAGNOSTICS is not None:
-                DIAGNOSTICS.record_phase(
+            if state.diagnostics is not None:
+                state.diagnostics.record_phase(
                     "local_gate",
                     "local gates",
                     duration_seconds,
@@ -1184,103 +1185,66 @@ def run_local_gates(
                 f"{format_elapsed_duration(round(duration_seconds))}.",
                 flush=True,
             )
-        assert DIAGNOSTICS is not None
+        assert state.diagnostics is not None
         arguments = list(gate["command"])
-        directory = DIAGNOSTICS.command_evidence(
+        directory = state.diagnostics.command_evidence(
             "local-gate", arguments, completed,
             issue_number=child_number, head_sha=head, base_sha=base,
             gate_id=gate["id"], description=gate["description"],
         )
         if completed.returncode != 0:
-            diagnostic = evidence_diagnostic(arguments, completed, directory)
+            diagnostic = evidence_diagnostic(state, arguments, completed, directory)
             raise LocalGateFailure(str(gate["description"]), diagnostic)
-    if current_head() != head:
+    if current_head(state) != head:
         raise RalphError("a local quality gate changed the branch head")
-    require_clean_worktree("after local quality gates")
+    require_clean_worktree(state, "after local quality gates")
 
 
-def send_child_to_human_review(child_number: int, body: str) -> None:
-    command(["gh", "issue", "comment", str(child_number), "--body", body])
-    command(
-        [
-            "gh",
-            "issue",
-            "edit",
-            str(child_number),
-            "--add-label",
-            configured_label("human_review"),
-            "--remove-label",
-            configured_label("ready_for_agent"),
-        ]
+def send_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
+    state.github.comment_on_issue(child_number, body)
+    state.github.edit_issue_labels(
+        child_number,
+        add=configured_label(state, "human_review"),
+        remove=[configured_label(state, "ready_for_agent")],
     )
 
 
-def stop_children_for_dependency_deadlock(children: Iterable[dict[str, Any]]) -> None:
+def stop_children_for_dependency_deadlock(
+    state: RunState, children: Iterable[dict[str, Any]]
+) -> None:
     for child in children:
         child_number = int(child["number"])
         send_child_to_human_review(
+            state,
             child_number,
             "Ralph stopped because the parent has a dependency deadlock. This child "
             "remains open for human review.",
         )
 
 
-def push_and_prepare_draft_pull_request(branch: str, parent_issue: int) -> None:
-    configuration = active_config()
+def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_issue: int) -> None:
+    configuration = state.config
     command(
+        state,
         ["git", "push", "--set-upstream", configuration.remote, branch],
         capture_output=False,
     )
-    pulls = github_json(
-        [
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--base",
-            configuration.base_branch,
-            "--state",
-            "open",
-            "--json",
-            "number,isDraft,url",
-        ]
-    )
-    if not isinstance(pulls, list):
-        raise RalphError("GitHub pull request lookup returned invalid data")
-    if len(pulls) > 1:
-        raise RalphError(f"branch {branch} has more than one open pull request")
-    if pulls:
-        if not pulls[0].get("isDraft"):
-            command(["gh", "pr", "ready", str(pulls[0]["number"]), "--undo"])
+    pull = open_pull_request(state, branch)
+    if pull is not None:
+        if not pull.get("isDraft"):
+            state.github.mark_pull_request_draft(pull["number"])
         return
-    command(
-        [
-            "gh",
-            "pr",
-            "create",
-            "--draft",
-            "--base",
-            configuration.base_branch,
-            "--head",
-            branch,
-            "--title",
-            f"Implement Ralph parent #{parent_issue}",
-            "--body",
-            f"Cumulative implementation for #{parent_issue}. Human merge required.",
-        ]
+    state.github.create_draft_pull_request(
+        base=configuration.base_branch,
+        head=branch,
+        title=f"Implement Ralph parent #{parent_issue}",
+        body=f"Cumulative implementation for #{parent_issue}. Human merge required.",
     )
 
 
-def check_runs_for_head(head_sha: str) -> list[dict[str, Any]]:
+def check_runs_for_head(state: RunState, head_sha: str) -> list[dict[str, Any]]:
     try:
-        response = github_json(
-            [
-                "api",
-                f"repos/{active_config().repository}/commits/{head_sha}/check-runs",
-                "--paginate",
-                "--slurp",
-            ]
-        )
+        response = state.github.check_runs(head_sha)
     except RalphError as error:
         raise InfrastructureFailure(
             "canonical CI", sanitized_diagnostic(str(error))
@@ -1351,12 +1315,21 @@ def classify_ci_failure(
     return None
 
 
+def actions_job_id(details_url: str) -> str | None:
+    """The Actions job ID in a check's details URL; it is not the check ID."""
+    match = re.search(
+        r"/(?:actions/runs/\d+/(?:attempts/\d+/)?job|runs/\d+/jobs)/(\d+)(?:[?#].*)?$",
+        details_url,
+    )
+    return match.group(1) if match else None
+
+
 def ci_failure_diagnostic(
+    state: RunState,
     failure: ProductCIFailure, manifest: dict[str, Any], head_sha: str, child_number: int
 ) -> str:
     """Fetch logs for failed Actions jobs, verifying their source commit first."""
-    assert DIAGNOSTICS is not None
-    repository = active_config().repository
+    assert state.diagnostics is not None
     checks = manifest["ci"]["checks"].values()
     sections = [failure.diagnostic, f"Failed commit: {head_sha}"]
     for check in failure.check_runs:
@@ -1368,19 +1341,12 @@ def ci_failure_diagnostic(
         if local_command:
             sections.append(f"Repository check command: {shlex.join(local_command)}")
 
-        # Resolve the job ID from its URL rather than assuming it is the check ID.
-        match = re.search(
-            r"/(?:actions/runs/\d+/(?:attempts/\d+/)?job|runs/\d+/jobs)/(\d+)(?:[?#].*)?$",
-            details_url,
-        )
-        arguments = ["gh", "api", f"repos/{repository}/check-runs/{check['id']}"]
+        job_id = actions_job_id(details_url)
         metadata: dict[str, Any] = {"check_run": check}
         logs_available = False
         log_error = "Actions job URL is unavailable; logs were not fetched."
-        if match:
-            job_id = match.group(1)
-            arguments = ["gh", "api", f"repos/{repository}/actions/jobs/{job_id}"]
-            completed = command(arguments, check=False)
+        if job_id is not None:
+            completed = state.github.actions_job(job_id)
             try:
                 job = json.loads(completed.stdout) if completed.returncode == 0 else None
             except json.JSONDecodeError:
@@ -1391,17 +1357,22 @@ def ci_failure_diagnostic(
                 and str(job.get("check_run_url", "")).endswith(f"/check-runs/{check['id']}")
             ):
                 metadata["job"] = job
-                arguments = ["gh", "run", "view", "--repo", repository, "--job", job_id, "--log"]
-                completed = command(arguments, check=False)
-                logs_available = completed.returncode == 0
-                log_error = "Unable to download job logs."
+                completed = state.github.job_log(job_id)
+                # An empty log is never evidence, even when its download succeeded.
+                logs_available = completed.returncode == 0 and bool(completed.stdout.strip())
+                log_error = (
+                    "The downloaded job log is empty."
+                    if completed.returncode == 0
+                    else "Unable to download job logs."
+                )
             elif completed.returncode == 0:
                 log_error = "Job metadata does not match the failed commit and check; logs were not fetched."
             else:
                 log_error = "Unable to retrieve job metadata; logs were not fetched."
         else:
             # Preserve any check annotations even when Actions logs have no URL.
-            completed = command(arguments, check=False)
+            completed = state.github.check_run(check["id"])
+        arguments = list(completed.args)
         metadata["logs_available"] = logs_available
         if not logs_available:
             metadata["log_error"] = log_error
@@ -1409,15 +1380,16 @@ def ci_failure_diagnostic(
                 f"CI logs unavailable. {log_error} "
                 "Inspect the recorded error and job URL before diagnosing the code."
             )
-        directory = DIAGNOSTICS.command_evidence(
+        directory = state.diagnostics.command_evidence(
             "ci", arguments, completed, issue_number=child_number,
             head_sha=head_sha, **metadata,
         )
-        sections.append(evidence_diagnostic(arguments, completed, directory))
+        sections.append(evidence_diagnostic(state, arguments, completed, directory))
     return sanitized_text("\n\n".join(sections))
 
 
 def wait_for_exact_sha_ci(
+    state: RunState,
     quality: Any,
     manifest: dict[str, Any],
     base_sha: str,
@@ -1431,9 +1403,9 @@ def wait_for_exact_sha_ci(
     deadline = time.monotonic() + timeout_seconds
     latest_error = "canonical CI evidence is not available"
     while True:
-        if current_head() != head_sha:
+        if current_head(state) != head_sha:
             raise RalphError("branch advanced while waiting for canonical CI")
-        check_runs = check_runs_for_head(head_sha)
+        check_runs = check_runs_for_head(state, head_sha)
         classified_failure = classify_ci_failure(head_sha, check_runs, requirements)
         if classified_failure is not None:
             raise classified_failure
@@ -1450,7 +1422,7 @@ def wait_for_exact_sha_ci(
             raise RalphError(
                 f"canonical CI did not become green for exact head {head_sha}: {latest_error}"
             )
-        time.sleep(poll_seconds)
+        state.adapters.sleep(poll_seconds)
 
 
 def ci_poll_seconds() -> float:
@@ -1459,25 +1431,25 @@ def ci_poll_seconds() -> float:
     )
 
 
-def require_published_exact_head(branch: str, expected_head: str) -> None:
+def require_published_exact_head(state: RunState, branch: str, expected_head: str) -> None:
     verification_name = (
         "canonical CI"
-        if active_config().verification.ci_checks
+        if state.config.verification.ci_checks
         else "local-only verification"
     )
-    if current_head() != expected_head:
+    if current_head(state) != expected_head:
         raise RalphError(f"branch advanced after {verification_name}")
     remote_ref = f"refs/heads/{branch}"
-    remote_output = git("ls-remote", "--heads", active_config().remote, remote_ref)
+    remote_output = git(state, "ls-remote", "--heads", state.config.remote, remote_ref)
     remote_heads = [line.split()[0] for line in remote_output.splitlines() if line]
     if remote_heads != [expected_head]:
         raise RalphError(f"published branch advanced after {verification_name}")
 
 
-def verification_evidence(verified_head: str) -> str:
-    verification = active_config().verification
-    if active_mode().review:
-        return reviewed_verification_evidence(verified_head)
+def verification_evidence(state: RunState, verified_head: str) -> str:
+    verification = state.config.verification
+    if state.mode.review:
+        return reviewed_verification_evidence(state, verified_head)
     if verification.ci_checks and verification.local_checks:
         checks = f"Applicable local gates and canonical CI are green for exact head `{verified_head}`."
     elif verification.ci_checks:
@@ -1495,8 +1467,8 @@ def verification_evidence(verified_head: str) -> str:
     )
 
 
-def reviewed_verification_evidence(reviewed_head: str) -> str:
-    verification = active_config().verification
+def reviewed_verification_evidence(state: RunState, reviewed_head: str) -> str:
+    verification = state.config.verification
     if verification.ci_checks and verification.local_checks:
         return (
             "Applicable local gates and canonical CI are green "
@@ -1520,13 +1492,14 @@ def reviewed_verification_evidence(reviewed_head: str) -> str:
 
 
 def publish_success(
+    state: RunState,
     branch: str,
     child_number: int,
     implementation_range: str,
     correction_range: str | None,
     verified_head: str,
 ) -> None:
-    mode = active_mode()
+    mode = state.mode
     implementation_head = implementation_range.rsplit("..", 1)[1]
     evidence = json.dumps(
         {
@@ -1544,145 +1517,119 @@ def publish_success(
     body = (
         f"{mode.implementation_evidence_prefix}{evidence} -->\n"
         f"Ralph verified implementation commits `{implementation_range}` and "
-        f"{correction_evidence}. {verification_evidence(verified_head)}"
+        f"{correction_evidence}. {verification_evidence(state, verified_head)}"
     )
-    require_published_exact_head(branch, verified_head)
-    command(["gh", "issue", "comment", str(child_number), "--body", body])
-    require_published_exact_head(branch, verified_head)
-    mark_child_implemented(child_number)
+    require_published_exact_head(state, branch, verified_head)
+    state.github.comment_on_issue(child_number, body)
+    require_published_exact_head(state, branch, verified_head)
+    mark_child_implemented(state, child_number)
 
 
 def publish_parent_completion(
+    state: RunState,
     parent_number: int,
     child_count: int,
     sessions: int,
 ) -> None:
-    verified_head = current_head()
-    parent = issue_details(parent_number)
-    require_trusted_issue(parent)
-    current_lifecycle = lifecycle_labels(parent)
+    verified_head = current_head(state)
+    parent = issue_details(state, parent_number)
+    require_trusted_issue(state, parent)
+    current_lifecycle = lifecycle_labels(state, parent)
     body = (
-        f"{active_mode().parent_completion_marker}\n"
+        f"{state.mode.parent_completion_marker}\n"
         f"Ralph observed all {child_count} children complete on cumulative "
         f"head `{verified_head}`. This run used {sessions} agent sessions; the "
         "parent is ready for human review and remains unmerged."
     )
     completion_comment_is_latest = latest_update_is_trusted_marker_comment(
+        state,
         parent,
-        active_mode().parent_completion_marker,
-        active_mode().terminal_summary_marker,
+        state.mode.parent_completion_marker,
+        state.mode.terminal_summary_marker,
     )
-    human_review_label = configured_label("human_review")
+    human_review_label = configured_label(state, "human_review")
     if human_review_label not in current_lifecycle and not completion_comment_is_latest:
-        command(["gh", "issue", "comment", str(parent_number), "--body", body])
-        if current_head() != verified_head:
+        state.github.comment_on_issue(parent_number, body)
+        if current_head(state) != verified_head:
             raise RalphError("branch advanced while handing parent to human review")
-    labels_to_remove = sorted(current_lifecycle - {human_review_label})
-    edit_arguments = [
-        "gh",
-        "issue",
-        "edit",
-        str(parent_number),
-        "--add-label",
-        human_review_label,
-    ]
-    if labels_to_remove:
-        edit_arguments.extend(["--remove-label", ",".join(labels_to_remove)])
     if current_lifecycle != {human_review_label}:
-        command(edit_arguments)
+        state.github.edit_issue_labels(
+            parent_number,
+            add=human_review_label,
+            remove=sorted(current_lifecycle - {human_review_label}),
+        )
 
 
-def mark_pull_request_ready(branch: str) -> None:
-    pulls = github_json(
-        [
-            "pr",
-            "list",
-            "--head",
-            branch,
-            "--base",
-            active_config().base_branch,
-            "--state",
-            "open",
-            "--json",
-            "number,isDraft,url",
-        ]
-    )
-    if not isinstance(pulls, list):
-        raise RalphError("GitHub pull request lookup returned invalid data")
-    if len(pulls) > 1:
-        raise RalphError(f"branch {branch} has more than one open pull request")
-    if pulls and pulls[0].get("isDraft"):
-        command(["gh", "pr", "ready", str(pulls[0]["number"])])
+def mark_pull_request_ready(state: RunState, branch: str) -> None:
+    pull = open_pull_request(state, branch)
+    if pull is not None and pull.get("isDraft"):
+        state.github.mark_pull_request_ready(pull["number"])
 
 
-def run_session(request: SessionRequest) -> SessionResult:
+def run_session(state: RunState, request: SessionRequest) -> SessionResult:
     """Child cycle adapter: run one agent session for a request."""
     result, head, commits = run_agent(
-        request.role, session_request_prompt(request), request.child
+        state,
+        request.role, session_request_prompt(state, request), request.child
     )
     return SessionResult(
         result["outcome"], result["summary"], result["findings"], head, commits
     )
 
 
-def session_request_prompt(request: SessionRequest) -> str:
+def session_request_prompt(state: RunState, request: SessionRequest) -> str:
     if request.role == "implementation":
-        return implementation_prompt(request.child)
+        return implementation_prompt(state, request.child)
     if request.role == "review":
-        return review_prompt(request.child, request.base_sha, request.head_sha)
+        return review_prompt(state, request.child, request.base_sha, request.head_sha)
     if request.role == "issue correction":
         return issue_correction_prompt(
+            state,
             request.child, request.correction, list(request.findings)
         )
     if request.role == "local gate correction":
         return correction_prompt(
+            state,
             request.child, request.correction, request.gate, request.diagnostic
         )
     if request.role == "CI correction":
-        return ci_correction_prompt(request.child, request.correction, request.diagnostic)
+        return ci_correction_prompt(state, request.child, request.correction, request.diagnostic)
     raise RalphError(f"unknown agent session role: {request.role}")
 
 
 def check_local_gates(
-    quality: Any,
-    manifest: dict[str, Any] | None,
-    child_number: int,
-    base_sha: str,
-    head_sha: str,
+    context: ChildCycleContext, child_number: int, base_sha: str, head_sha: str
 ) -> GateFailure | None:
     """Child cycle adapter: run the applicable local gates on head_sha."""
-    if not active_config().verification.local_checks:
+    state = context.state
+    if not state.config.verification.local_checks:
         print("⚠️ Local quality gates are disabled by Ralph configuration.", flush=True)
-        observed_head = current_head()
+        observed_head = current_head(state)
         if observed_head != head_sha:
             raise RalphError(
                 f"disabled local gates expected head {head_sha}, found {observed_head}"
             )
-        require_clean_worktree("while local quality gates are disabled")
+        require_clean_worktree(state, "while local quality gates are disabled")
         return None
-    if quality is None or manifest is None:
+    if context.quality is None or context.manifest is None:
         raise RalphError("local quality gates require a loaded quality policy")
     try:
-        run_local_gates(quality, manifest, base_sha, head_sha, child_number)
+        run_local_gates(
+            state, context.quality, context.manifest, base_sha, head_sha, child_number
+        )
     except LocalGateFailure as failure:
         return GateFailure(failure.description, failure.diagnostic)
     return None
 
 
 def verify_with_ci(
-    quality: Any,
-    manifest: dict[str, Any] | None,
-    branch: str,
-    parent_issue: int,
-    infrastructure: InfrastructureRetryTracker,
-    child_number: int,
-    base_sha: str,
-    head_sha: str,
+    context: ChildCycleContext, child_number: int, base_sha: str, head_sha: str
 ) -> CIFailure | CIUnavailable | None:
     """Child cycle adapter: publish head_sha and wait for its required CI checks."""
-    push_and_prepare_draft_pull_request(branch, parent_issue)
-    if not active_config().verification.ci_checks:
-        if active_mode().review:
+    state = context.state
+    push_and_prepare_draft_pull_request(state, context.branch, context.parent_issue)
+    if not state.config.verification.ci_checks:
+        if state.mode.review:
             print(
                 "ℹ️ Remote CI is disabled; accepting configured local-only "
                 "verification for the published head.",
@@ -1691,19 +1638,28 @@ def verify_with_ci(
         return None
     ci_started_at = time.monotonic()
     try:
-        infrastructure.run(
-            functools.partial(wait_for_exact_sha_ci, quality, manifest, base_sha, head_sha),
+        context.infrastructure.run(
+            functools.partial(
+                wait_for_exact_sha_ci,
+                state,
+                context.quality,
+                context.manifest,
+                base_sha,
+                head_sha,
+            ),
             initial_delay_seconds=ci_poll_seconds(),
         )
         return None
     except ProductCIFailure as failure:
-        assert manifest is not None
-        return CIFailure(ci_failure_diagnostic(failure, manifest, head_sha, child_number))
+        assert context.manifest is not None
+        return CIFailure(
+            ci_failure_diagnostic(state, failure, context.manifest, head_sha, child_number)
+        )
     except InfrastructureRetriesExhausted as error:
         return CIUnavailable(str(error), error.failure.diagnostic)
     finally:
-        if DIAGNOSTICS is not None:
-            DIAGNOSTICS.record_phase(
+        if state.diagnostics is not None:
+            state.diagnostics.record_phase(
                 "ci_wait",
                 "GitHub Actions wait",
                 time.monotonic() - ci_started_at,
@@ -1711,87 +1667,108 @@ def verify_with_ci(
             )
 
 
-def main(argv: list[str] | None = None, prog: str | None = None) -> int:
-    global CONFIG, DIAGNOSTICS, RUN_BRANCH, RUN_STARTED_AT
-    mode = active_mode()
-    RUN_STARTED_AT = time.monotonic()
-    arguments = parse_arguments(argv, prog)
-    require_repository_root()
+def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
+    """The child cycle adapters a real run uses: agent CLIs, local gates, and GitHub CI."""
+    return ChildCycleAdapters(
+        run_session=functools.partial(run_session, context.state),
+        run_local_gates=functools.partial(check_local_gates, context),
+        verify_ci=functools.partial(verify_with_ci, context),
+        hand_to_human_review=functools.partial(send_child_to_human_review, context.state),
+    )
+
+
+def real_run_adapters() -> RunAdapters:
+    """The run adapters `ralph-kit run` uses: the `gh` CLI and the real child cycle adapters."""
+    return RunAdapters(github=GitHub, child_cycle=real_child_cycle_adapters)
+
+
+def main(
+    state: RunState, argv: list[str] | None = None, prog: str | None = None
+) -> int:
+    """Start the run: read its arguments, configuration, and quality policy, then run its children."""
+    mode = state.mode
+    arguments = parse_arguments(state, argv, prog)
+    require_repository_root(state)
     config_path = arguments.config
     if not config_path.is_absolute():
-        config_path = REPOSITORY_ROOT / config_path
+        config_path = state.repository_root / config_path
     try:
-        CONFIG = load_config(
-            config_path.resolve(), REPOSITORY_ROOT, require_review=mode.review
+        configuration = load_config(
+            config_path.resolve(), state.repository_root, require_review=mode.review
         )
     except RalphConfigError as error:
         raise RalphError(str(error)) from error
-    DIAGNOSTICS = DiagnosticRecorder()
-    branch = preflight()
-    RUN_BRANCH = branch
+    state.loaded_config = configuration
+    state.loaded_github = state.adapters.github(
+        state.repository_root, configuration.repository
+    )
+    state.diagnostics = DiagnosticRecorder(state.repository_root, mode.diagnostics_label)
+    state.branch = preflight(state)
     quality = None
     manifest = None
-    if CONFIG.verification.needs_quality_policy:
-        quality = load_quality_module(CONFIG.verification.quality_module)
+    if configuration.verification.needs_quality_policy:
+        quality = load_quality_module(configuration.verification.quality_module)
         try:
-            manifest = quality.load_manifest(CONFIG.verification.quality_manifest)
+            manifest = quality.load_manifest(configuration.verification.quality_manifest)
         except (OSError, ValueError, KeyError, TypeError) as error:
             raise RalphError(f"invalid Ralph quality policy: {error}") from error
-    if not CONFIG.verification.has_automated_verification:
+    if not configuration.verification.has_automated_verification:
         print(mode.unverified_warning, flush=True)
-    require_trusted_issue(issue_details(arguments.parent_issue))
-    siblings = github_list(
-        f"repos/{CONFIG.repository}/issues/{arguments.parent_issue}/sub_issues"
+    return run_children(state, arguments.parent_issue, arguments.run_budget, quality, manifest)
+
+
+def run_children(
+    state: RunState,
+    parent_issue: int,
+    run_budget: int | None,
+    quality: Any,
+    manifest: dict[str, Any] | None,
+) -> int:
+    """Implement the parent's runnable children one at a time, then hand the parent to a human.
+
+    Startup has loaded the configuration and quality policy, opened GitHub
+    access, and accepted the branch; the run reaches everything else through
+    its adapters.
+    """
+    branch = state.branch
+    assert branch is not None
+    require_trusted_issue(state, issue_details(state, parent_issue))
+    siblings = state.github.sub_issues(parent_issue)
+    budget = RunBudget(run_budget or max(4, len(siblings) * 5))
+    infrastructure = InfrastructureRetryTracker(state)
+    update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+    adapters = state.adapters.child_cycle(
+        ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
     )
-    budget = RunBudget(arguments.run_budget or max(4, len(siblings) * 5))
-    infrastructure = InfrastructureRetryTracker()
-    update_run_summary(arguments.parent_issue, siblings, budget, infrastructure)
 
     while True:
-        siblings = github_list(
-            f"repos/{CONFIG.repository}/issues/{arguments.parent_issue}"
-            "/sub_issues"
-        )
-        update_run_summary(arguments.parent_issue, siblings, budget, infrastructure)
-        if recover_published_child(siblings):
+        siblings = state.github.sub_issues(parent_issue)
+        update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+        if recover_published_child(state, siblings):
             continue
         try:
-            selected_child, _blockers, siblings = select_runnable_child(
-                arguments.parent_issue
-            )
+            selected_child, _blockers, siblings = select_runnable_child(state, parent_issue)
         except DependencyDeadlock as error:
-            stop_children_for_dependency_deadlock(error.children)
+            stop_children_for_dependency_deadlock(state, error.children)
             raise
         if selected_child is None:
             publish_parent_completion(
-                arguments.parent_issue,
+                state,
+                parent_issue,
                 len(siblings),
                 budget.sessions,
             )
-            publish_terminal_summary("completed")
-            mark_pull_request_ready(branch)
+            publish_terminal_summary(state, "completed")
+            mark_pull_request_ready(state, branch)
             break
 
         child_number = int(selected_child["number"])
         print(f"▶️  Starting child #{child_number}.", flush=True)
-        require_trusted_issue(issue_details(child_number))
-        base_sha = current_head()
-        DIAGNOSTICS.issue_bases[child_number] = base_sha
-        adapters = ChildCycleAdapters(
-            run_session=run_session,
-            run_local_gates=functools.partial(check_local_gates, quality, manifest),
-            verify_ci=functools.partial(
-                verify_with_ci,
-                quality,
-                manifest,
-                branch,
-                arguments.parent_issue,
-                infrastructure,
-            ),
-            hand_to_human_review=send_child_to_human_review,
-        )
+        require_trusted_issue(state, issue_details(state, child_number))
+        base_sha = current_head(state)
+        state.diagnostics.issue_bases[child_number] = base_sha
         cycle = run_child_cycle(
-            child_number, base_sha, budget, adapters, review=mode.review
+            child_number, base_sha, budget, adapters, review=state.mode.review
         )
         if isinstance(cycle, HandedToHumanReview):
             raise RalphError(cycle.reason)
@@ -1804,6 +1781,7 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> int:
             if implementation_head != verified_head else None
         )
         publish_success(
+            state,
             branch,
             child_number,
             implementation_range,
@@ -1814,30 +1792,43 @@ def main(argv: list[str] | None = None, prog: str | None = None) -> int:
             f"✅ Completed child #{child_number}; selecting the next runnable child. 🔄",
             flush=True,
         )
-        update_run_summary(arguments.parent_issue, siblings, budget, infrastructure)
+        update_run_summary(state, parent_issue, siblings, budget, infrastructure)
 
     print(
-        f"Handled issue #{arguments.parent_issue}: all {len(siblings)} children "
+        f"Handled issue #{parent_issue}: all {len(siblings)} children "
         f"complete; {budget.sessions} agent sessions and "
         f"{infrastructure.infra_retries} infrastructure retries this run."
     )
-    update_run_summary(arguments.parent_issue, siblings, budget, infrastructure)
-    print_terminal_summary("completed")
+    update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+    print_terminal_summary(state, "completed")
     return 0
 
 
 def run(
-    mode: RunMode, argv: list[str] | None = None, prog: str | None = None
+    mode: RunMode,
+    adapters: RunAdapters,
+    argv: list[str] | None = None,
+    prog: str | None = None,
+    *,
+    repository_root: pathlib.Path | None = None,
 ) -> int:
-    global MODE
-    MODE = mode
+    """Start a run from repository_root, by default the current directory.
+
+    The run reaches GitHub and agents through adapters.
+    """
+    state = RunState(
+        mode=mode,
+        adapters=adapters,
+        repository_root=(repository_root or pathlib.Path.cwd()).resolve(),
+        started_at=time.monotonic(),
+    )
     try:
-        return main(argv, prog)
+        return main(state, argv, prog)
     except RalphError as error:
-        safely_publish_terminal_summary("stopped safely")
+        safely_publish_terminal_summary(state, "stopped safely")
         print(f"Ralph stopped: {error}", file=sys.stderr)
-        print_terminal_summary("stopped safely", stream=sys.stderr)
+        print_terminal_summary(state, "stopped safely", stream=sys.stderr)
         return 1
     except Exception:
-        safely_publish_terminal_summary("crashed")
+        safely_publish_terminal_summary(state, "crashed")
         raise

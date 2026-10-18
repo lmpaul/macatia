@@ -23,6 +23,7 @@ class InitTests(unittest.TestCase):
         self.responses = {
             ("git", "rev-parse", "--show-toplevel"): str(self.root),
             ("gh", "auth", "status"): "",
+            ("gh", "--version"): "gh version 2.102.0 (2026-09-30)",
             ("gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef"): json.dumps(
                 {"nameWithOwner": "acme/widget", "defaultBranchRef": {"name": "trunk"}}
             ),
@@ -162,6 +163,13 @@ class InitTests(unittest.TestCase):
         self.assertIn("gh not found in PATH", str(raised.exception))
         self.assertIn("no agent CLI", str(raised.exception))
         self.assertEqual(probes, [])
+        self.assertFalse((self.root / "ralph.toml").exists())
+
+    def test_gh_older_than_the_minimum_version_stops_before_questions(self):
+        self.responses[("gh", "--version")] = "gh version 2.69.0 (2025-03-19)"
+        with self.assertRaisesRegex(init.InitError, "gh 2.69.0, 2.70.0 or newer required"):
+            self.run_init(answers=[])
+        self.assertEqual(self.prompts, [])
         self.assertFalse((self.root / "ralph.toml").exists())
 
     def test_unauthenticated_gh_stops_before_questions(self):
