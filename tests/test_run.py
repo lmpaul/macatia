@@ -19,6 +19,7 @@ from run_support import (
     ScriptedSessions,
     git,
     implementation_evidence,
+    legacy_implementation_evidence,
     start_run,
 )
 
@@ -120,23 +121,12 @@ class SingleChildHappyPathTests(unittest.TestCase):
 
 BLOCKER = 193
 DEPENDENT = 194
-MODES = (loop, loop_review)
+MODES = (loop.MODE, loop_review.MODE)
 
 
-def sessions_per_child(mode):
-    """The scripted sessions of a child that passes on its first try."""
-    return [ScriptedResult("committed")] * (2 if mode.MODE.review else 1)
-
-
-def legacy_implementation_evidence(base_sha, verified_head):
-    return {
-        "author": {"login": TRUSTED_LOGIN},
-        "body": (
-            f"Ralph verified implementation commits `{base_sha}..{verified_head}` and "
-            f"reviewed head `{verified_head}` with no corrections. Applicable local gates "
-            f"and canonical CI are green for exact head `{verified_head}`."
-        ),
-    }
+def passing_child_results(mode):
+    """The scripted results of a child that passes on its first try."""
+    return [ScriptedResult("committed")] * (2 if mode.review else 1)
 
 
 class RunLevelTestCase(unittest.TestCase):
@@ -151,27 +141,27 @@ class RunLevelTestCase(unittest.TestCase):
 
     def start(self, mode, *results):
         self.sessions = ScriptedSessions(self.repository, *results)
-        return start_run(mode.MODE, self.repository, self.github, self.sessions, PARENT)
+        return start_run(mode, self.repository, self.github, self.sessions, PARENT)
 
     def session_children(self):
         return [request.child for request in self.sessions.requests]
 
+    def commit_file(self, name, message):
+        (self.repository.path / name).write_text(f"{message}\n", encoding="utf-8")
+        git(self.repository.path, "add", name)
+        git(self.repository.path, "commit", "-m", message)
+        return self.repository.head()
+
     def commit_off_the_branch(self):
         """A real commit that is not an ancestor of the run's branch."""
         git(self.repository.path, "checkout", "-b", "elsewhere", "main")
-        (self.repository.path / "elsewhere.txt").write_text("elsewhere\n", encoding="utf-8")
-        git(self.repository.path, "add", "elsewhere.txt")
-        git(self.repository.path, "commit", "-m", "Work on another branch")
-        head = self.repository.head()
+        head = self.commit_file("elsewhere.txt", "Work on another branch")
         git(self.repository.path, "checkout", BRANCH)
         return head
 
     def commit_prior_child(self):
         """A real commit on the run's branch, as an earlier run would have published it."""
-        (self.repository.path / "prior-child.txt").write_text("implemented\n", encoding="utf-8")
-        git(self.repository.path, "add", "prior-child.txt")
-        git(self.repository.path, "commit", "-m", "Implement prior child")
-        return self.repository.head()
+        return self.commit_file("prior-child.txt", "Implement prior child")
 
     def assert_completed(self, result, *, sessions):
         self.assertEqual(result.exit_code, 0, result.stderr)
@@ -192,7 +182,7 @@ class ChildSelectionTests(RunLevelTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT, blocked_by=[CLOSED_BLOCKER])
         self.github.add_issue(CLOSED_BLOCKER, parent=PARENT, state="closed")
 
-        result = self.start(loop_review, *sessions_per_child(loop_review) * 2)
+        result = self.start(loop_review.MODE, *passing_child_results(loop_review.MODE) * 2)
 
         self.assert_completed(result, sessions=4)
         self.assertEqual(self.session_children(), [BLOCKER, BLOCKER, DEPENDENT, DEPENDENT])
@@ -209,7 +199,7 @@ class ChildSelectionTests(RunLevelTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT)
         self.github.add_issue(DEPENDENT, parent=PARENT)
 
-        result = self.start(loop, *sessions_per_child(loop) * 2)
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE) * 2)
 
         self.assert_completed(result, sessions=2)
         self.assertEqual(self.session_children(), [BLOCKER, DEPENDENT])
@@ -221,7 +211,7 @@ class ChildSelectionTests(RunLevelTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT, labels=("implemented",))
         self.github.add_issue(DEPENDENT, parent=PARENT)
 
-        result = self.start(loop, *sessions_per_child(loop))
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [DEPENDENT])
@@ -234,17 +224,15 @@ class BlockerTests(RunLevelTestCase):
 
     def test_implemented_blocker_satisfies_its_dependent_when_its_verified_head_is_an_ancestor(self):
         for name, evidence in (
-            ("standard run evidence", lambda base, head: implementation_evidence(loop.MODE, head)),
-            ("legacy evidence", legacy_implementation_evidence),
+            ("standard run evidence", lambda head: implementation_evidence(loop.MODE, head)),
+            ("legacy evidence", lambda head: legacy_implementation_evidence(self.repository.base_sha, head)),
         ):
             with self.subTest(name):
                 self.new_run()
                 verified_head = self.commit_prior_child()
-                self.add_implemented_blocker_and_dependent(
-                    evidence(self.repository.base_sha, verified_head)
-                )
+                self.add_implemented_blocker_and_dependent(evidence(verified_head))
 
-                result = self.start(loop, *sessions_per_child(loop))
+                result = self.start(loop.MODE, *passing_child_results(loop.MODE))
 
                 self.assert_completed(result, sessions=1)
                 self.assertEqual(self.session_children(), [DEPENDENT])
@@ -255,7 +243,7 @@ class BlockerTests(RunLevelTestCase):
             implementation_evidence(loop_review.MODE, self.repository.base_sha, verified_head)
         )
 
-        result = self.start(loop, *sessions_per_child(loop))
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [DEPENDENT])
@@ -265,7 +253,7 @@ class BlockerTests(RunLevelTestCase):
             implementation_evidence(loop.MODE, self.commit_off_the_branch())
         )
 
-        result = self.start(loop)
+        result = self.start(loop.MODE)
 
         self.assert_stopped_before_any_session(
             result, f"parent issue #{PARENT} has children remaining but none is runnable"
@@ -276,7 +264,7 @@ class BlockerTests(RunLevelTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT, blocked_by=[DEPENDENT])
         self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
 
-        result = self.start(loop)
+        result = self.start(loop.MODE)
 
         self.assert_stopped_before_any_session(result, "dependency deadlock")
         for child in (BLOCKER, DEPENDENT):
@@ -287,15 +275,15 @@ class BlockerTests(RunLevelTestCase):
 class RecoveryTests(RunLevelTestCase):
     def test_restart_finishes_a_published_child_without_another_session(self):
         for mode in MODES:
-            with self.subTest(mode.MODE.diagnostics_label):
+            with self.subTest(mode.diagnostics_label):
                 self.new_run()
                 self.github.add_issue(CHILD, parent=PARENT)
                 self.github.interrupt_after_comment_on = CHILD
 
                 with self.assertRaises(RunInterrupted):
-                    self.start(mode, *sessions_per_child(mode))
+                    self.start(mode, *passing_child_results(mode))
                 self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
-                self.assertIn(mode.MODE.implementation_evidence_prefix, self.github.comments(CHILD)[-1])
+                self.assertIn(mode.implementation_evidence_prefix, self.github.comments(CHILD)[-1])
 
                 result = self.start(mode)
 
@@ -308,9 +296,10 @@ class RecoveryTests(RunLevelTestCase):
         self.github.comment_on_issue(
             CHILD, implementation_evidence(loop.MODE, self.repository.base_sha)["body"]
         )
+        # Requeuing the child updates it after the evidence, so the evidence is stale.
         self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=())
 
-        result = self.start(loop, *sessions_per_child(loop))
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [CHILD])
@@ -322,7 +311,7 @@ class RecoveryTests(RunLevelTestCase):
             CHILD, implementation_evidence(loop_review.MODE, self.repository.base_sha)["body"]
         )
 
-        result = self.start(loop, *sessions_per_child(loop))
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [CHILD])
@@ -334,7 +323,7 @@ class ParentCompletionTests(RunLevelTestCase):
         self.github.add_issue(CLOSED_BLOCKER, parent=PARENT, state="closed", labels=())
         self.github.add_issue(CHILD, parent=PARENT, labels=("implemented",))
 
-        result = self.start(loop)
+        result = self.start(loop.MODE)
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertIn("0 agent sessions and 0 infrastructure retries", result.stdout)
@@ -347,19 +336,20 @@ class ParentCompletionTests(RunLevelTestCase):
 
     def test_restart_does_not_duplicate_the_parent_comment(self):
         for mode in MODES:
-            with self.subTest(mode.MODE.diagnostics_label):
+            with self.subTest(mode.diagnostics_label):
                 self.new_run()
                 self.github.add_issue(CHILD, parent=PARENT, state="closed", labels=())
                 self.github.interrupt_after_comment_on = PARENT
 
                 with self.assertRaises(RunInterrupted):
                     self.start(mode)
+                self.assertIn(mode.parent_completion_marker, self.github.comments(PARENT)[-1])
                 self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
 
                 result = self.start(mode)
 
                 self.assert_completed(result, sessions=0)
-                marker = mode.MODE.parent_completion_marker
+                marker = mode.parent_completion_marker
                 self.assertEqual(
                     sum(marker in comment for comment in self.github.comments(PARENT)), 1
                 )

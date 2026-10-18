@@ -143,6 +143,18 @@ def implementation_evidence(mode, implementation_head, verified_head=None):
     return {"author": {"login": TRUSTED_LOGIN}, "body": body}
 
 
+def legacy_implementation_evidence(base_sha, verified_head):
+    """A trusted implementation evidence comment from before evidence carried JSON."""
+    return {
+        "author": {"login": TRUSTED_LOGIN},
+        "body": (
+            f"Ralph verified implementation commits `{base_sha}..{verified_head}` and "
+            f"reviewed head `{verified_head}` with no corrections. Applicable local gates "
+            f"and canonical CI are green for exact head `{verified_head}`."
+        ),
+    }
+
+
 @dataclass
 class PullRequest:
     number: int
