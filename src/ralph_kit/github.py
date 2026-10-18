@@ -65,7 +65,6 @@ class GitHub:
             "issue",
             "view",
             str(number),
-            "--comments",
             "--json",
             "number,title,body,state,labels,author,comments,updatedAt",
         )

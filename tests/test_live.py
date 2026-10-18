@@ -92,6 +92,7 @@ class LiveGitHubTests(unittest.TestCase):
         details = issue_details(self.state, child)
 
         self.assertEqual(details["number"], child)
+        self.assertTrue(details["comments"], f"child #{child} has no comment to check")
         self.assertIsInstance(details["title"], str)
         self.assertIsInstance(details["body"], str)
         self.assertIsInstance(details["author"]["login"], str)

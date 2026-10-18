@@ -1358,8 +1358,13 @@ def ci_failure_diagnostic(
             ):
                 metadata["job"] = job
                 completed = state.github.job_log(job_id)
-                logs_available = completed.returncode == 0
-                log_error = "Unable to download job logs."
+                # An empty log is never evidence, even when its download succeeded.
+                logs_available = completed.returncode == 0 and bool(completed.stdout.strip())
+                log_error = (
+                    "The downloaded job log is empty."
+                    if completed.returncode == 0
+                    else "Unable to download job logs."
+                )
             elif completed.returncode == 0:
                 log_error = "Job metadata does not match the failed commit and check; logs were not fetched."
             else:

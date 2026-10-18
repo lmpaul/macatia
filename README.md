@@ -11,8 +11,8 @@ its quality module and manifest).
 
 ## Install
 
-Requires Python 3.11+ (uv can provide it), Git, an authenticated `gh`, and the
-CLI of each configured agent engine.
+Requires Python 3.11+ (uv can provide it), Git, an authenticated `gh` 2.70.0 or
+newer, and the CLI of each configured agent engine.
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh        # once per machine
@@ -36,7 +36,7 @@ ralph-kit run --review 123     # reviewed run: adds an independent review sessio
 
 Commit `ralph.toml` and run on a clean, dedicated branch (never the base branch).
 
-`init` first requires `git`, an authenticated `gh` and at least one agent CLI
+`init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats
 these requirements, requiring the CLI of each configured engine, so it is the command
 to run when reusing a committed `ralph.toml` on another machine.
@@ -160,7 +160,9 @@ to its complete result and outputs. Failure evidence includes:
 - CI: every currently failed CI check, its job URL, the repository check
   command, job/step metadata, and complete job logs fetched with
   [`gh run view --job … --log`](https://cli.github.com/manual/gh_run_view).
-  Job metadata must match the failed commit and check before logs are used.
+  Job metadata must match the failed commit and check before logs are used, and
+  an empty log counts as unavailable. Older `gh` versions print an empty log,
+  with success, when the run's log archive has no step logs; hence `gh` 2.70.0.
   If logs cannot be fetched, the prompt records that limitation, the retrieval
   error, and references for further diagnosis.
 
@@ -222,7 +224,7 @@ display_name = "Claude correction"
 reasoning_effort = "medium"
 ```
 
-Python 3.11+, Git, authenticated `gh`, and the authenticated CLI for each selected
+Python 3.11+, Git, authenticated `gh` 2.70.0 or newer, and the authenticated CLI for each selected
 engine must be available on `PATH`. Project test tools are still required.
 Claude efforts are `low`, `medium`, `high`, `xhigh`, or `max`; the selected model
 may support only a subset. Codex retains its existing effort options. Model and
@@ -333,7 +335,7 @@ ralph-kit check --review
 ```
 
 Commit the prepared files and use a dedicated branch first. The readiness check validates
-TOML and placeholders, Python and required CLI availability, Git branch/remote
+TOML and placeholders, Python and required CLI availability (and the minimum `gh` version), Git branch/remote
 and clean worktree, GitHub access/repository/trusted account/write permission/labels,
 the packaged result schema, the implement skill for each engine, the flags Ralph passes
 to each configured engine (listed in the engine's own help, so an update that drops one

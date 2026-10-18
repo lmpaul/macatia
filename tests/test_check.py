@@ -87,6 +87,7 @@ class ReadinessTests(unittest.TestCase):
         self.repo = "example/project"
         self.login = "reader"
         self.permission = True
+        self.gh_version = "gh version 2.70.0 (2025-04-15)\nhttps://github.com/cli/cli/releases/tag/v2.70.0"
         self.labels = ["needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix", "human-review", "implemented"]
         self.commands = []
         self.help = {
@@ -104,6 +105,7 @@ class ReadinessTests(unittest.TestCase):
             ("git", "status", "--porcelain"): self.dirty,
             ("gh", "repo", "view", "--json", "nameWithOwner"): json.dumps({"nameWithOwner": self.repo}),
             ("gh", "api", "user"): json.dumps({"login": self.login}),
+            ("gh", "--version"): self.gh_version,
             ("gh", "api", "repos/example/project"): json.dumps({"permissions": {"push": self.permission}}),
             ("gh", "api", "--paginate", "--slurp", "repos/example/project/labels"): json.dumps([[{"name": name} for name in self.labels]]),
         }
@@ -323,6 +325,19 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("install GitHub CLI", output)
         self.assertEqual(output.count("not verified: gh missing"), 5)
         self.assertIn("1 blocker", output)
+
+    def test_gh_older_than_the_minimum_version_blocks_and_skips_github_checks(self):
+        self.gh_version = "gh version 2.67.0 (2025-02-11)"
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("gh 2.67.0, 2.70.0 or newer required", output)
+        self.assertIn("update GitHub CLI to 2.70.0 or newer", output)
+        self.assertEqual(output.count("not verified: gh missing"), 5)
+
+    def test_gh_version_is_shown_when_it_is_recent_enough(self):
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertIn("2.70.0 (/tools/gh)", output)
 
     def test_failures_show_the_fix(self):
         self.labels.remove("implemented")

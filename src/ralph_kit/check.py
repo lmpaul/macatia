@@ -52,6 +52,9 @@ LABEL_DESCRIPTIONS = {
     "implemented": "Implemented by Ralph",
 }
 ERRORS = (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, ImportError, SyntaxError)
+# Older gh prints an empty job log, with success, when the run's log archive has no step logs.
+MINIMUM_GH_VERSION = (2, 70, 0)
+GH_VERSION = re.compile(r"^gh version (\d+)\.(\d+)\.(\d+)\b")
 
 
 def placeholder(value):
@@ -72,9 +75,10 @@ class Prerequisite:
     fix: str | None = None
 
 
-def prerequisites(which, engines=None):
+def prerequisites(which, read_version, engines=None):
     """Tools init and check both need.
 
+    read_version(executable) -> its `--version` output, or None when it cannot be read.
     Without engines (init), any installed agent CLI is enough; otherwise each configured engine's CLI is required.
     """
     version = ".".join(map(str, sys.version_info[:3]))
@@ -85,7 +89,7 @@ def prerequisites(which, engines=None):
         return Prerequisite(executable, path or "", None if path else f"{executable} not found in PATH", INSTALL_HINTS[executable])
 
     yield tool("git")
-    yield tool("gh")
+    yield gh_prerequisite(which, read_version)
     if engines is None:
         found = [executable for executable in AGENT_CLIS if which(executable)]
         names = " or ".join(f"{executable} ({name})" for executable, name in AGENT_CLIS.items())
@@ -93,6 +97,19 @@ def prerequisites(which, engines=None):
     else:
         for executable in sorted(engines):
             yield tool(executable)
+
+
+def gh_prerequisite(which, read_version):
+    path = which("gh")
+    if not path:
+        return Prerequisite("gh", "", "gh not found in PATH", INSTALL_HINTS["gh"])
+    match = GH_VERSION.match(read_version("gh") or "")
+    if not match:
+        return Prerequisite("gh", path, "gh --version is unreadable", INSTALL_HINTS["gh"])
+    found = tuple(map(int, match.groups()))
+    minimum = ".".join(map(str, MINIMUM_GH_VERSION))
+    problem = None if found >= MINIMUM_GH_VERSION else f"gh {'.'.join(map(str, found))}, {minimum} or newer required"
+    return Prerequisite("gh", f"{'.'.join(map(str, found))} ({path})", problem, f"update GitHub CLI to {minimum} or newer: https://cli.github.com")
 
 
 OPTION = r"-[\w-]+(?:[ =]?[<\[][^>\]]*[>\]](?:\.\.\.)?)?"
@@ -328,7 +345,13 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
     report.section("Tools")
     engines = {config.models[role].engine for role in roles}
     available = set()
-    for item in prerequisites(shutil.which, engines):
+    def read_version(executable):
+        try:
+            return command(executable, "--version")
+        except ERRORS:
+            return None
+
+    for item in prerequisites(shutil.which, read_version, engines):
         if report.add("fail" if item.problem else "ok", item.name, item.problem or item.detail, item.fix if item.problem else None):
             available.add(item.name)
 

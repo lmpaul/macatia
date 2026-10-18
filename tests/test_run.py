@@ -770,6 +770,17 @@ class CIEvidenceTests(VerificationTestCase):
         self.assertFalse(evidence["logs_available"])
         self.assertEqual(evidence["log_error"], "Unable to download job logs.")
 
+    def test_empty_job_log_is_never_used_as_evidence(self):
+        self.new_child_run(ci=("failure", "success"), job_log_output="")
+
+        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+
+        self.assert_implemented(result)
+        self.assertIn("CI logs unavailable. The downloaded job log is empty.", self.sessions.prompts[1])
+        (evidence,) = self.repository.ci_evidence()
+        self.assertFalse(evidence["logs_available"])
+        self.assertEqual(evidence["log_error"], "The downloaded job log is empty.")
+
     def test_job_from_another_commit_is_never_used_as_evidence(self):
         self.new_child_run(ci=("failure", "success"), job_head_sha=OTHER_COMMIT)
 
