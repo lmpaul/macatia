@@ -37,6 +37,10 @@ def write_executable(path, contents):
 class RalphProcessTestCase(unittest.TestCase):
     # Options inserted after `ralph-kit run`; each loop's tests set their own.
     RUN_OPTIONS = ()
+    # Shared across tests: macOS checks each new executable on its first launch,
+    # which costs ~0.3s per fake CLI. The fakes read their behavior from the
+    # environment, so one copy serves every test.
+    _fake_bin_directory = None
 
     def setUp(self):
         self.temporary_directory = tempfile.TemporaryDirectory()
@@ -44,9 +48,8 @@ class RalphProcessTestCase(unittest.TestCase):
         self.fixture_root = pathlib.Path(self.temporary_directory.name)
         self.repository = self.fixture_root / "repository"
         self.remote = self.fixture_root / "remote.git"
-        self.fake_bin = self.fixture_root / "fake-bin"
+        self.fake_bin = self._shared_fake_bin()
         self.repository.mkdir()
-        self.fake_bin.mkdir()
 
         run(["git", "init", "--bare", str(self.remote)], cwd=self.fixture_root)
         run(["git", "init", "-b", "main"], cwd=self.repository)
@@ -62,8 +65,6 @@ class RalphProcessTestCase(unittest.TestCase):
 
         self._install_real_loop()
         self._install_quality_policy()
-        self._install_fakes()
-        self._install_fake_claude()
 
         run(["git", "add", "."], cwd=self.repository)
         run(["git", "commit", "-m", "Initial fixture"], cwd=self.repository)
@@ -255,6 +256,15 @@ class RalphProcessTestCase(unittest.TestCase):
         (self.repository / ".github" / "quality-gates.json").write_text(
             json.dumps(manifest), encoding="utf-8"
         )
+
+    def _shared_fake_bin(self):
+        owner = RalphProcessTestCase
+        if owner._fake_bin_directory is None:
+            owner._fake_bin_directory = tempfile.TemporaryDirectory()
+            self.fake_bin = pathlib.Path(owner._fake_bin_directory.name)
+            self._install_fakes()
+            self._install_fake_claude()
+        return pathlib.Path(owner._fake_bin_directory.name)
 
     def _install_fakes(self):
         write_executable(
