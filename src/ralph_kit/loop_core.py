@@ -23,15 +23,14 @@ from typing import Any
 from .agent import agent_command, session_prompt, write_agent_result
 from .child_cycle import (
     HANDOFF_PREFIX,
-    INFRASTRUCTURE,
     MAX_CORRECTIONS,
-    RUN_BUDGET,
     ChildCycleAdapters,
     ChildWorkRejected,
     CIFailure,
     CIUnavailable,
     GateFailure,
     HandedToHumanReview,
+    HandoffCause,
     RunBudget,
     SessionRequest,
     SessionResult,
@@ -257,13 +256,25 @@ class DiagnosticRecorder:
 
 @dataclass
 class RunSummary:
-    """The counts the terminal summary reports; `parent` is set once the run reads its children."""
+    """The counts the terminal summary reports; `parent` is set once the run reads its children.
+
+    Children are counted when the run last read them; sessions and
+    infrastructure retries are read live, so a stop reports every one.
+    """
 
     parent: int | None = None
     implemented: int = 0
     remaining: int = 0
-    agent_sessions: int = 0
-    infra_retries: int = 0
+    budget: RunBudget | None = None
+    infrastructure: InfrastructureRetryTracker | None = None
+
+    @property
+    def agent_sessions(self) -> int:
+        return self.budget.sessions if self.budget is not None else 0
+
+    @property
+    def infra_retries(self) -> int:
+        return self.infrastructure.infra_retries if self.infrastructure is not None else 0
 
 
 @dataclass(frozen=True)
@@ -377,8 +388,8 @@ def update_run_summary(
         parent=parent_issue,
         implemented=len(implemented_children - state.initial_implemented_children),
         remaining=sum(child_is_remaining(state, child) for child in child_list),
-        agent_sessions=budget.sessions,
-        infra_retries=infrastructure.infra_retries,
+        budget=budget,
+        infrastructure=infrastructure,
     )
 
 
@@ -503,13 +514,13 @@ def remaining_children(state: RunState, error: Exception) -> list[RemainingChild
                 if isinstance(error, ChildHandedToHumanReview) and error.child_number == number
                 else None
             )
-            if cause == RUN_BUDGET:
+            if cause is HandoffCause.RUN_BUDGET:
                 action = (
                     f"#{number} was handed to human review because the run budget was "
                     f"exhausted: relabel it {ready_label}, then {rerun}; each run starts "
                     "with a fresh run budget."
                 )
-            elif cause == INFRASTRUCTURE:
+            elif cause is HandoffCause.INFRASTRUCTURE:
                 action = (
                     f"#{number} was handed to human review because CI evidence could not be "
                     "obtained within the infrastructure retries: once GitHub Actions is "

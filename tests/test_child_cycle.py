@@ -10,14 +10,13 @@ sys.path.insert(0, str(KIT_ROOT / "src"))
 
 from ralph_kit.child_cycle import (
     HANDOFF_PREFIX,
-    INFRASTRUCTURE,
-    RUN_BUDGET,
     ChildCycleAdapters,
     ChildWorkRejected,
     CIFailure,
     CIUnavailable,
     GateFailure,
     HandedToHumanReview,
+    HandoffCause,
     RunBudget,
     SessionResult,
     Verified,
@@ -279,7 +278,7 @@ class HumanReviewTests(unittest.TestCase):
             tools, result,
             "run budget exhausted before review",
             "run budget of 1 agent sessions was exhausted after 1 sessions",
-            cause=RUN_BUDGET,
+            cause=HandoffCause.RUN_BUDGET,
         )
         self.assertEqual(budget.sessions, 1)
 
@@ -292,7 +291,7 @@ class HumanReviewTests(unittest.TestCase):
 
         self.assert_handed_off(
             tools, result, "run budget exhausted before CI correction", "lint failed",
-            cause=RUN_BUDGET,
+            cause=HandoffCause.RUN_BUDGET,
         )
 
     def test_run_budget_stop_before_issue_correction_keeps_the_remaining_findings(self):
@@ -302,7 +301,7 @@ class HumanReviewTests(unittest.TestCase):
 
         self.assert_handed_off(
             tools, result, "run budget exhausted before issue correction", "- reversible ordering",
-            cause=RUN_BUDGET,
+            cause=HandoffCause.RUN_BUDGET,
         )
         self.assertEqual(tools.gate_heads, [])
 
@@ -316,7 +315,7 @@ class HumanReviewTests(unittest.TestCase):
 
         self.assert_handed_off(
             tools, result, "infrastructure retries exhausted", "checks never started",
-            cause=INFRASTRUCTURE,
+            cause=HandoffCause.INFRASTRUCTURE,
         )
         self.assertEqual(budget.sessions, 1)
 

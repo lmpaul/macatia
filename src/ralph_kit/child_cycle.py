@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field
+from enum import Enum
 
 from .sanitize import format_findings
 
@@ -80,16 +81,18 @@ class Verified:
     verified_head: str
 
 
-# Why a child cycle handed its child to human review, when the child itself is not the cause.
-RUN_BUDGET = "run budget"
-INFRASTRUCTURE = "infrastructure"
+class HandoffCause(Enum):
+    """Why a child cycle handed its child to human review, when the child itself is not the cause."""
+
+    RUN_BUDGET = "run budget"
+    INFRASTRUCTURE = "infrastructure"
 
 
 @dataclass(frozen=True)
 class HandedToHumanReview:
     reason: str
-    # RUN_BUDGET, INFRASTRUCTURE, or None when the child's work stopped the cycle.
-    cause: str | None = None
+    # None when the child's work stopped the cycle.
+    cause: HandoffCause | None = None
 
 
 class RunBudget:
@@ -136,7 +139,7 @@ class ChildWorkRejected(Exception):
 
 
 class HumanReviewStop(Exception):
-    def __init__(self, reason: str, body: str, cause: str | None = None):
+    def __init__(self, reason: str, body: str, cause: HandoffCause | None = None):
         super().__init__(reason)
         self.body = body
         self.cause = cause
@@ -180,7 +183,7 @@ def run_child_cycle(
     try:
         return _ChildCycle(child, base_sha, budget, adapters, review).run()
     except RunBudgetExhausted as error:
-        cause = RUN_BUDGET
+        cause = HandoffCause.RUN_BUDGET
         body = (
             f"Ralph stopped before {error.role} because the run budget of "
             f"{budget.maximum} agent sessions was exhausted after {budget.sessions} sessions. "
@@ -250,7 +253,7 @@ class _ChildCycle:
                     "Ralph stopped after bounded infrastructure retries without changing the "
                     "implementation or consuming another agent session. This child remains open "
                     f"for human review. Last infrastructure diagnostic: {verdict.diagnostic}",
-                    INFRASTRUCTURE,
+                    HandoffCause.INFRASTRUCTURE,
                 )
             try:
                 verified_head = self.correct_ci(verdict.diagnostic)

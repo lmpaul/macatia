@@ -1256,6 +1256,7 @@ class StopSummaryTests(VerificationTestCase):
 
         self.assert_stop_summary(
             result,
+            "agent_sessions: 1; infra_retries: 0;",
             "Stop reason: run budget exhausted before review",
             f"- #{CHILD}: handed to human review ({self.github.latest_comment_url(CHILD)}).",
             f"Next action:\n- #{CHILD} was handed to human review because the run budget was "
@@ -1270,6 +1271,7 @@ class StopSummaryTests(VerificationTestCase):
 
         self.assert_stop_summary(
             result,
+            "agent_sessions: 1; infra_retries: 3;",
             f"Stop reason: infrastructure retries exhausted for canonical CI after 3 retries: "
             f"{CANONICAL_CHECK} concluded cancelled",
             f"Next action:\n- #{CHILD} was handed to human review because CI evidence could not "
