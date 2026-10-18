@@ -308,7 +308,8 @@ class RunAdapters:
     run_engine: Callable[[pathlib.Path, list[str]], subprocess.CompletedProcess[str]] = (
         functools.partial(run_command, check=False)
     )
-    # question -> True to go ahead; None when Ralph is not in a terminal, which never goes ahead.
+    # Asks the startup choice: question -> True to resume children left agent working.
+    # None when Ralph is not in a terminal, which always stops.
     confirm: Callable[[str], bool] | None = None
 
 
