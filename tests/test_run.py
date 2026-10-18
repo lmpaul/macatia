@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import unittest
@@ -26,6 +27,7 @@ from run_support import (
     ScriptedEngine,
     ScriptedResult,
     ScriptedSessions,
+    ScriptedSignal,
     git,
     implementation_evidence,
     legacy_implementation_evidence,
@@ -1163,6 +1165,82 @@ class CrashedRunTests(VerificationTestCase):
         self.assertIn("- final outcome: crashed", self.github.comments(PARENT)[-1])
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
         self.assertEqual(self.github.comments(CHILD), [])
+
+
+class InterruptedRunTests(VerificationTestCase):
+    """Ctrl-C, SIGTERM, and SIGHUP end a run with an interrupted terminal summary."""
+
+    def assert_interrupted(self, result, exit_code, signal_name):
+        self.assertEqual(result.exit_code, exit_code, result.stderr)
+        summary = self.github.comments(PARENT)[-1]
+        for published in (summary, result.stderr):
+            self.assertIn("- final outcome: interrupted", published)
+            self.assertIn(f"Stop reason: interrupted by {signal_name}", published)
+            self.assertIn(
+                f"Ralph was interrupted: run `ralph-kit run {PARENT}` again to continue.",
+                published,
+            )
+
+    def test_ctrl_c_during_an_agent_session_publishes_an_interrupted_summary(self):
+        result = self.start(loop.MODE, KeyboardInterrupt())
+
+        self.assert_interrupted(result, 130, "SIGINT")
+        self.assertEqual(self.roles(), ["implementation"])
+        self.assertIsNone(self.github.pull_request())
+        self.assertEqual(self.github.comments(CHILD), [])
+
+    def test_sigterm_and_sighup_during_an_agent_session_behave_like_ctrl_c(self):
+        for signal_number, exit_code in ((signal.SIGTERM, 143), (signal.SIGHUP, 129)):
+            with self.subTest(signal_number.name):
+                self.new_child_run()
+                handler = signal.getsignal(signal_number)
+
+                result = self.start(loop.MODE, ScriptedSignal(signal_number))
+
+                self.assert_interrupted(result, exit_code, signal_number.name)
+                self.assertEqual(self.roles(), ["implementation"])
+                self.assertEqual(self.github.comments(CHILD), [])
+                self.assertIs(signal.getsignal(signal_number), handler)
+
+    def test_interruption_between_two_children_publishes_the_same_summary(self):
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+
+        def interrupt_once_implemented(number, add, remove):
+            if number == CHILD and add == "implemented":
+                raise KeyboardInterrupt
+
+        self.github.after_label_edit = interrupt_once_implemented
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_interrupted(result, 130, "SIGINT")
+        self.assertEqual(self.session_children(), [CHILD])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
+        self.assertIn("- final outcome: interrupted", self.github.pull_request().comments[-1])
+
+    def test_second_interruption_during_the_cleanup_exits_immediately(self):
+        def interrupt_again(number, body):
+            if number == PARENT:
+                raise KeyboardInterrupt
+
+        self.github.after_comment = interrupt_again
+
+        result = self.start(loop.MODE, KeyboardInterrupt())
+
+        self.assertEqual(result.exit_code, 130)
+        self.assertIn("- final outcome: interrupted", self.github.comments(PARENT)[-1])
+        self.assertIn(
+            "Ralph was interrupted again; exiting without finishing the cleanup.", result.stderr
+        )
+        self.assertNotIn("Ralph summary", result.stderr)
+
+    def test_simulated_process_death_is_neither_caught_nor_reported(self):
+        with self.assertRaises(RunInterrupted):
+            self.start(loop.MODE, RunInterrupted("killed with SIGKILL"))
+
+        self.assertEqual(self.github.comments(PARENT), [])
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
 
 
 class InfrastructureRetryTests(VerificationTestCase):

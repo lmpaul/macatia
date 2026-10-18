@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import importlib.util
 import json
@@ -10,6 +11,7 @@ import os
 import pathlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -418,8 +420,8 @@ def open_pull_request(state: RunState, branch: str) -> dict[str, Any] | None:
     return pulls[0] if pulls else None
 
 
-def report_stop(state: RunState, outcome: str, error: Exception) -> None:
-    """Publish and print the terminal summary of a stopped or crashed run, with what to do next.
+def report_stop(state: RunState, outcome: str, error: BaseException) -> None:
+    """Publish and print the terminal summary of a stopped, crashed, or interrupted run, with what to do next.
 
     Stops before the run knows its parent issue stay terminal-only.
     """
@@ -442,9 +444,9 @@ class RemainingChild:
     action: str
 
 
-def stop_details(state: RunState, error: Exception) -> str:
+def stop_details(state: RunState, error: BaseException) -> str:
     message = " ".join(str(error).split())
-    if not isinstance(error, RalphError):
+    if not isinstance(error, (RalphError, Interrupted)):
         message = f"{type(error).__name__}: {message}"
     sections = [f"Stop reason: {sanitized_text(message)[:MAX_STOP_REASON_LENGTH]}"]
     try:
@@ -469,8 +471,10 @@ def rerun_instruction(state: RunState) -> str:
     return f"run `{state.rerun_command}` again"
 
 
-def run_stop_actions(state: RunState, error: Exception) -> list[str]:
+def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
     """The next action for the stop itself, when no remaining child's own action covers it."""
+    if isinstance(error, Interrupted):
+        return [f"Ralph was interrupted: {rerun_instruction(state)} to continue."]
     if not isinstance(error, RalphError):
         directory = (
             state.diagnostics.directory.relative_to(state.repository_root)
@@ -488,7 +492,7 @@ def run_stop_actions(state: RunState, error: Exception) -> list[str]:
     return [f"Fix the stop reason, then {rerun_instruction(state)}."]
 
 
-def remaining_children(state: RunState, error: Exception) -> list[RemainingChild]:
+def remaining_children(state: RunState, error: BaseException) -> list[RemainingChild]:
     assert state.summary.parent is not None
     deadlocked = (
         {int(child["number"]) for child in error.children}
@@ -575,6 +579,40 @@ def handoff_comment_url(state: RunState, child_number: int) -> str | None:
         ):
             return comment.get("url")
     return None
+
+
+class Interrupted(BaseException):
+    """A signal ended the run; like `KeyboardInterrupt`, only `run` catches it.
+
+    The exit code follows the shell convention for a process ended by that signal.
+    """
+
+    def __init__(self, signal_number: int):
+        super().__init__(f"interrupted by {signal.Signals(signal_number).name}")
+        self.exit_code = 128 + signal_number
+
+
+def raise_interrupted(signal_number: int, _frame: Any) -> None:
+    raise Interrupted(signal_number)
+
+
+@contextlib.contextmanager
+def interruptions_raised():
+    """Raise `Interrupted` on SIGTERM and SIGHUP while the run lasts, as Python raises
+    `KeyboardInterrupt` on SIGINT, so the agent session in flight ends with its engine process."""
+    previous = {
+        signal_number: signal.signal(signal_number, raise_interrupted)
+        for signal_number in (signal.SIGTERM, signal.SIGHUP)
+    }
+    try:
+        yield
+    finally:
+        for signal_number, handler in previous.items():
+            signal.signal(signal_number, handler)
+
+
+def as_interruption(error: BaseException) -> Interrupted:
+    return error if isinstance(error, Interrupted) else Interrupted(signal.SIGINT)
 
 
 class NoRunnableChild(RalphError):
@@ -2069,7 +2107,9 @@ def run(
 ) -> int:
     """Start a run from repository_root, by default the current directory.
 
-    The run reaches GitHub and agents through adapters.
+    The run reaches GitHub and agents through adapters. SIGINT, SIGTERM, and
+    SIGHUP end it with an interrupted terminal summary and the shell's exit code
+    for the signal.
     """
     state = RunState(
         mode=mode,
@@ -2077,13 +2117,29 @@ def run(
         repository_root=(repository_root or pathlib.Path.cwd()).resolve(),
         started_at=time.monotonic(),
     )
-    try:
-        return main(state, argv, prog)
-    except RalphError as error:
-        if state.summary.parent is None:
-            print(f"Ralph stopped: {error}", file=sys.stderr)
-        report_stop(state, "stopped safely", error)
-        return 1
-    except Exception as error:
-        report_stop(state, "crashed", error)
-        raise
+    with interruptions_raised():
+        try:
+            try:
+                return main(state, argv, prog)
+            except RalphError as error:
+                if state.summary.parent is None:
+                    print(f"Ralph stopped: {error}", file=sys.stderr)
+                report_stop(state, "stopped safely", error)
+                return 1
+            except Exception as error:
+                report_stop(state, "crashed", error)
+                raise
+        except (KeyboardInterrupt, Interrupted) as error:
+            interruption = as_interruption(error)
+            if state.summary.parent is None:
+                print(f"Ralph {interruption}.", file=sys.stderr)
+            # A second interruption leaves the cleanup unfinished: the next startup handles it.
+            try:
+                report_stop(state, "interrupted", interruption)
+            except (KeyboardInterrupt, Interrupted) as second:
+                print(
+                    "Ralph was interrupted again; exiting without finishing the cleanup.",
+                    file=sys.stderr,
+                )
+                return as_interruption(second).exit_code
+            return interruption.exit_code

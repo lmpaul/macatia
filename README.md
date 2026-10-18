@@ -357,6 +357,16 @@ process) leaves it `agent-working`. Unless its implementation evidence was
 already published, the next run stops before any session and names the child:
 check its branch commits, then relabel it `ready-for-agent` and rerun.
 
+Ctrl-C (SIGINT), `kill` (SIGTERM), and closing the terminal (SIGHUP) all
+interrupt a run the same way. Ralph ends the agent session in flight, terminating
+its engine process, then publishes the terminal summary with the outcome
+`interrupted` on the parent (and the draft PR, if one exists), prints it, and
+exits with the shell's code for that signal: 130, 143, or 129. An interruption between two children
+publishes the same summary. A second interruption while Ralph publishes the
+summary exits immediately, leaving the cleanup unfinished. The interrupted child
+stays `agent-working`, so the next run stops on it as described above. `kill -9`,
+crashes, and power loss are never caught: they publish no interrupted summary.
+
 ## Readiness check
 
 Before launching, from the target repository root on each machine (including a VPS):

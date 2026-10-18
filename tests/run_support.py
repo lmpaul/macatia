@@ -10,6 +10,7 @@ import copy
 import dataclasses
 import io
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -287,7 +288,9 @@ class FakeGitHub:
     right after its next comment on that issue is stored; `after_comment`, when
     set, is called with the issue number and body after each issue comment;
     `before_check_runs`, when set, is called with the requested head before each
-    check-runs request is answered. Setting `label_edit_error` makes the next
+    check-runs request is answered; `after_label_edit`, when set, is called with
+    the issue number, the added label, and the removed labels after each label
+    edit. Setting `label_edit_error` makes the next
     label edit raise it, as the failed `gh` call would, without changing labels.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     """
@@ -322,6 +325,7 @@ class FakeGitHub:
         self.interrupt_after_comment_on = None
         self.after_comment = None
         self.before_check_runs = None
+        self.after_label_edit = None
         self.label_edit_error = None
         self.opened_for = []
 
@@ -413,6 +417,8 @@ class FakeGitHub:
         names = (self.labels(number) | {add}) - set(remove)
         self.issues[number]["labels"] = [{"name": name} for name in sorted(names)]
         self._touch(number)
+        if self.after_label_edit is not None:
+            self.after_label_edit(number, add, remove)
 
     def open_pull_requests(self, head, base):
         return [
@@ -510,10 +516,19 @@ class ScriptedResult:
     path: str | None = None
 
 
+@dataclass(frozen=True)
+class ScriptedSignal:
+    """A scripted session that sends `signal_number` to its own process, as `kill` would."""
+
+    signal_number: int
+
+
 class ScriptedSessions:
     """Answers each agent session with the next scripted result, committing for real.
 
-    A scripted exception is raised by its session instead, as a crashing adapter would.
+    A scripted exception, any `BaseException` such as `KeyboardInterrupt`, is
+    raised by its session instead, as a crashing or interrupted adapter would; a
+    `ScriptedSignal` signals the run's own process.
     `prompts` keeps the prompt Ralph would give the agent for each session, in order.
     `before_session`, when set, is called with each request before it is answered.
     """
@@ -533,8 +548,12 @@ class ScriptedSessions:
         session = self.script.pop(0)
         self.requests.append(request)
         self.prompts.append(prompt)
-        if isinstance(session, Exception):
+        if isinstance(session, BaseException):
             raise session
+        if isinstance(session, ScriptedSignal):
+            os.kill(os.getpid(), session.signal_number)
+            # The run's handler raises before the signal call returns here.
+            raise AssertionError(f"signal {session.signal_number} did not interrupt the run")
         path = self.repository.path
         before = self.repository.head()
         commit = session.commit if session.commit is not None else session.outcome == "committed"
