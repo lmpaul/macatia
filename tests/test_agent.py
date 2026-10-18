@@ -2,6 +2,7 @@
 
 import json
 import pathlib
+import re
 import subprocess
 import sys
 import tempfile
@@ -43,11 +44,11 @@ class RecordedFixtureTests(unittest.TestCase):
         self.assertRegex(RECORDED["claude"]["version"], r"^\d+\.\d+\.\d+ \(Claude Code\)$")
         self.assertRegex(RECORDED["codex"]["version"], r"^codex-cli \d+\.\d+\.\d+$")
 
-    def test_fixtures_hold_no_machine_paths(self):
-        for text in (CLAUDE_STDOUT, CODEX_RESULT):
-            self.assertNotIn("/Users/", text)
-            self.assertNotIn("/home/", text)
-            self.assertNotIn("/tmp/", text)
+    def test_fixtures_hold_no_machine_paths_or_credentials(self):
+        recorded = (ENGINE_FIXTURES / "recorded.json").read_text(encoding="utf-8")
+        for text in (CLAUDE_STDOUT, CODEX_RESULT, recorded):
+            for marker in ("/Users/", "/home/", "/tmp/", "/var/", "/private/", "sk-", "ghp_", "Bearer"):
+                self.assertNotIn(marker, text)
 
 
 class CommandTranslationTests(NoSubprocessTestCase):
@@ -109,10 +110,15 @@ class ResultParsingTests(NoSubprocessTestCase):
         write_agent_result("claude", stdout, self.output_path)
         return parse_agent_result(self.output_path)
 
-    def changed_envelope(self, change):
+    def changed_envelope(self, edit_in_place):
         envelope = json.loads(CLAUDE_STDOUT)
-        change(envelope)
+        edit_in_place(envelope)
         return json.dumps(envelope)
+
+    def assert_claude_rejected(self, stdout, message):
+        with self.assertRaisesRegex(ValueError, f"^{re.escape(message)}$"):
+            write_agent_result("claude", stdout, self.output_path)
+        self.assertFalse(self.output_path.exists())
 
     def test_recorded_claude_envelope_and_codex_result_give_the_same_outcome(self):
         claude = self.claude_outcome(CLAUDE_STDOUT)
@@ -128,34 +134,22 @@ class ResultParsingTests(NoSubprocessTestCase):
         self.assertEqual(codex, claude)
 
     def test_invalid_json_is_rejected(self):
-        with self.assertRaisesRegex(ValueError, "^Claude Code did not return valid JSON output$"):
-            write_agent_result("claude", CLAUDE_STDOUT[:-10], self.output_path)
-        self.assertFalse(self.output_path.exists())
+        self.assert_claude_rejected(CLAUDE_STDOUT[:-10], "Claude Code did not return valid JSON output")
 
     def test_non_object_envelope_is_rejected(self):
         stdout = json.dumps([json.loads(CLAUDE_STDOUT)])
 
-        with self.assertRaisesRegex(ValueError, "^Claude Code output is not an object$"):
-            write_agent_result("claude", stdout, self.output_path)
-        self.assertFalse(self.output_path.exists())
+        self.assert_claude_rejected(stdout, "Claude Code output is not an object")
 
     def test_error_envelope_is_rejected(self):
         stdout = self.changed_envelope(lambda envelope: envelope.update(is_error=True))
 
-        with self.assertRaisesRegex(
-            ValueError, "^Claude Code reported an error; inspect retained session output$"
-        ):
-            write_agent_result("claude", stdout, self.output_path)
-        self.assertFalse(self.output_path.exists())
+        self.assert_claude_rejected(stdout, "Claude Code reported an error; inspect retained session output")
 
     def test_missing_structured_output_is_rejected(self):
         stdout = self.changed_envelope(lambda envelope: envelope.pop("structured_output"))
 
-        with self.assertRaisesRegex(
-            ValueError, "^Claude Code did not return a structured_output object$"
-        ):
-            write_agent_result("claude", stdout, self.output_path)
-        self.assertFalse(self.output_path.exists())
+        self.assert_claude_rejected(stdout, "Claude Code did not return a structured_output object")
 
     def test_invalid_codex_result_file_is_rejected(self):
         self.output_path.write_text(CODEX_RESULT[:-10], encoding="utf-8")
