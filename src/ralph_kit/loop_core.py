@@ -22,7 +22,10 @@ from typing import Any
 
 from .agent import agent_command, session_prompt, write_agent_result
 from .child_cycle import (
+    HANDOFF_PREFIX,
+    INFRASTRUCTURE,
     MAX_CORRECTIONS,
+    RUN_BUDGET,
     ChildCycleAdapters,
     ChildWorkRejected,
     CIFailure,
@@ -73,6 +76,7 @@ class RunMode:
 
 
 DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
+MAX_STOP_REASON_LENGTH = 1600
 ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
@@ -311,6 +315,8 @@ class RunState:
     loaded_github: GitHub | None = None
     diagnostics: DiagnosticRecorder | None = None
     branch: str | None = None
+    # How to start this run again, for the next action of a stopped run.
+    rerun_command: str | None = None
     initial_implemented_children: set[int] | None = None
     summary: RunSummary = field(default_factory=RunSummary)
 
@@ -370,26 +376,22 @@ def update_run_summary(
     state.summary = RunSummary(
         parent=parent_issue,
         implemented=len(implemented_children - state.initial_implemented_children),
-        remaining=sum(
-            str(child.get("state", "")).upper() == "OPEN"
-            and configured_label(state, "implemented") not in labels(child)
-            for child in child_list
-        ),
+        remaining=sum(child_is_remaining(state, child) for child in child_list),
         agent_sessions=budget.sessions,
         infra_retries=infrastructure.infra_retries,
     )
 
 
-def print_terminal_summary(state: RunState, outcome: str, *, stream: Any = None) -> None:
+def print_terminal_summary(state: RunState, outcome: str) -> None:
     if state.summary.parent is None:
         return
-    print(terminal_summary(state, outcome), file=stream or sys.stdout)
+    print(terminal_summary(state, outcome))
 
 
-def publish_terminal_summary(state: RunState, outcome: str) -> None:
+def publish_terminal_summary(state: RunState, summary: str) -> None:
     if state.summary.parent is None or state.branch is None:
         return
-    summary = f"{state.mode.terminal_summary_marker}\n{terminal_summary(state, outcome)}"
+    summary = f"{state.mode.terminal_summary_marker}\n{summary}"
     state.github.comment_on_issue(state.summary.parent, summary)
     pull = open_pull_request(state, state.branch)
     if pull is not None:
@@ -405,11 +407,178 @@ def open_pull_request(state: RunState, branch: str) -> dict[str, Any] | None:
     return pulls[0] if pulls else None
 
 
-def safely_publish_terminal_summary(state: RunState, outcome: str) -> None:
+def report_stop(state: RunState, outcome: str, error: Exception) -> None:
+    """Publish and print the terminal summary of a stopped or crashed run, with what to do next.
+
+    Stops before the run knows its parent issue stay terminal-only.
+    """
+    if state.summary.parent is None:
+        return
+    summary = f"{terminal_summary(state, outcome)}\n\n{stop_details(state, error)}"
     try:
-        publish_terminal_summary(state, outcome)
-    except RalphError as error:
-        print(f"Ralph could not publish terminal summary: {error}", file=sys.stderr)
+        publish_terminal_summary(state, summary)
+    except RalphError as publish_error:
+        print(f"Ralph could not publish terminal summary: {publish_error}", file=sys.stderr)
+    print(summary, file=sys.stderr)
+
+
+@dataclass(frozen=True)
+class RemainingChild:
+    """A child a stopped run left open, why it was not runnable, and what a human does next."""
+
+    number: int
+    reason: str
+    action: str
+
+
+def stop_details(state: RunState, error: Exception) -> str:
+    message = " ".join(str(error).split())
+    if not isinstance(error, RalphError):
+        message = f"{type(error).__name__}: {message}"
+    sections = [f"Stop reason: {sanitized_text(message)[:MAX_STOP_REASON_LENGTH]}"]
+    try:
+        remaining = remaining_children(state, error)
+    # Reading the children again must never hide why the run stopped, even after a crash.
+    except Exception as lookup_error:
+        remaining = []
+        sections.append(
+            f"Remaining children could not be read: {sanitized_text(str(lookup_error))}"
+        )
+    if remaining:
+        sections.append(
+            "Remaining children:\n"
+            + "\n".join(f"- #{child.number}: {child.reason}." for child in remaining)
+        )
+    actions = [*run_stop_actions(state, error), *(child.action for child in remaining)]
+    sections.append("Next action:\n" + "\n".join(f"- {action}" for action in actions))
+    return "\n\n".join(sections)
+
+
+def rerun_instruction(state: RunState) -> str:
+    return f"run `{state.rerun_command}` again"
+
+
+def run_stop_actions(state: RunState, error: Exception) -> list[str]:
+    """The next action for the stop itself, when no remaining child's own action covers it."""
+    if not isinstance(error, RalphError):
+        directory = (
+            state.diagnostics.directory.relative_to(state.repository_root)
+            if state.diagnostics is not None else DIAGNOSTICS_DIRECTORY
+        )
+        return [
+            f"Ralph crashed: inspect the run diagnostics in `{directory}`, fix the cause, "
+            f"then {rerun_instruction(state)}."
+        ]
+    if isinstance(error, (ChildHandedToHumanReview, DependencyDeadlock, NoRunnableChild)):
+        return []
+    return [f"Fix the stop reason, then {rerun_instruction(state)}."]
+
+
+def remaining_children(state: RunState, error: Exception) -> list[RemainingChild]:
+    assert state.summary.parent is not None
+    deadlocked = (
+        {int(child["number"]) for child in error.children}
+        if isinstance(error, DependencyDeadlock) else set()
+    )
+    ready_label = configured_label(state, "ready_for_agent")
+    rerun = rerun_instruction(state)
+    remaining = []
+    for child in state.github.sub_issues(state.summary.parent):
+        if not child_is_remaining(state, child):
+            continue
+        number = int(child["number"])
+        child_labels = labels(child)
+        if number in deadlocked:
+            blockers = unsatisfied_blockers(state, number)
+            reason = f"part of a dependency deadlock, waiting on {blockers}"
+            action = (
+                f"#{number} is part of a dependency deadlock with {blockers}: remove a "
+                f"blocked-by link from the cycle, relabel it {ready_label}, then {rerun}."
+            )
+        elif configured_label(state, "human_review") in child_labels:
+            handoff = handoff_comment_url(state, number) or "no handoff comment found"
+            reason = f"handed to human review ({handoff})"
+            cause = (
+                error.cause
+                if isinstance(error, ChildHandedToHumanReview) and error.child_number == number
+                else None
+            )
+            if cause == RUN_BUDGET:
+                action = (
+                    f"#{number} was handed to human review because the run budget was "
+                    f"exhausted: relabel it {ready_label}, then {rerun}; each run starts "
+                    "with a fresh run budget."
+                )
+            elif cause == INFRASTRUCTURE:
+                action = (
+                    f"#{number} was handed to human review because CI evidence could not be "
+                    "obtained within the infrastructure retries: once GitHub Actions is "
+                    f"healthy, relabel it {ready_label}, then {rerun}."
+                )
+            else:
+                action = (
+                    f"#{number} was handed to human review: resolve what its handoff comment "
+                    f"({handoff}) reports, then close it or relabel it {ready_label}, "
+                    f"and {rerun}."
+                )
+        elif not child_is_pending_and_ready(state, child):
+            other_labels = sorted(
+                child_labels & (state.config.triage_labels | state.config.lifecycle_labels)
+                - {ready_label}
+            )
+            reason = (
+                f"labelled {', '.join(other_labels)}" if other_labels
+                else f"not labelled {ready_label}"
+            )
+            action = (
+                f"#{number} is {reason}: implement and close it, or relabel it "
+                f"{ready_label}, then {rerun}."
+            )
+        elif blockers := unsatisfied_blockers(state, number):
+            reason = f"waiting on {blockers}, which is not implemented"
+            action = f"#{number} waits on {blockers}: implement or close it, then {rerun}."
+        else:
+            reason = "runnable"
+            action = f"#{number} is runnable: {rerun}."
+        remaining.append(RemainingChild(number, reason, action))
+    return remaining
+
+
+def unsatisfied_blockers(state: RunState, child_number: int) -> str:
+    return ", ".join(
+        f"#{blocker['number']}"
+        for blocker in state.github.blockers(child_number)
+        if not blocker_is_satisfied(state, blocker)
+    )
+
+
+def handoff_comment_url(state: RunState, child_number: int) -> str | None:
+    """The link to Ralph's latest handoff comment on a child in human review."""
+    comments = issue_details(state, child_number).get("comments", [])
+    for comment in reversed(comments):
+        if trusted_comment(state, comment) and str(comment.get("body", "")).startswith(
+            HANDOFF_PREFIX
+        ):
+            return comment.get("url")
+    return None
+
+
+class NoRunnableChild(RalphError):
+    """Children remain, but none of them can run."""
+
+    def __init__(self, parent_issue: int):
+        super().__init__(
+            f"parent issue #{parent_issue} has children remaining but none is runnable"
+        )
+
+
+class ChildHandedToHumanReview(RalphError):
+    """The child cycle handed a child to human review, which stops the run."""
+
+    def __init__(self, child_number: int, cycle: HandedToHumanReview):
+        super().__init__(cycle.reason)
+        self.child_number = child_number
+        self.cause = cycle.cause
 
 
 class DependencyDeadlock(RalphError):
@@ -645,6 +814,14 @@ def lifecycle_labels(state: RunState, issue: dict[str, Any]) -> set[str]:
     return labels(issue) & state.config.lifecycle_labels
 
 
+def child_is_remaining(state: RunState, issue: dict[str, Any]) -> bool:
+    """An open child that is not implemented yet."""
+    return (
+        str(issue.get("state", "")).upper() == "OPEN"
+        and configured_label(state, "implemented") not in labels(issue)
+    )
+
+
 def child_is_pending_and_ready(state: RunState, issue: dict[str, Any]) -> bool:
     if str(issue.get("state", "")).upper() != "OPEN":
         return False
@@ -669,10 +846,7 @@ def select_runnable_child(
     incomplete_children = []
     blocked_children = []
     for child in children:
-        if str(child.get("state", "")).upper() != "OPEN":
-            continue
-        child_labels = labels(child)
-        if configured_label(state, "implemented") in child_labels:
+        if not child_is_remaining(state, child):
             continue
         incomplete_children.append(child)
         if not child_is_pending_and_ready(state, child):
@@ -690,9 +864,7 @@ def select_runnable_child(
         return None, [], children
     if len(blocked_children) == len(incomplete_children):
         raise DependencyDeadlock(blocked_children)
-    raise RalphError(
-        f"parent issue #{parent_issue} has children remaining but none is runnable"
-    )
+    raise NoRunnableChild(parent_issue)
 
 
 def issue_details(state: RunState, issue_number: int) -> dict[str, Any]:
@@ -1701,6 +1873,14 @@ def main(
     """Start the run: read its arguments, configuration, and quality policy, then run its children."""
     mode = state.mode
     arguments = parse_arguments(state, argv, prog)
+    # The run budget is left out: each run starts with a fresh one.
+    state.rerun_command = shlex.join([
+        "ralph-kit",
+        "run",
+        *(["--review"] if mode.review else []),
+        *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
+        str(arguments.parent_issue),
+    ])
     require_repository_root(state)
     config_path = arguments.config
     if not config_path.is_absolute():
@@ -1771,7 +1951,7 @@ def run_children(
                 len(siblings),
                 budget.sessions,
             )
-            publish_terminal_summary(state, "completed")
+            publish_terminal_summary(state, terminal_summary(state, "completed"))
             mark_pull_request_ready(state, branch)
             break
 
@@ -1784,7 +1964,7 @@ def run_children(
             child_number, base_sha, budget, adapters, review=state.mode.review
         )
         if isinstance(cycle, HandedToHumanReview):
-            raise RalphError(cycle.reason)
+            raise ChildHandedToHumanReview(child_number, cycle)
 
         implementation_head = cycle.implementation_head
         verified_head = cycle.verified_head
@@ -1838,10 +2018,10 @@ def run(
     try:
         return main(state, argv, prog)
     except RalphError as error:
-        safely_publish_terminal_summary(state, "stopped safely")
-        print(f"Ralph stopped: {error}", file=sys.stderr)
-        print_terminal_summary(state, "stopped safely", stream=sys.stderr)
+        if state.summary.parent is None:
+            print(f"Ralph stopped: {error}", file=sys.stderr)
+        report_stop(state, "stopped safely", error)
         return 1
-    except Exception:
-        safely_publish_terminal_summary(state, "crashed")
+    except Exception as error:
+        report_stop(state, "crashed", error)
         raise

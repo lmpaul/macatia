@@ -357,6 +357,9 @@ class FakeGitHub:
     def comments(self, number):
         return [comment["body"] for comment in self.issues[number]["comments"]]
 
+    def latest_comment_url(self, number):
+        return self.issues[number]["comments"][-1]["url"]
+
     def pull_request(self):
         assert len(self.pull_requests) <= 1, self.pull_requests
         return self.pull_requests[0] if self.pull_requests else None
@@ -389,9 +392,12 @@ class FakeGitHub:
 
     def comment_on_issue(self, number, body):
         created_at = self._touch(number)
-        self.issues[number]["comments"].append(
-            {"author": {"login": self.login}, "body": body, "createdAt": created_at}
-        )
+        self.issues[number]["comments"].append({
+            "author": {"login": self.login},
+            "body": body,
+            "createdAt": created_at,
+            "url": f"https://github.test/{self.repository}/issues/{number}#issuecomment-{self.revision}",
+        })
         if number == self.interrupt_after_comment_on:
             self.interrupt_after_comment_on = None
             raise RunInterrupted(f"interrupted after commenting on #{number}")

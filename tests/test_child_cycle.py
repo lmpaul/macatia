@@ -9,6 +9,9 @@ KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
 from ralph_kit.child_cycle import (
+    HANDOFF_PREFIX,
+    INFRASTRUCTURE,
+    RUN_BUDGET,
     ChildCycleAdapters,
     ChildWorkRejected,
     CIFailure,
@@ -170,11 +173,12 @@ class VerifiedCycleTests(unittest.TestCase):
 
 
 class HumanReviewTests(unittest.TestCase):
-    def assert_handed_off(self, tools, result, reason, *body_parts):
-        self.assertEqual(result, HandedToHumanReview(reason))
+    def assert_handed_off(self, tools, result, reason, *body_parts, cause=None):
+        self.assertEqual(result, HandedToHumanReview(reason, cause))
         self.assertEqual(len(tools.handoffs), 1)
         child, body = tools.handoffs[0]
         self.assertEqual(child, CHILD)
+        self.assertTrue(body.startswith(HANDOFF_PREFIX), body)
         self.assertIn("This child remains open for human review.", body)
         for part in body_parts:
             self.assertIn(part, body)
@@ -275,6 +279,7 @@ class HumanReviewTests(unittest.TestCase):
             tools, result,
             "run budget exhausted before review",
             "run budget of 1 agent sessions was exhausted after 1 sessions",
+            cause=RUN_BUDGET,
         )
         self.assertEqual(budget.sessions, 1)
 
@@ -286,7 +291,8 @@ class HumanReviewTests(unittest.TestCase):
         result, _ = cycle(tools, budget=1)
 
         self.assert_handed_off(
-            tools, result, "run budget exhausted before CI correction", "lint failed"
+            tools, result, "run budget exhausted before CI correction", "lint failed",
+            cause=RUN_BUDGET,
         )
 
     def test_run_budget_stop_before_issue_correction_keeps_the_remaining_findings(self):
@@ -295,7 +301,8 @@ class HumanReviewTests(unittest.TestCase):
         result, _ = cycle(tools, budget=1)
 
         self.assert_handed_off(
-            tools, result, "run budget exhausted before issue correction", "- reversible ordering"
+            tools, result, "run budget exhausted before issue correction", "- reversible ordering",
+            cause=RUN_BUDGET,
         )
         self.assertEqual(tools.gate_heads, [])
 
@@ -308,7 +315,8 @@ class HumanReviewTests(unittest.TestCase):
         result, budget = cycle(tools)
 
         self.assert_handed_off(
-            tools, result, "infrastructure retries exhausted", "checks never started"
+            tools, result, "infrastructure retries exhausted", "checks never started",
+            cause=INFRASTRUCTURE,
         )
         self.assertEqual(budget.sessions, 1)
 

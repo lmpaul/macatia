@@ -1020,7 +1020,7 @@ class HandoffRedactionTests(VerificationTestCase):
 
                 result = self.start(loop.MODE, *corrections)
 
-                self.assert_not_implemented(result, "Ralph stopped")
+                self.assert_not_implemented(result, "Stop reason: correction limit of 3 exhausted")
                 handoff = self.github.comments(CHILD)[-1]
                 self.assertIn("Last diagnostic:", handoff)
                 self.assertIn(shown, handoff)
@@ -1161,6 +1161,165 @@ class RunBudgetTests(VerificationTestCase):
         self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT])
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
         self.assertTrue(self.github.pull_request().is_draft)
+
+
+class StopSummaryTests(VerificationTestCase):
+    """A stopped run says why it stopped and what to do next, on GitHub and in the terminal."""
+
+    def assert_stop_summary(self, result, *parts, outcome="stopped safely"):
+        """Each part is in the parent's and the PR's terminal summary, and in the terminal."""
+        published = [self.github.comments(PARENT)[-1]]
+        if self.github.pull_request() is not None:
+            published.append(self.github.pull_request().comments[-1])
+        for summary in (*published, result.stderr):
+            self.assertIn(f"final outcome: {outcome}.", summary)
+            for part in parts:
+                self.assertIn(part, summary)
+
+    def test_child_not_ready_for_an_agent_is_named_with_its_label_and_next_action(self):
+        self.github.add_issue(DEPENDENT, parent=PARENT, labels=("ready-for-human",))
+
+        result = self.start(loop_review.MODE, *passing_child_results(loop_review.MODE))
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assert_stop_summary(
+            result,
+            f"Stop reason: parent issue #{PARENT} has children remaining but none is runnable",
+            f"Remaining children:\n- #{DEPENDENT}: labelled ready-for-human.",
+            f"Next action:\n- #{DEPENDENT} is labelled ready-for-human: implement and close it, "
+            f"or relabel it ready-for-agent, then run `ralph-kit run --review {PARENT}` again.",
+        )
+
+    def test_child_waiting_on_an_unimplemented_blocker_names_the_blocker(self):
+        self.new_run()
+        self.github.add_issue(CHILD, parent=PARENT, labels=("needs-info",))
+        self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[CHILD])
+
+        result = self.start(loop.MODE)
+
+        self.assert_stop_summary(
+            result,
+            f"- #{CHILD}: labelled needs-info.\n- #{DEPENDENT}: waiting on #{CHILD}, which is not implemented.",
+            f"- #{DEPENDENT} waits on #{CHILD}: implement or close it, then run `ralph-kit run {PARENT}` again.",
+        )
+
+    def test_dependency_deadlock_names_the_blocked_children_and_their_blockers(self):
+        self.new_run()
+        self.github.add_issue(BLOCKER, parent=PARENT, blocked_by=[DEPENDENT])
+        self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
+
+        result = self.start(loop.MODE)
+
+        self.assert_stop_summary(
+            result,
+            "Stop reason: parent issue has a dependency deadlock",
+            f"- #{BLOCKER}: part of a dependency deadlock, waiting on #{DEPENDENT}.",
+            f"- #{DEPENDENT}: part of a dependency deadlock, waiting on #{BLOCKER}.",
+            f"- #{BLOCKER} is part of a dependency deadlock with #{DEPENDENT}: remove a blocked-by "
+            f"link from the cycle, relabel it ready-for-agent, then run `ralph-kit run {PARENT}` again.",
+        )
+
+    def test_child_handed_to_human_review_links_its_handoff_comment(self):
+        committed = ScriptedResult("committed")
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+        for name, mode, results, reason in (
+            ("blocked", loop.MODE, [ScriptedResult("blocked", "Needs a product decision.")],
+             "implementation stopped with blocked: Needs a product decision."),
+            ("failed", loop.MODE, [ScriptedResult("failed", "The toolchain crashed.")],
+             "implementation stopped with failed: The toolchain crashed."),
+            ("missing commit", loop.MODE, [findings, ScriptedResult("committed", commit=False)],
+             "Issue correction did not create a new commit"),
+            ("correction limit", loop.MODE, [findings, *[dataclasses.replace(findings, commit=True)] * 3],
+             "correction limit of 3 exhausted before issue correction"),
+            ("rejected work", loop_review.MODE, [ScriptedResult("no_changes"), committed],
+             "implementation no_changes requires an independent review with no corrections"),
+        ):
+            with self.subTest(name):
+                self.new_child_run()
+
+                result = self.start(mode, *results)
+
+                handoff = self.github.latest_comment_url(CHILD)
+                command = f"ralph-kit run{' --review' if mode.review else ''} {PARENT}"
+                self.assert_stop_summary(
+                    result,
+                    f"Stop reason: {reason}",
+                    f"- #{CHILD}: handed to human review ({handoff}).",
+                    f"- #{CHILD} was handed to human review: resolve what its handoff comment "
+                    f"({handoff}) reports, then close it or relabel it ready-for-agent, "
+                    f"and run `{command}` again.",
+                )
+
+    def test_exhausted_run_budget_says_the_next_run_has_a_fresh_one(self):
+        result = self.start(loop_review.MODE, ScriptedResult("committed"), budget=1)
+
+        self.assert_stop_summary(
+            result,
+            "Stop reason: run budget exhausted before review",
+            f"- #{CHILD}: handed to human review ({self.github.latest_comment_url(CHILD)}).",
+            f"Next action:\n- #{CHILD} was handed to human review because the run budget was "
+            f"exhausted: relabel it ready-for-agent, then run `ralph-kit run --review {PARENT}` "
+            "again; each run starts with a fresh run budget.",
+        )
+
+    def test_exhausted_infrastructure_retries_give_their_reason_and_next_action(self):
+        self.new_child_run(ci=("cancelled",))
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_stop_summary(
+            result,
+            f"Stop reason: infrastructure retries exhausted for canonical CI after 3 retries: "
+            f"{CANONICAL_CHECK} concluded cancelled",
+            f"Next action:\n- #{CHILD} was handed to human review because CI evidence could not "
+            "be obtained within the infrastructure retries: once GitHub Actions is healthy, "
+            f"relabel it ready-for-agent, then run `ralph-kit run {PARENT}` again.",
+        )
+
+    def test_crash_names_the_exception_and_points_to_the_run_diagnostics(self):
+        with self.assertRaises(ValueError):
+            self.start(loop.MODE, ValueError("the adapter broke with token=hunter2"))
+
+        directory = self.repository.diagnostics().relative_to(self.repository.path)
+        summary = self.github.comments(PARENT)[-1]
+        self.assertIn("final outcome: crashed.", summary)
+        self.assertIn("Stop reason: ValueError: the adapter broke with token=[REDACTED]", summary)
+        self.assertIn(f"Ralph crashed: inspect the run diagnostics in `{directory}`", summary)
+        self.assertNotIn("hunter2", summary)
+
+    def test_secrets_in_the_stop_reason_are_redacted(self):
+        result = self.start(loop.MODE, RalphError("gh failed: token=hunter2 Bearer abc.def"))
+
+        self.assert_stop_summary(
+            result,
+            "Stop reason: gh failed: token=[REDACTED] Bearer [REDACTED]",
+            f"Next action:\n- Fix the stop reason, then run `ralph-kit run {PARENT}` again.\n"
+            f"- #{CHILD} is runnable: run `ralph-kit run {PARENT}` again.",
+        )
+        self.assertNotIn("hunter2", self.github.comments(PARENT)[-1])
+
+    def test_rerun_command_keeps_the_configuration_path_and_drops_the_run_budget(self):
+        (self.repository.path / "config").mkdir()
+        git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
+        git(self.repository.path, "commit", "-m", "Move the Ralph configuration")
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("blocked", "Stuck."))
+
+        result = start_run(
+            loop_review.MODE, self.repository, self.github, self.sessions,
+            "--config", "config/ralph.toml", PARENT, 7,
+        )
+
+        self.assert_stop_summary(
+            result, f"run `ralph-kit run --review --config config/ralph.toml {PARENT}` again."
+        )
+
+    def test_completed_run_summary_has_no_stop_details(self):
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_implemented(result)
+        self.assertTrue(self.github.comments(PARENT)[-1].endswith("final outcome: completed."))
+        self.assertNotIn("Next action", result.stdout + result.stderr)
 
 
 class AgentSessionTestCase(VerificationTestCase):

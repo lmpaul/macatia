@@ -15,6 +15,8 @@ from .sanitize import format_findings
 
 
 MAX_CORRECTIONS = 3
+# Every handoff comment starts with this, so a stopped run can link the latest one.
+HANDOFF_PREFIX = "Ralph stopped"
 
 
 @dataclass(frozen=True)
@@ -78,9 +80,16 @@ class Verified:
     verified_head: str
 
 
+# Why a child cycle handed its child to human review, when the child itself is not the cause.
+RUN_BUDGET = "run budget"
+INFRASTRUCTURE = "infrastructure"
+
+
 @dataclass(frozen=True)
 class HandedToHumanReview:
     reason: str
+    # RUN_BUDGET, INFRASTRUCTURE, or None when the child's work stopped the cycle.
+    cause: str | None = None
 
 
 class RunBudget:
@@ -127,9 +136,10 @@ class ChildWorkRejected(Exception):
 
 
 class HumanReviewStop(Exception):
-    def __init__(self, reason: str, body: str):
+    def __init__(self, reason: str, body: str, cause: str | None = None):
         super().__init__(reason)
         self.body = body
+        self.cause = cause
 
 
 @dataclass
@@ -166,9 +176,11 @@ def run_child_cycle(
     review: bool,
 ) -> Verified | HandedToHumanReview:
     """Take one child to a verified head, or hand it to human review and say why."""
+    cause = None
     try:
         return _ChildCycle(child, base_sha, budget, adapters, review).run()
     except RunBudgetExhausted as error:
+        cause = RUN_BUDGET
         body = (
             f"Ralph stopped before {error.role} because the run budget of "
             f"{budget.maximum} agent sessions was exhausted after {budget.sessions} sessions. "
@@ -192,11 +204,12 @@ def run_child_cycle(
     except HumanReviewStop as error:
         body = error.body
         reason = str(error)
+        cause = error.cause
     except ChildWorkRejected as error:
         reason = str(error)
         body = f"Ralph stopped because {reason}. This child remains open for human review."
     adapters.hand_to_human_review(child, body)
-    return HandedToHumanReview(reason)
+    return HandedToHumanReview(reason, cause)
 
 
 def _findings_detail(findings: list[str]) -> str:
@@ -237,6 +250,7 @@ class _ChildCycle:
                     "Ralph stopped after bounded infrastructure retries without changing the "
                     "implementation or consuming another agent session. This child remains open "
                     f"for human review. Last infrastructure diagnostic: {verdict.diagnostic}",
+                    INFRASTRUCTURE,
                 )
             try:
                 verified_head = self.correct_ci(verdict.diagnostic)
