@@ -15,7 +15,7 @@ import sys
 import tempfile
 import time
 import uuid
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
@@ -248,6 +248,33 @@ def initial_run_summary() -> dict[str, int | None]:
     }
 
 
+@dataclass(frozen=True)
+class ChildCycleContext:
+    """What the child cycle adapters of one run need once its startup checks pass."""
+
+    state: RunState
+    quality: Any
+    manifest: dict[str, Any] | None
+    branch: str
+    parent_issue: int
+    infrastructure: InfrastructureRetryTracker
+
+
+@dataclass(frozen=True)
+class RunAdapters:
+    """Everything a run reaches outside its process, except Git.
+
+    GitHub access is built once the configuration names the repository, and the
+    child cycle adapters once the startup checks have accepted the branch.
+    """
+
+    # (repository root, configured repository) -> GitHub access
+    github: Callable[[pathlib.Path, str], GitHub]
+    child_cycle: Callable[[ChildCycleContext], ChildCycleAdapters]
+    # Waits between CI polls and infrastructure retries.
+    sleep: Callable[[float], None] = time.sleep
+
+
 @dataclass
 class RunState:
     """Everything one run knows about itself; nothing is shared between runs.
@@ -258,6 +285,7 @@ class RunState:
     """
 
     mode: RunMode
+    adapters: RunAdapters
     # Ralph runs against the repository it is started from, not where it is installed.
     repository_root: pathlib.Path
     started_at: float
@@ -433,7 +461,7 @@ class InfrastructureRetryTracker:
             flush=True,
         )
         if initial_delay_seconds:
-            time.sleep(initial_delay_seconds)
+            self.state.adapters.sleep(initial_delay_seconds)
         while True:
             expected_head = current_head(self.state)
             try:
@@ -461,7 +489,7 @@ class InfrastructureRetryTracker:
                     flush=True,
                 )
                 if retry_seconds:
-                    time.sleep(retry_seconds)
+                    self.state.adapters.sleep(retry_seconds)
 
 
 def command(
@@ -1385,7 +1413,7 @@ def wait_for_exact_sha_ci(
             raise RalphError(
                 f"canonical CI did not become green for exact head {head_sha}: {latest_error}"
             )
-        time.sleep(poll_seconds)
+        state.adapters.sleep(poll_seconds)
 
 
 def ci_poll_seconds() -> float:
@@ -1630,6 +1658,31 @@ def verify_with_ci(
             )
 
 
+def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
+    """The child cycle adapters a real run uses: agent CLIs, local gates, and GitHub CI."""
+    state = context.state
+    return ChildCycleAdapters(
+        run_session=functools.partial(run_session, state),
+        run_local_gates=functools.partial(
+            check_local_gates, state, context.quality, context.manifest
+        ),
+        verify_ci=functools.partial(
+            verify_with_ci,
+            state,
+            context.quality,
+            context.manifest,
+            context.branch,
+            context.parent_issue,
+            context.infrastructure,
+        ),
+        hand_to_human_review=functools.partial(send_child_to_human_review, state),
+    )
+
+
+def real_run_adapters() -> RunAdapters:
+    return RunAdapters(github=GitHub, child_cycle=real_child_cycle_adapters)
+
+
 def main(
     state: RunState, argv: list[str] | None = None, prog: str | None = None
 ) -> int:
@@ -1646,7 +1699,9 @@ def main(
     except RalphConfigError as error:
         raise RalphError(str(error)) from error
     state.loaded_config = configuration
-    state.loaded_github = GitHub(state.repository_root, configuration.repository)
+    state.loaded_github = state.adapters.github(
+        state.repository_root, configuration.repository
+    )
     state.diagnostics = DiagnosticRecorder(state.repository_root, mode.diagnostics_label)
     branch = preflight(state)
     state.branch = branch
@@ -1665,6 +1720,11 @@ def main(
     budget = RunBudget(arguments.run_budget or max(4, len(siblings) * 5))
     infrastructure = InfrastructureRetryTracker(state)
     update_run_summary(state, arguments.parent_issue, siblings, budget, infrastructure)
+    adapters = state.adapters.child_cycle(
+        ChildCycleContext(
+            state, quality, manifest, branch, arguments.parent_issue, infrastructure
+        )
+    )
 
     while True:
         siblings = state.github.sub_issues(arguments.parent_issue)
@@ -1695,20 +1755,6 @@ def main(
         require_trusted_issue(state, issue_details(state, child_number))
         base_sha = current_head(state)
         state.diagnostics.issue_bases[child_number] = base_sha
-        adapters = ChildCycleAdapters(
-            run_session=functools.partial(run_session, state),
-            run_local_gates=functools.partial(check_local_gates, state, quality, manifest),
-            verify_ci=functools.partial(
-                verify_with_ci,
-                state,
-                quality,
-                manifest,
-                branch,
-                arguments.parent_issue,
-                infrastructure,
-            ),
-            hand_to_human_review=functools.partial(send_child_to_human_review, state),
-        )
         cycle = run_child_cycle(
             child_number, base_sha, budget, adapters, review=mode.review
         )
@@ -1747,10 +1793,15 @@ def main(
 
 
 def run(
-    mode: RunMode, argv: list[str] | None = None, prog: str | None = None
+    mode: RunMode,
+    adapters: RunAdapters,
+    argv: list[str] | None = None,
+    prog: str | None = None,
 ) -> int:
+    """Start a run from the current directory, reaching GitHub and agents through adapters."""
     state = RunState(
         mode=mode,
+        adapters=adapters,
         repository_root=pathlib.Path.cwd().resolve(),
         started_at=time.monotonic(),
     )

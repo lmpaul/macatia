@@ -61,7 +61,9 @@ uv run python -m unittest discover -s tests   # offline tests (~5 min), with dep
 ```
 
 Tests use temporary Git repositories and fake GitHub/Codex/Claude commands; they
-do not launch real agents or mutate remote issues.
+do not launch real agents or mutate remote issues. Run-level tests in
+`tests/test_run.py` start a whole run in memory through injected run adapters
+(`tests/run_support.py`: a GitHub fake and scripted sessions over real Git).
 
 ## The loop: `run` and `run --review`
 

@@ -75,11 +75,6 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertIn("No separate Ralph review session was run", body)
         self.assertNotIn("reviewed_head", body)
 
-    def test_success_uses_only_implementation_before_local_gates_and_ci(self):
-        self.assert_completed(self.run_loop(), 1)
-        self.assertIn("$implement issue #193", self.calls()[0]["prompt"])
-        self.assertEqual(len(self.quality_log.read_text().splitlines()), 1)
-
     def test_claude_implementation_and_correction_use_the_shared_adapter(self):
         self._configure_engines(implementation="claude", correction="claude")
         result = self.run_loop(RALPH_TEST_FAIL_GATE_COUNT="1")
