@@ -64,9 +64,11 @@ class SingleChildHappyPathTests(unittest.TestCase):
     def assert_child_published(self, result, *, sessions, commit_count):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertIn(
-            f"Handled issue #{PARENT}: all 2 children complete; "
-            f"{sessions} agent sessions and 0 infrastructure retries this run.",
+            f"🎉 All 2 children of #{PARENT} are complete; the pull request is ready for review.",
             result.stdout,
+        )
+        self.assertIn(
+            f"- agent sessions: {sessions}\n- infrastructure retries: 0\n", result.stdout
         )
         base_sha = self.repository.base_sha
         commits = self.repository.commits_since(base_sha)
@@ -83,14 +85,14 @@ class SingleChildHappyPathTests(unittest.TestCase):
         pull = self.github.pull_request()
         self.assertEqual((pull.base, pull.head), ("main", BRANCH))
         self.assertFalse(pull.is_draft)
-        self.assertIn(f"Ralph summary: parent #{PARENT};", pull.comments[-1])
-        self.assertIn("implemented children this run: 1;", pull.comments[-1])
+        self.assertIn(f"🏁 Ralph summary for parent #{PARENT}:\n", pull.comments[-1])
+        self.assertIn("- implemented children this run: 1\n", pull.comments[-1])
 
         self.assertEqual(self.github.labels(PARENT), {"human-review"})
         parent_comments = self.github.comments(PARENT)
         self.assertIn("all 2 children complete", parent_comments[-2])
         self.assertIn(f"cumulative head `{head}`", parent_comments[-2])
-        self.assertIn("final outcome: completed.", parent_comments[-1])
+        self.assertIn("- final outcome: completed", parent_comments[-1])
 
         self.assertEqual(self.repository.local_gate_heads(), commits)
         timings = json.loads((self.repository.diagnostics() / "timings.json").read_text())
@@ -175,7 +177,9 @@ class RunLevelTestCase(unittest.TestCase):
 
     def assert_completed(self, result, *, sessions):
         self.assertEqual(result.exit_code, 0, result.stderr)
-        self.assertIn(f"{sessions} agent sessions and 0 infrastructure retries", result.stdout)
+        self.assertIn(
+            f"- agent sessions: {sessions}\n- infrastructure retries: 0\n", result.stdout
+        )
         self.assertEqual(self.github.labels(PARENT), {"human-review"})
 
     def assert_stopped_before_any_session(self, result, reason):
@@ -183,7 +187,7 @@ class RunLevelTestCase(unittest.TestCase):
         self.assertIn(reason, result.stderr)
         self.assertEqual(self.sessions.requests, [])
         self.assertIsNone(self.github.pull_request())
-        self.assertIn("final outcome: stopped safely.", self.github.comments(PARENT)[-1])
+        self.assertIn("- final outcome: stopped safely", self.github.comments(PARENT)[-1])
 
 
 class ChildSelectionTests(RunLevelTestCase):
@@ -336,13 +340,13 @@ class ParentCompletionTests(RunLevelTestCase):
         result = self.start(loop.MODE)
 
         self.assertEqual(result.exit_code, 0, result.stderr)
-        self.assertIn("0 agent sessions and 0 infrastructure retries", result.stdout)
+        self.assertIn("- agent sessions: 0\n- infrastructure retries: 0\n", result.stdout)
         self.assertIn("implemented children this run: 0", result.stdout)
         self.assertEqual(self.github.labels(PARENT), {"human-review", "documentation"})
         parent_comments = self.github.comments(PARENT)
         self.assertIn("<!-- ralph-experimental-parent-completion -->", parent_comments[-2])
         self.assertIn("all 2 children complete", parent_comments[-2])
-        self.assertIn("final outcome: completed.", parent_comments[-1])
+        self.assertIn("- final outcome: completed", parent_comments[-1])
 
     def test_restart_does_not_duplicate_the_parent_comment(self):
         for mode in MODES:
@@ -379,10 +383,10 @@ class RepeatedRunTests(RunLevelTestCase):
             comment for comment in self.github.comments(PARENT)
             if loop.MODE.terminal_summary_marker in comment
         )
-        self.assertIn("implemented children this run: 1;", first_summary)
-        self.assertIn("agent_sessions: 1;", first_summary)
-        self.assertIn("implemented children this run: 0;", second_summary)
-        self.assertIn("agent_sessions: 0;", second_summary)
+        self.assertIn("- implemented children this run: 1\n", first_summary)
+        self.assertIn("- agent sessions: 1\n", first_summary)
+        self.assertIn("- implemented children this run: 0\n", second_summary)
+        self.assertIn("- agent sessions: 0\n", second_summary)
         runs = list((self.repository.path / ".ralph" / "diagnostics").glob("*/run.json"))
         self.assertEqual(len(runs), 2)
 
@@ -1037,7 +1041,7 @@ class CrashedRunTests(VerificationTestCase):
             self.start(loop.MODE, crash)
 
         self.assertIs(raised.exception, crash)
-        self.assertIn("final outcome: crashed.", self.github.comments(PARENT)[-1])
+        self.assertIn("- final outcome: crashed", self.github.comments(PARENT)[-1])
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
         self.assertEqual(self.github.comments(CHILD), [])
 
@@ -1056,8 +1060,8 @@ class InfrastructureRetryTests(VerificationTestCase):
             self.github.comments(CHILD)[-1],
         )
         self.assertIn(f"Last infrastructure diagnostic: {diagnostic}", self.github.comments(CHILD)[-1])
-        self.assertIn("final outcome: stopped safely.", self.github.comments(PARENT)[-1])
-        self.assertIn("final outcome: stopped safely.", self.github.pull_request().comments[-1])
+        self.assertIn("- final outcome: stopped safely", self.github.comments(PARENT)[-1])
+        self.assertIn("- final outcome: stopped safely", self.github.pull_request().comments[-1])
 
     def test_unavailable_cancelled_and_timed_out_ci_is_retried_without_another_session(self):
         for conclusion in ("unavailable", "cancelled", "timed_out"):
@@ -1092,7 +1096,7 @@ class InfrastructureRetryTests(VerificationTestCase):
 
                 self.assert_implemented(result)
                 self.assertIn(
-                    f"{len(sessions)} agent sessions and 1 infrastructure retries this run.", result.stdout
+                    f"- agent sessions: {len(sessions)}\n- infrastructure retries: 1\n", result.stdout
                 )
                 self.assertIn("Canonical CI is not ready; the next check is in", result.stdout)
                 self.assertIn("Checking canonical CI (attempt 2/4).", result.stdout)
@@ -1112,7 +1116,7 @@ class InfrastructureRetryTests(VerificationTestCase):
         self.assert_not_implemented(result, "branch advanced during an infrastructure retry")
         self.assertEqual(len(self.github.checked_heads), 1)
         self.assertEqual(self.roles(), ["implementation"])
-        self.assertIn("infra_retries: 0;", self.github.comments(PARENT)[-1])
+        self.assertIn("- infrastructure retries: 0\n", self.github.comments(PARENT)[-1])
 
 
 CLOSED_CHILD = 195
@@ -1137,7 +1141,7 @@ class RunBudgetTests(VerificationTestCase):
         self.assertIn(
             f"run budget of {budget} agent sessions was exhausted after {budget} sessions", handoff
         )
-        self.assertIn("final outcome: stopped safely.", self.github.comments(PARENT)[-1])
+        self.assertIn("- final outcome: stopped safely", self.github.comments(PARENT)[-1])
         self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
         return handoff
 
@@ -1192,7 +1196,7 @@ class StopSummaryTests(VerificationTestCase):
         if self.github.pull_request() is not None:
             published.append(self.github.pull_request().comments[-1])
         for summary in (*published, result.stderr):
-            self.assertIn(f"final outcome: {outcome}.", summary)
+            self.assertIn(f"- final outcome: {outcome}", summary)
             for part in parts:
                 self.assertIn(part, summary)
 
@@ -1276,7 +1280,7 @@ class StopSummaryTests(VerificationTestCase):
 
         self.assert_stop_summary(
             result,
-            "agent_sessions: 1; infra_retries: 0;",
+            "- agent sessions: 1\n- infrastructure retries: 0\n",
             "Stop reason: run budget exhausted before review",
             f"- #{CHILD}: handed to human review ({self.github.latest_comment_url(CHILD)}).",
             f"Next action:\n- #{CHILD} was handed to human review because the run budget was "
@@ -1291,7 +1295,7 @@ class StopSummaryTests(VerificationTestCase):
 
         self.assert_stop_summary(
             result,
-            "agent_sessions: 1; infra_retries: 3;",
+            "- agent sessions: 1\n- infrastructure retries: 3\n",
             f"Stop reason: infrastructure retries exhausted for canonical CI after 3 retries: "
             f"{CANONICAL_CHECK} concluded cancelled",
             f"Next action:\n- #{CHILD} was handed to human review because CI evidence could not "
@@ -1305,7 +1309,7 @@ class StopSummaryTests(VerificationTestCase):
 
         directory = self.repository.diagnostics().relative_to(self.repository.path)
         summary = self.github.comments(PARENT)[-1]
-        self.assertIn("final outcome: crashed.", summary)
+        self.assertIn("- final outcome: crashed", summary)
         self.assertIn("Stop reason: ValueError: the adapter broke with token=[REDACTED]", summary)
         self.assertIn(f"Ralph crashed: inspect the run diagnostics in `{directory}`", summary)
         self.assertNotIn("hunter2", summary)
@@ -1340,7 +1344,7 @@ class StopSummaryTests(VerificationTestCase):
         result = self.start(loop.MODE, ScriptedResult("committed"))
 
         self.assert_implemented(result)
-        self.assertTrue(self.github.comments(PARENT)[-1].endswith("final outcome: completed."))
+        self.assertTrue(self.github.comments(PARENT)[-1].endswith("- final outcome: completed"))
         self.assertNotIn("Next action", result.stdout + result.stderr)
 
 
@@ -1359,7 +1363,7 @@ class AgentSessionTestCase(VerificationTestCase):
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
         self.assertEqual(self.github.comments(CHILD), [])
         (summary,) = self.github.comments(PARENT)
-        self.assertIn("final outcome: stopped safely.", summary)
+        self.assertIn("- final outcome: stopped safely", summary)
         self.assertIsNone(self.github.pull_request())
         with self.assertRaises(subprocess.CalledProcessError):
             self.repository.pushed_head()

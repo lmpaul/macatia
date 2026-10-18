@@ -358,14 +358,14 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         state.diagnostics.timing_summary() if state.diagnostics is not None else "unavailable"
     )
     return (
-        "Ralph summary: "
-        f"parent #{state.summary.parent}; implemented children this run: "
-        f"{state.summary.implemented}; remaining children: {state.summary.remaining}; "
-        f"agent_sessions: {state.summary.agent_sessions}; "
-        f"infra_retries: {state.summary.infra_retries}; "
-        f"total duration: {format_elapsed_duration(elapsed_seconds)}; "
-        f"phase timings: {phase_summary}; "
-        f"final outcome: {outcome}."
+        f"🏁 Ralph summary for parent #{state.summary.parent}:\n"
+        f"- implemented children this run: {state.summary.implemented}\n"
+        f"- remaining children: {state.summary.remaining}\n"
+        f"- agent sessions: {state.summary.agent_sessions}\n"
+        f"- infrastructure retries: {state.summary.infra_retries}\n"
+        f"- total duration: {format_elapsed_duration(elapsed_seconds)}\n"
+        f"- phase timings: {phase_summary}\n"
+        f"- final outcome: {outcome}"
     )
 
 
@@ -1376,7 +1376,7 @@ def run_local_gates(
         if gate.get("before_agent_review")
     ]
     for gate in gates:
-        print(f"Running local gate: {gate['description']}", flush=True)
+        print(f"🧪 Running local gate: {gate['description']}", flush=True)
         started_at = time.monotonic()
         try:
             completed = command(state, list(gate["command"]), check=False)
@@ -1389,11 +1389,12 @@ def run_local_gates(
                     duration_seconds,
                     issue_number=child_number,
                 )
-            print(
-                f"⏱ Local gate {gate['description']} finished in "
-                f"{format_elapsed_duration(round(duration_seconds))}.",
-                flush=True,
-            )
+        print(
+            f"⏱ Local gate {gate['description']} "
+            f"{'passed' if completed.returncode == 0 else 'failed'} in "
+            f"{format_elapsed_duration(round(duration_seconds))}.",
+            flush=True,
+        )
         assert state.diagnostics is not None
         arguments = list(gate["command"])
         directory = state.diagnostics.command_evidence(
@@ -1433,6 +1434,7 @@ def stop_children_for_dependency_deadlock(
 
 def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_issue: int) -> None:
     configuration = state.config
+    print(f"⬆️  Pushing {branch} to {configuration.remote}.", flush=True)
     command(
         state,
         ["git", "push", "--set-upstream", configuration.remote, branch],
@@ -1858,6 +1860,7 @@ def verify_with_ci(
             ),
             initial_delay_seconds=ci_poll_seconds(),
         )
+        print(f"🟢 Canonical CI passed for head {head_sha[:7]}.", flush=True)
         return None
     except ProductCIFailure as failure:
         assert context.manifest is not None
@@ -2012,9 +2015,8 @@ def run_children(
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
 
     print(
-        f"Handled issue #{parent_issue}: all {len(siblings)} children "
-        f"complete; {budget.sessions} agent sessions and "
-        f"{infrastructure.infra_retries} infrastructure retries this run."
+        f"🎉 All {len(siblings)} children of #{parent_issue} are complete; "
+        "the pull request is ready for review."
     )
     update_run_summary(state, parent_issue, siblings, budget, infrastructure)
     print_terminal_summary(state, "completed")
