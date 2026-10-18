@@ -373,7 +373,7 @@ class StartupRejectionTestCase(RunLevelTestCase):
         self.github.add_issue(CHILD, parent=PARENT)
 
     def assert_rejected_at_startup(self, result, reason):
-        """The run stopped before reaching GitHub issues: nothing was read, written, or pushed."""
+        """The run stopped before reading any issue: nothing was commented, labelled, or pushed."""
         self.assertNotEqual(result.exit_code, 0)
         self.assertIn(reason, result.stderr)
         self.assertEqual(self.sessions.requests, [])
@@ -384,7 +384,7 @@ class StartupRejectionTestCase(RunLevelTestCase):
             self.repository.pushed_head()
 
 
-class PreflightTests(StartupRejectionTestCase):
+class StartupTests(StartupRejectionTestCase):
     def test_base_branch_is_rejected_before_any_session(self):
         git(self.repository.path, "checkout", "main")
 
@@ -573,7 +573,26 @@ class ConfiguredTrustTests(RunLevelTestCase):
 
         result = self.start(loop.MODE)
 
-        self.assert_stopped_before_any_session(result, "@lmpaul")
+        self.assert_stopped_before_any_session(
+            result, f"issue #{CHILD} must be authored by one of: @{TRUSTED_LOGIN}"
+        )
+
+    def test_untrusted_implementation_evidence_never_satisfies_a_blocker(self):
+        verified_head = self.commit_prior_child()
+        evidence = implementation_evidence(loop.MODE, verified_head)
+        self.github.add_issue(
+            BLOCKER,
+            parent=PARENT,
+            labels=("implemented",),
+            comments=[evidence | {"author": {"login": "outside-contributor"}}],
+        )
+        self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(
+            result, f"parent issue #{PARENT} has children remaining but none is runnable"
+        )
 
 
 CANONICAL_CHECK = "Canonical CI"
