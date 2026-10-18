@@ -147,10 +147,11 @@ run is:
 The optional final number is the run budget: the total number of agent
 sessions the run may start, shared by all children. The default is
 `max(4, ready_children * 5)`, where `ready_children` counts the ready children
-when the run starts: open, not `implemented`, with `ready-for-agent` as their
-only triage label and only lifecycle label, blocked or not. Closed,
-implemented, agent-working, human-review, and ready-for-human children do not
-count, so resuming a parent with one child left gets 5 sessions.
+when the run starts, after the startup choice below: open, not `implemented`,
+with `ready-for-agent` as their only triage label and only lifecycle label,
+blocked or not. Children resumed at that choice count. Closed, implemented,
+agent-working, human-review, and ready-for-human children do not count, so
+resuming a parent with one child left gets 5 sessions.
 The count is taken once; relabelling a child during the run does not change its
 budget. It counts sessions, not tokens or time.
 
@@ -353,9 +354,27 @@ already marked `human-review` is not resumed automatically; remove that label
 and restore `ready-for-agent` when it is ready for another run.
 
 A run that ends without releasing its child (a crash, an error stop, or a killed
-process) leaves it `agent-working`. Unless its implementation evidence was
-already published, the next run stops before any session and names the child:
-check its branch commits, then relabel it `ready-for-agent` and rerun.
+process) leaves it `agent-working`. At startup, before any agent session, a run
+first marks `implemented` every child whose implementation evidence was already
+published, without asking. If children of the parent are still `agent-working`
+after that, Ralph shows one warning naming them all: it cannot tell an
+interrupted run from a run still active elsewhere; resuming while another run is
+active makes two agents do the same work on two branches; and resuming starts
+from the current branch head, so commits already made for these children are not
+covered by their implementation evidence. One choice applies to all of them:
+
+- **Stop** (the default) ends the run as `stopped safely` before any session,
+  leaving the children `agent-working`. The terminal summary lists each one as
+  "agent working from an earlier or concurrent run", with the next action: if no
+  other run is working on this parent, inspect the branch, relabel the child
+  `ready-for-agent`, then rerun.
+- **Resume** relabels each of them `ready-for-agent` and the run continues; they
+  count in the default run budget.
+
+The choice uses the arrow keys and needs a terminal on both stdin and stdout.
+Without one (`nohup`, a scheduler, redirected output), Ralph takes the Stop path
+and puts the warning in the terminal summary. Ctrl-C at the prompt counts as
+Stop.
 
 Ctrl-C (SIGINT), `kill` (SIGTERM), and closing the terminal (SIGHUP) all
 interrupt a run the same way. Ralph ends the agent session in flight,
@@ -371,7 +390,7 @@ the draft PR, if one exists), listing that child with its reason and next
 action, prints it, and exits with the shell's code for that signal: 130, 143,
 or 129. An interruption between two children releases nothing and publishes the
 same summary. A second interruption during this cleanup exits immediately,
-leaving the labels as they are, so the next run stops on a child still
+leaving the labels as they are, so the next run asks about a child still
 `agent-working` as described above. `kill -9`, crashes, and power loss are never
 caught: they release nothing and publish no interrupted summary. A signal
 ignored at launch, such as SIGHUP under `nohup`, stays ignored.

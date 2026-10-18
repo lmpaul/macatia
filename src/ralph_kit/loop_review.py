@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from . import loop_core
 
 
@@ -26,5 +28,9 @@ MODE = loop_core.RunMode(
 )
 
 
-def run(argv: list[str] | None = None, prog: str | None = None) -> int:
-    return loop_core.run(MODE, loop_core.real_run_adapters(), argv, prog)
+def run(
+    argv: list[str] | None = None,
+    prog: str | None = None,
+    confirm: Callable[[str], bool] | None = None,
+) -> int:
+    return loop_core.run(MODE, loop_core.real_run_adapters(confirm), argv, prog)

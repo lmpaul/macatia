@@ -308,6 +308,8 @@ class RunAdapters:
     run_engine: Callable[[pathlib.Path, list[str]], subprocess.CompletedProcess[str]] = (
         functools.partial(run_command, check=False)
     )
+    # question -> True to go ahead; None when Ralph is not in a terminal, which never goes ahead.
+    confirm: Callable[[str], bool] | None = None
 
 
 @dataclass
@@ -377,9 +379,10 @@ def update_run_summary(
     state: RunState,
     parent_issue: int,
     children: Iterable[dict[str, Any]],
-    budget: RunBudget,
+    budget: RunBudget | None,
     infrastructure: InfrastructureRetryTracker,
 ) -> None:
+    """Count the children again; `budget` is None until the run has sized it."""
     child_list = list(children)
     implemented_children = {
         int(child["number"])
@@ -466,6 +469,8 @@ def stop_details(state: RunState, error: BaseException) -> str:
         )
     actions = [*run_stop_actions(state, error), *(child.action for child in remaining)]
     sections.append("Next action:\n" + "\n".join(f"- {action}" for action in actions))
+    if isinstance(error, ChildLeftAgentWorking) and error.warning is not None:
+        sections.append(f"Warning: {error.warning}")
     return "\n\n".join(sections)
 
 
@@ -502,6 +507,10 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
         {int(child["number"]) for child in error.children}
         if isinstance(error, DependencyDeadlock) else set()
     )
+    left_agent_working = (
+        {int(child["number"]) for child in error.children}
+        if isinstance(error, ChildLeftAgentWorking) else set()
+    )
     ready_label = configured_label(state, "ready_for_agent")
     rerun = rerun_instruction(state)
     remaining = []
@@ -516,6 +525,12 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
             action = (
                 f"#{number} is part of a dependency deadlock with {blockers}: remove a "
                 f"blocked-by link from the cycle, relabel it {ready_label}, then {rerun}."
+            )
+        elif number in left_agent_working:
+            reason = "agent working from an earlier or concurrent run"
+            action = (
+                "If no other run is working on this parent, inspect the branch, relabel "
+                f"#{number} {ready_label}, then {rerun}."
             )
         elif (
             isinstance(error, Interrupted)
@@ -706,13 +721,57 @@ class ChildHandedToHumanReview(RalphError):
 
 
 class ChildLeftAgentWorking(RalphError):
-    """A child is still agent working: a run that ended without releasing it left it in that state."""
+    """Children are still agent working, left by an earlier run or held by a concurrent one.
 
-    def __init__(self, children: list[dict[str, Any]], label: str):
-        numbers = ", ".join(f"#{child['number']}" for child in children)
+    `warning` is the startup warning, for the terminal summary.
+    """
+
+    def __init__(
+        self, children: list[dict[str, Any]], label: str, warning: str | None = None
+    ):
         super().__init__(
-            f"{numbers} labelled {label}: another run started it and did not release it"
+            f"{child_numbers(children)} labelled {label}: another run started them "
+            "and did not release them"
         )
+        self.children = children
+        self.warning = warning
+
+
+def child_numbers(children: Iterable[dict[str, Any]]) -> str:
+    return ", ".join(f"#{child['number']}" for child in children)
+
+
+def left_agent_working_warning(state: RunState, children: list[dict[str, Any]]) -> str:
+    return (
+        f"{child_numbers(children)} labelled {configured_label(state, 'agent_working')}. "
+        "Ralph cannot tell an interrupted run from a run still active "
+        "elsewhere: resuming while another run is active makes two agents do the same work "
+        "on two branches. And resuming starts from the current branch head, so commits "
+        "already made for these children are not covered by their implementation evidence."
+    )
+
+
+def resolve_left_agent_working(state: RunState, children: list[dict[str, Any]]) -> None:
+    """Ask once whether to resume every child left agent working; anything but Resume stops the run.
+
+    Resume relabels them ready-for-agent. Without a terminal, or on Ctrl-C at the
+    prompt, Ralph stops.
+    """
+    label = configured_label(state, "agent_working")
+    warning = left_agent_working_warning(state, children)
+    confirm = state.adapters.confirm
+    if confirm is None:
+        raise ChildLeftAgentWorking(children, label, warning)
+    print(f"⚠️  {warning}", flush=True)
+    try:
+        resume = confirm(f"Resume {child_numbers(children)}?")
+    except KeyboardInterrupt:
+        resume = False
+    if not resume:
+        raise ChildLeftAgentWorking(children, label)
+    for child in children:
+        set_child_lifecycle(state, int(child["number"]), "ready_for_agent")
+        print(f"🔁 Resuming child #{child['number']}.", flush=True)
 
 
 class DependencyDeadlock(RalphError):
@@ -2028,9 +2087,10 @@ def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
     )
 
 
-def real_run_adapters() -> RunAdapters:
-    """The run adapters `ralph-kit run` uses: the `gh` CLI and the real child cycle adapters."""
-    return RunAdapters(github=GitHub, child_cycle=real_child_cycle_adapters)
+def real_run_adapters(confirm: Callable[[str], bool] | None = None) -> RunAdapters:
+    """The run adapters `ralph-kit run` uses: the `gh` CLI, the real child cycle adapters, and
+    the command line's confirm, None outside a terminal."""
+    return RunAdapters(github=GitHub, child_cycle=real_child_cycle_adapters, confirm=confirm)
 
 
 def main(
@@ -2092,11 +2152,20 @@ def run_children(
     branch = state.branch
     assert branch is not None
     require_trusted_issue(state, issue_details(state, parent_issue))
+    infrastructure = InfrastructureRetryTracker(state)
     siblings = state.github.sub_issues(parent_issue)
-    # The default counts the ready children once, as the run starts.
+    update_run_summary(state, parent_issue, siblings, None, infrastructure)
+    while recover_published_child(state, siblings):
+        siblings = state.github.sub_issues(parent_issue)
+    if left_agent_working := [
+        child for child in siblings if child_is_agent_working(state, child)
+    ]:
+        update_run_summary(state, parent_issue, siblings, None, infrastructure)
+        resolve_left_agent_working(state, left_agent_working)
+        siblings = state.github.sub_issues(parent_issue)
+    # The default counts the ready children once, after the startup choice.
     ready_children = [child for child in siblings if child_is_ready(state, child)]
     budget = RunBudget(run_budget or max(4, len(ready_children) * 5))
-    infrastructure = InfrastructureRetryTracker(state)
     update_run_summary(state, parent_issue, siblings, budget, infrastructure)
     adapters = state.adapters.child_cycle(
         ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)

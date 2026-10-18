@@ -669,8 +669,11 @@ class RunResult:
     sleeps: list[float]
 
 
-def start_run(mode, repository, github, sessions, *arguments, cwd=None):
+def start_run(mode, repository, github, sessions, *arguments, cwd=None, confirm=None):
     """Start one run with in-memory GitHub and sessions, from `cwd` or the repository root.
+
+    `confirm` answers the run's startup question, as a terminal would; None runs
+    without a terminal.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
@@ -697,12 +700,14 @@ def start_run(mode, repository, github, sessions, *arguments, cwd=None):
             child_cycle=loop_core.real_child_cycle_adapters,
             sleep=sleeps.append,
             run_engine=sessions.run,
+            confirm=confirm,
         )
     else:
         adapters = loop_core.RunAdapters(
             github=open_github,
             child_cycle=child_cycle_adapters,
             sleep=sleeps.append,
+            confirm=confirm,
         )
     stdout, stderr = io.StringIO(), io.StringIO()
     with (

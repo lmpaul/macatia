@@ -15,7 +15,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from ralph_kit import loop, loop_core, loop_review
+from ralph_kit import check, cli, loop, loop_core, loop_review
 from ralph_kit.commands import RalphError
 from run_support import (
     BRANCH,
@@ -152,10 +152,13 @@ class RunLevelTestCase(unittest.TestCase):
     def setUp(self):
         self.new_run()
 
-    def start(self, mode, *results, budget=None):
+    def start(self, mode, *results, budget=None, confirm=None):
         self.sessions = ScriptedSessions(self.repository, *results)
         budget_argument = () if budget is None else (budget,)
-        return start_run(mode, self.repository, self.github, self.sessions, PARENT, *budget_argument)
+        return start_run(
+            mode, self.repository, self.github, self.sessions, PARENT, *budget_argument,
+            confirm=confirm,
+        )
 
     def session_children(self):
         return [request.child for request in self.sessions.requests]
@@ -411,26 +414,188 @@ class AgentWorkingTests(RunLevelTestCase):
         self.assert_stopped_before_any_session(result, "gh issue edit failed: HTTP 502")
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
 
-    def test_child_left_agent_working_by_a_dead_run_stops_before_any_session(self):
+
+class ScriptedConfirm:
+    """Answers the run's startup question as the person at the terminal would.
+
+    `answer` is True (Resume), False (Stop), or an exception the prompt raises.
+    """
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.questions = []
+
+    def __call__(self, question):
+        self.questions.append(question)
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
+STOP, RESUME = False, True
+
+
+class LeftAgentWorkingTests(RunLevelTestCase):
+    """A run that starts with children left agent working asks before resuming them."""
+
+    def assert_warning(self, text, *children):
+        names = ", ".join(f"#{child}" for child in children)
+        self.assertIn(f"{names} labelled agent-working", text)
+        self.assertIn("Ralph cannot tell an interrupted run from a run still active elsewhere", text)
+        self.assertIn("two agents do the same work on two branches", text)
+        self.assertIn(
+            "resuming starts from the current branch head, so commits already made for "
+            "these children are not covered by their implementation evidence",
+            text,
+        )
+
+    def assert_stopped_on_agent_working(self, result, *children):
+        self.assert_stopped_before_any_session(result, "labelled agent-working")
+        summary = self.github.comments(PARENT)[-1]
+        self.assertIn(f"- remaining children: {len(self.github.sub_issues(PARENT))}\n", summary)
+        for child in children:
+            self.assertEqual(self.github.labels(child), {"agent-working"})
+            self.assertIn(
+                f"- #{child}: agent working from an earlier or concurrent run.", summary
+            )
+            self.assertIn(
+                f"- If no other run is working on this parent, inspect the branch, relabel "
+                f"#{child} ready-for-agent, then run `ralph-kit run {PARENT}` again.",
+                summary,
+            )
+        self.assertNotIn("Fix the stop reason", summary)
+        return summary
+
+    def test_stop_leaves_the_child_agent_working_and_starts_no_session(self):
         self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
         self.github.add_issue(DEPENDENT, parent=PARENT)
+        confirm = ScriptedConfirm(STOP)
 
-        result = self.start(loop.MODE)
+        result = self.start(loop.MODE, confirm=confirm)
 
-        self.assert_stopped_before_any_session(
-            result,
-            f"Stop reason: #{CHILD} labelled agent-working: another run started it and did not "
-            "release it",
-        )
-        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
+        self.assert_stopped_on_agent_working(result, CHILD)
         self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
-        summary = self.github.comments(PARENT)[-1]
-        self.assertIn(f"Remaining children:\n- #{CHILD}: labelled agent-working.", summary)
+        (question,) = confirm.questions
+        self.assert_warning(result.stdout + question, CHILD)
         self.assertIn(
-            f"Next action:\n- #{CHILD} is labelled agent-working: implement and close it, "
-            f"or relabel it ready-for-agent, then run `ralph-kit run {PARENT}` again.",
-            summary,
+            f"If no other run is working on this parent, inspect the branch, relabel #{CHILD} "
+            "ready-for-agent",
+            result.stderr,
         )
+
+    def test_resume_relabels_the_child_and_implements_it_in_the_same_run(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        confirm = ScriptedConfirm(RESUME)
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE), confirm=confirm)
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(len(confirm.questions), 1)
+        self.assertEqual(self.session_children(), [CHILD])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_resumed_child_counts_in_the_default_run_budget(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        committed = ScriptedResult("committed")
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+
+        result = self.start(
+            loop_review.MODE, committed, findings, committed, findings, committed,
+            confirm=ScriptedConfirm(RESUME),
+        )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("run budget exhausted before review", result.stderr)
+        self.assertEqual(len(self.sessions.requests), 5)
+
+    def test_several_children_get_one_warning_and_one_choice(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        self.github.add_issue(DEPENDENT, parent=PARENT, labels=("agent-working",))
+        confirm = ScriptedConfirm(RESUME)
+
+        result = self.start(
+            loop.MODE, *passing_child_results(loop.MODE) * 2, confirm=confirm
+        )
+
+        self.assert_completed(result, sessions=2)
+        (question,) = confirm.questions
+        self.assertEqual((result.stdout + question).count("labelled agent-working"), 1)
+        self.assert_warning(result.stdout + question, CHILD, DEPENDENT)
+        self.assertEqual(self.session_children(), [CHILD, DEPENDENT])
+
+    def test_several_children_stopped_are_each_listed(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        self.github.add_issue(DEPENDENT, parent=PARENT, labels=("agent-working",))
+
+        result = self.start(loop.MODE, confirm=ScriptedConfirm(STOP))
+
+        self.assert_stopped_on_agent_working(result, CHILD, DEPENDENT)
+
+    def test_without_a_terminal_the_run_stops_with_the_warning_in_its_summary(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+
+        result = self.start(loop.MODE, confirm=None)
+
+        summary = self.assert_stopped_on_agent_working(result, CHILD)
+        self.assert_warning(summary, CHILD)
+
+    def test_ctrl_c_at_the_prompt_counts_as_stop(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+
+        result = self.start(loop.MODE, confirm=ScriptedConfirm(KeyboardInterrupt()))
+
+        self.assert_stopped_on_agent_working(result, CHILD)
+
+    def test_published_agent_working_child_is_recovered_without_a_prompt(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.interrupt_after_comment_on = CHILD
+        with self.assertRaises(RunInterrupted):
+            self.start(loop.MODE, *passing_child_results(loop.MODE))
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
+        confirm = ScriptedConfirm(STOP)
+
+        result = self.start(loop.MODE, confirm=confirm)
+
+        self.assert_completed(result, sessions=0)
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+
+class StartupChoiceCommandLineTests(unittest.TestCase):
+    """`ralph-kit run` asks the startup question with the arrow keys only in a terminal."""
+
+    def confirm_passed(self, *, stdin_tty, stdout_tty, review=False):
+        with (
+            mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
+            mock.patch.object(sys.stdout, "isatty", return_value=stdout_tty),
+            mock.patch.object(loop, "run", return_value=0) as standard,
+            mock.patch.object(loop_review, "run", return_value=0) as reviewed,
+            mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
+        ):
+            self.assertEqual(cli.main(["run", *(["--review"] if review else []), "5"]), 0)
+        return (reviewed if review else standard).call_args.kwargs["confirm"]
+
+    def test_both_terminals_get_the_arrow_key_selector(self):
+        for review in (False, True):
+            with self.subTest(review=review):
+                confirm = self.confirm_passed(stdin_tty=True, stdout_tty=True, review=review)
+                self.assertIs(confirm, cli.resume_with_arrows)
+
+    def test_without_both_terminals_there_is_no_selector(self):
+        for stdin_tty, stdout_tty in ((False, True), (True, False), (False, False)):
+            with self.subTest(stdin_tty=stdin_tty, stdout_tty=stdout_tty):
+                self.assertIsNone(self.confirm_passed(stdin_tty=stdin_tty, stdout_tty=stdout_tty))
+
+    def test_selector_offers_stop_by_default_and_resumes_only_on_resume(self):
+        for choice, resume in (("Stop", False), ("Resume", True)):
+            with (
+                self.subTest(choice=choice),
+                mock.patch.object(check, "arrow_select", return_value=choice) as select,
+            ):
+                self.assertIs(cli.resume_with_arrows("Resume #193?"), resume)
+                select.assert_called_once_with(
+                    "Resume #193?", [("Stop", ""), ("Resume", "")], "Stop"
+                )
 
 
 class ParentCompletionTests(RunLevelTestCase):
