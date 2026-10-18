@@ -387,6 +387,42 @@ class RepeatedRunTests(RunLevelTestCase):
         self.assertEqual(len(runs), 2)
 
 
+class RunDiagnosticsTests(RunLevelTestCase):
+    """The repository's own ignore rules say nothing about `.ralph/`."""
+
+    def setUp(self):
+        super().setUp()
+        self.github.add_issue(CHILD, parent=PARENT)
+        ignored = subprocess.run(
+            ["git", "check-ignore", "--quiet", ".ralph/"], cwd=self.repository.path, check=False
+        )
+        self.assertEqual(ignored.returncode, 1, "the fixture must not ignore .ralph/")
+
+    def test_run_diagnostics_never_make_the_worktree_dirty(self):
+        # Real session handling records each session in `.ralph/` and checks the worktree after it.
+        engine = ScriptedEngine(self.repository, EngineResult(), EngineResult())
+        result = start_run(loop_review.MODE, self.repository, self.github, engine, PARENT)
+
+        self.assert_completed(result, sessions=2)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertEqual(len(self.repository.session_directories()), 2)
+        self.assertTrue(self.repository.is_clean())
+
+    def test_maintainer_files_in_the_diagnostics_directory_are_kept(self):
+        own = {".gitignore": "# Kept by the maintainer\n*\n", "notes.txt": "Mine.\n"}
+        for name, text in own.items():
+            path = self.repository.path / ".ralph" / name
+            path.parent.mkdir(exist_ok=True)
+            path.write_text(text, encoding="utf-8")
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assert_completed(result, sessions=1)
+        for name, text in own.items():
+            self.assertEqual((self.repository.path / ".ralph" / name).read_text(encoding="utf-8"), text)
+        self.assertTrue(self.repository.is_clean())
+
+
 class StartupRejectionTestCase(RunLevelTestCase):
     """One ready child under the parent; each test breaks one startup condition."""
 

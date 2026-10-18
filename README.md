@@ -34,7 +34,7 @@ ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
 ralph-kit run --review 123     # reviewed run: adds an independent review session per child
 ```
 
-Commit `ralph.toml` and run on a clean, dedicated branch (never the base branch).
+Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean, dedicated branch (never the base branch).
 
 `init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats
@@ -50,7 +50,9 @@ model listing, so `init` offers its documented aliases (`fable`, `opus`,
 `sonnet`, `haiku`), which always follow the latest version. Without a terminal
 (agents, CI) it asks nothing and leaves placeholders that `ralph-kit check` reports.
 `--config path/to/other.toml` selects another configuration. Ralph writes run
-diagnostics to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
+diagnostics to `.ralph/`. Unless Git already ignores it, `init` appends `.ralph/` to the
+repository's `.gitignore` (creating the file if needed) and says so. Commit it with `ralph.toml`;
+`check` reports `.ralph/` when Git does not ignore it.
 
 ## Develop ralph-kit
 
@@ -172,7 +174,10 @@ holds command metadata and complete output streams. Known credential patterns ar
 redacted before storage and handoff. Excerpts prioritize error details and stay
 bounded; complete logs are referenced, not pasted into every prompt. Run
 diagnostics are ignored by Git and are available to subsequent sessions in the
-same checkout.
+same checkout. Before writing anything else there, a run creates
+`.ralph/.gitignore` containing `*` (an existing one is kept), so its diagnostics
+never make the worktree dirty, even where the repository's `.gitignore` does not
+list `.ralph/`.
 
 A standard run's implementation evidence uses separate markers (still named
 `ralph-experimental-*` for compatibility with earlier runs) and records the
@@ -336,7 +341,8 @@ ralph-kit check --review
 
 Commit the prepared files and use a dedicated branch first. The readiness check validates
 TOML and placeholders, Python and required CLI availability (and the minimum `gh` version), Git branch/remote
-and clean worktree, GitHub access/repository/trusted account/write permission/labels,
+and clean worktree, `.ralph/` ignored by Git (any ignore source counts; the check
+never edits `.gitignore`), GitHub access/repository/trusted account/write permission/labels,
 the packaged result schema, the implement skill for each engine, the flags Ralph passes
 to each configured engine (listed in the engine's own help, so an update that drops one
 blocks before a run), and the enabled quality policy.

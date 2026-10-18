@@ -21,7 +21,12 @@ from rich.text import Text
 
 from . import __version__
 from .agent import engine_help_command_and_flags
-from .config import MissingConfigError, RalphConfigError, load_config
+from .config import (
+    DIAGNOSTICS_DIRECTORY,
+    MissingConfigError,
+    RalphConfigError,
+    load_config,
+)
 
 
 PACKAGE_DIRECTORY = pathlib.Path(__file__).resolve().parent
@@ -363,7 +368,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
 
     report.section("Git")
     if "git" not in available:
-        for label in ("Repository root", "Remote", "Branch", "Working tree"):
+        for label in ("Repository root", "Remote", "Branch", "Working tree", "Run diagnostics"):
             report.skip(label, "git missing")
     else:
         def repository_root():
@@ -393,6 +398,15 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
             require(not changes, f"{count} modified or untracked file{'s' if count > 1 else ''}", "commit the changes, or stash them with git stash")
             return "clean"
         report.check("Working tree", worktree)
+
+        def diagnostics_ignored():
+            entry = f"{DIAGNOSTICS_DIRECTORY}/"
+            try:
+                command("git", "check-ignore", "--quiet", entry)
+            except RuntimeError:  # check-ignore fails when no rule matches; Repository root already proved Git works.
+                raise Blocked(f"{entry} is not ignored by Git", f'echo "{entry}" >> .gitignore, then commit .gitignore') from None
+            return f"{entry} ignored by Git"
+        report.check("Run diagnostics", diagnostics_ignored)
 
     report.section("GitHub")
     missing = []

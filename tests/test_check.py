@@ -84,6 +84,7 @@ class ReadinessTests(unittest.TestCase):
         (skill / "SKILL.md").write_text("Implement")
         self.branch = "feature"
         self.dirty = ""
+        self.diagnostics_ignored = True
         self.repo = "example/project"
         self.login = "reader"
         self.permission = True
@@ -113,6 +114,10 @@ class ReadinessTests(unittest.TestCase):
             if isinstance(self.help[args], Exception):
                 raise self.help[args]
             return self.help[args]
+        if args == ("git", "check-ignore", "--quiet", ".ralph/"):
+            if not self.diagnostics_ignored:
+                raise RuntimeError("git check-ignore --quiet .ralph/ failed; check access and authentication")
+            return ""
         if args[:3] == ("gh", "label", "create"):
             if args[3] == "broken":
                 raise RuntimeError("gh label create failed")
@@ -181,6 +186,20 @@ class ReadinessTests(unittest.TestCase):
     def test_dirty_worktree_blocks(self):
         self.dirty = " M file"
         self.assertEqual(self.run_check()[0], 1)
+
+    def test_ignored_diagnostics_directory_passes(self):
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertIn(".ralph/ ignored by Git", output)
+
+    def test_diagnostics_directory_not_ignored_blocks_with_the_fix(self):
+        self.diagnostics_ignored = False
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        output = " ".join(output.split())
+        self.assertIn("Run diagnostics .ralph/ is not ignored by Git", output)
+        self.assertIn('→ echo ".ralph/" >> .gitignore, then commit .gitignore', output)
+        self.assertIn("1 blocker", output)
 
     def test_untrusted_account_blocks(self):
         self.login = "other"
@@ -317,6 +336,12 @@ class ReadinessTests(unittest.TestCase):
                     code = cli.main(["run", *review, "1"])
                 self.assertEqual(code, 1)
                 self.assertIn("ralph.toml not found: run `ralph-kit init` first", stderr.getvalue())
+
+    def test_missing_git_skips_git_checks(self):
+        code, output = self.run_check(missing="git")
+        self.assertEqual(code, 1)
+        self.assertFalse([args for args in self.commands if args[0] == "git"])
+        self.assertEqual(output.count("not verified: git missing"), 5)
 
     def test_missing_gh_skips_github_checks(self):
         code, output = self.run_check(missing="gh")

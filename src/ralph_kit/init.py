@@ -12,10 +12,16 @@ from collections.abc import Callable
 from typing import TextIO
 
 from .check import AGENT_CLIS as ENGINES, create_labels, missing_labels, prerequisites
-from .config import CLAUDE_REASONING_EFFORTS, RalphConfigError, load_config
+from .config import (
+    CLAUDE_REASONING_EFFORTS,
+    DIAGNOSTICS_DIRECTORY,
+    RalphConfigError,
+    load_config,
+)
 
 
 CONFIG_NAME = "ralph.toml"
+GITIGNORE = ".gitignore"
 QUALITY_MODULE = ".github/scripts/quality.py"
 QUALITY_MANIFEST = ".github/quality-gates.json"
 LABELS = {
@@ -351,6 +357,19 @@ def render(values: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
+def ignore_diagnostics(root: pathlib.Path, command: CommandRunner) -> bool:
+    """Append the run diagnostics directory to .gitignore unless Git already ignores it; True when .gitignore changed."""
+    entry = f"{DIAGNOSTICS_DIRECTORY}/"
+    if command("git", "check-ignore", "--quiet", entry) is not None:
+        return False
+    path = root / GITIGNORE
+    existing = path.read_bytes() if path.exists() else b""
+    newline = b"\r\n" if b"\r\n" in existing else b"\n"
+    separator = newline if existing and not existing.endswith(b"\n") else b""
+    path.write_bytes(existing + separator + entry.encode() + newline)
+    return True
+
+
 def check_prerequisites(command: CommandRunner, which: Callable[[str], str | None]) -> None:
     """Stop before any question when detection could not work; ralph-kit check repeats these on other machines."""
     problems = [
@@ -388,8 +407,11 @@ def run(
         load_config(target, root)
     except RalphConfigError as error:  # The renderer must always produce a loadable file.
         raise InitError(f"generated configuration is invalid, please report this bug: {error}") from error
+    ignored = ignore_diagnostics(root, command)
 
     prompter.say(f"\n✅ Wrote {target}.")
+    if ignored:
+        prompter.say(f"   Added {DIAGNOSTICS_DIRECTORY}/ to {GITIGNORE}: Ralph writes run diagnostics there.")
     if values["create_labels"]:
         failed = create_labels(command, values["repository"], values["create_labels"])
         for name in values["create_labels"].values():
@@ -397,5 +419,6 @@ def run(
     remaining = [value for value in PLACEHOLDERS.values() if value in contents]
     if remaining:
         prompter.say("   Values to fill in: " + ", ".join(remaining))
-    prompter.say("   Next step: commit ralph.toml, then run `ralph-kit check`.")
+    committed = f"{CONFIG_NAME} and {GITIGNORE}" if ignored else CONFIG_NAME
+    prompter.say(f"   Next step: commit {committed}, then run `ralph-kit check`.")
     return target

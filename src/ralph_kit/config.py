@@ -31,6 +31,8 @@ REASONING_EFFORTS = {
 }
 ENGINES = {"codex", "claude"}
 CLAUDE_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
+# Run diagnostics live in the repository and must stay ignored by Git.
+DIAGNOSTICS_DIRECTORY = ".ralph"
 
 
 class RalphConfigError(RuntimeError):

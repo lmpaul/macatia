@@ -167,9 +167,8 @@ class RepositoryTemplate:
         for profile, engine in engines.items():
             configuration = configure_engine(configuration, profile, engine)
         (path / "ralph.toml").write_text(configuration, encoding="utf-8")
-        (path / ".gitignore").write_text(
-            "__pycache__/\n*.py[cod]\n.ralph/\n", encoding="utf-8"
-        )
+        # Run diagnostics are deliberately not ignored here: the run must ignore them itself.
+        (path / ".gitignore").write_text("__pycache__/\n*.py[cod]\n", encoding="utf-8")
         if local_checks or ci_checks:
             scripts = path / ".github" / "scripts"
             scripts.mkdir(parents=True)
