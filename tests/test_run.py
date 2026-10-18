@@ -1658,10 +1658,13 @@ class EngineSelectionTests(AgentSessionTestCase):
             f"🤖 Starting Codex local gate correction session (Terra - Medium) for child #{CHILD}.",
             result.stdout,
         )
-        self.assertIn(
-            f"🤖 Codex local gate correction session (Terra - Medium) finished for child #{CHILD} "
-            "(outcome: committed; commits: 1).",
+        self.assertRegex(
             result.stdout,
+            rf"🤖 Codex local gate correction session \(Terra - Medium\) finished for child #{CHILD} "
+            r"in \d{2}:\d{2}:\d{2} \(outcome: committed; commits: 1; files changed: 1; \+1/-0\)\.",
+        )
+        self.assertIn(
+            f"✅ Completed child #{CHILD}\n🔄 Selecting the next runnable child.\n", result.stdout
         )
         correction = self.engine.calls[1]
         self.assertEqual(correction.option("--model"), "gpt-5.6-terra")

@@ -1105,6 +1105,17 @@ def verify_agent_git_effect(
     return after_head, commits
 
 
+def diff_stats(state: RunState, before_head: str, after_head: str) -> str:
+    """Count the files and lines a session's commits changed; binary files count no lines."""
+    files = insertions = deletions = 0
+    for line in git(state, "diff", "--numstat", f"{before_head}..{after_head}").splitlines():
+        added, removed, _path = line.split("\t", 2)
+        files += 1
+        insertions += int(added) if added != "-" else 0
+        deletions += int(removed) if removed != "-" else 0
+    return f"files changed: {files}; +{insertions}/-{deletions}"
+
+
 def agent_exit_detail(
     engine_label: str, completed: subprocess.CompletedProcess[str]
 ) -> str:
@@ -1187,10 +1198,12 @@ def run_agent(
                 validation.append(
                     f"Accepted a valid committed result despite the non-zero {engine_label} exit."
                 )
+            change = f"; {diff_stats(state, before_head, after_head)}" if commits else ""
             print(
                 f"🤖 {engine_label} {session_kind} session ({session_label}) finished for child "
-                f"#{issue_number} (outcome: {result['outcome']}; commits: "
-                f"{len(commits)}).",
+                f"#{issue_number} in "
+                f"{format_elapsed_duration(round(time.monotonic() - started_at))} "
+                f"(outcome: {result['outcome']}; commits: {len(commits)}{change}).",
                 flush=True,
             )
             return result, after_head, commits
@@ -1994,10 +2007,8 @@ def run_children(
             correction_range,
             verified_head,
         )
-        print(
-            f"✅ Completed child #{child_number}; selecting the next runnable child. 🔄",
-            flush=True,
-        )
+        print(f"✅ Completed child #{child_number}", flush=True)
+        print("🔄 Selecting the next runnable child.", flush=True)
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
 
     print(
