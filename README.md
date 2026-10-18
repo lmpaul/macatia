@@ -359,21 +359,22 @@ check its branch commits, then relabel it `ready-for-agent` and rerun.
 
 Ctrl-C (SIGINT), `kill` (SIGTERM), and closing the terminal (SIGHUP) all
 interrupt a run the same way. Ralph ends the agent session in flight,
-terminating its engine process, and releases the child it was working on. If
-the branch head still equals the child's base commit, nothing was committed for
-it: the child goes back to `ready-for-agent` and the next run starts it again.
+terminating its engine process, and releases the child it was working on. If the
+branch head still equals the child's base commit, nothing was committed for it:
+the child goes back to `ready-for-agent` and the next run starts it again.
 Otherwise the child goes to `human-review` with a handoff comment naming the
 unverified commit range `<base>..<head>`; inspect those commits, then close the
-child or relabel it `ready-for-agent` and rerun. Ralph then publishes the
-terminal summary with the outcome `interrupted` on the parent (and the draft
-PR, if one exists), listing that child with its reason and next action, prints
-it, and exits with the shell's code for that signal: 130, 143, or 129. An
-interruption between two children releases nothing and publishes the same
-summary. A second interruption during this cleanup exits immediately, leaving
-the labels as they are, so the next run stops on a child still `agent-working`
-as described above. `kill -9`, crashes, and power loss are never caught: they
-release nothing and publish no interrupted summary. A signal ignored at launch,
-such as SIGHUP under `nohup`, stays ignored.
+child or relabel it `ready-for-agent` and rerun. A child whose implementation
+evidence was already published is marked `implemented` instead. Ralph then
+publishes the terminal summary with the outcome `interrupted` on the parent (and
+the draft PR, if one exists), listing that child with its reason and next
+action, prints it, and exits with the shell's code for that signal: 130, 143,
+or 129. An interruption between two children releases nothing and publishes the
+same summary. A second interruption during this cleanup exits immediately,
+leaving the labels as they are, so the next run stops on a child still
+`agent-working` as described above. `kill -9`, crashes, and power loss are never
+caught: they release nothing and publish no interrupted summary. A signal
+ignored at launch, such as SIGHUP under `nohup`, stays ignored.
 
 ## Readiness check
 

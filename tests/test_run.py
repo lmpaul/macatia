@@ -1185,7 +1185,7 @@ class InterruptedRunTests(VerificationTestCase):
             else:
                 self.assertNotIn(rerun, published)
 
-    def assert_handed_back_unverified(self, result, base, head):
+    def assert_handed_to_human_review_unverified(self, result, base, head):
         """The child went to human review naming the commits nobody verified."""
         unverified = f"{base}..{head}"
         self.assertEqual(self.github.labels(CHILD), {"human-review"})
@@ -1233,7 +1233,7 @@ class InterruptedRunTests(VerificationTestCase):
 
         self.assert_interrupted(result, 130, "SIGINT", rerun_action=False)
         self.assertEqual(self.roles(), ["implementation"])
-        self.assert_handed_back_unverified(result, base, self.repository.head())
+        self.assert_handed_to_human_review_unverified(result, base, self.repository.head())
 
     def test_sigterm_and_sighup_during_an_agent_session_behave_like_ctrl_c(self):
         for signal_number, exit_code in ((signal.SIGTERM, 143), (signal.SIGHUP, 129)):
@@ -1258,7 +1258,32 @@ class InterruptedRunTests(VerificationTestCase):
                 self.assert_interrupted(
                     result, exit_code, signal_number.name, rerun_action=False
                 )
-                self.assert_handed_back_unverified(result, base, self.repository.head())
+                self.assert_handed_to_human_review_unverified(result, base, self.repository.head())
+
+    def test_a_signal_ignored_at_launch_stays_ignored(self):
+        previous = signal.signal(signal.SIGHUP, signal.SIG_IGN)
+        self.addCleanup(signal.signal, signal.SIGHUP, previous)
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
+        self.sessions.before_session = lambda request: os.kill(os.getpid(), signal.SIGHUP)
+
+        result = start_run(loop.MODE, self.repository, self.github, self.sessions, PARENT)
+
+        self.assert_implemented(result)
+        self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
+
+    def test_ctrl_c_after_the_evidence_is_published_marks_the_child_implemented(self):
+        def interrupt_after_evidence(number, body):
+            if number == CHILD:
+                raise KeyboardInterrupt
+
+        self.github.after_comment = interrupt_after_evidence
+
+        result = self.start(loop.MODE, ScriptedResult("committed"))
+
+        self.assertEqual(result.exit_code, 130, result.stderr)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertEqual(len(self.github.comments(CHILD)), 1)
+        self.assertIn("- final outcome: interrupted", self.github.comments(PARENT)[-1])
 
     def test_interruption_between_two_children_publishes_the_same_summary(self):
         self.github.add_issue(DEPENDENT, parent=PARENT)

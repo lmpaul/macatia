@@ -656,14 +656,18 @@ def release_interrupted_child(state: RunState, interruption: Interrupted) -> Non
     """Release the child the run still holds agent working when it is interrupted.
 
     A child whose branch has not moved goes back to ready-for-agent; one with
-    commits goes to human review naming them, since nothing verified them.
+    commits goes to human review naming them, since nothing verified them. A
+    child whose implementation evidence was already published is marked
+    implemented, as the next startup would.
     """
     if state.working_child is None:
         return
     child_number, base = state.working_child
-    if configured_label(state, "agent_working") not in labels(
-        issue_details(state, child_number)
-    ):
+    details = issue_details(state, child_number)
+    if configured_label(state, "agent_working") not in labels(details):
+        return
+    if recover_published_child(state, [details]):
+        state.working_child = None
         return
     head = current_head(state)
     if head == base:
