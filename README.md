@@ -140,16 +140,17 @@ run is:
    after the local gates pass without querying CI. On a product CI failure, collect diagnostic evidence, start a
    fresh CI correction, rerun local gates, push, and wait for CI again.
 4. Mark the child `implemented` only when the work is complete and verification
-   passes, removing every other lifecycle label it carries. Continue with the next runnable child. The parent ultimately goes to
-   human review; only a human merges.
+   passes, removing every other lifecycle label it carries. Continue with the
+   next runnable child. The parent ultimately goes to human review; only a human
+   merges.
 
 The optional final number is the run budget: the total number of agent
 sessions the run may start, shared by all children. The default is
 `max(4, ready_children * 5)`, where `ready_children` counts the ready children
 when the run starts: open, not `implemented`, with `ready-for-agent` as their
 only triage label and only lifecycle label, blocked or not. Closed,
-implemented, agent-working, human-review, and ready-for-human children do not count, so
-resuming a parent with one child left gets 5 sessions.
+implemented, agent-working, human-review, and ready-for-human children do not
+count, so resuming a parent with one child left gets 5 sessions.
 The count is taken once; relabelling a child during the run does not change its
 budget. It counts sessions, not tokens or time.
 
@@ -343,8 +344,8 @@ CI corrections share one count, and each prompt shows it (`Correction attempt
 2/3`). Every correction also consumes the run budget. An exhausted correction
 limit or run budget, issue or CI corrections without a new commit,
 and `blocked` or `failed` results stop the run and leave the child open with
-`human-review` as its only lifecycle label. The handoff comment includes the outstanding findings and, for
-local gate or CI failures, the last diagnostic.
+`human-review` as its only lifecycle label. The handoff comment includes the
+outstanding findings and, for local gate or CI failures, the last diagnostic.
 
 Ralph publishes implementation evidence and adds `implemented` only after the
 issue review and configured verification succeed for the final commit. A child

@@ -596,7 +596,7 @@ class ChildHandedToHumanReview(RalphError):
 
 
 class ChildLeftAgentWorking(RalphError):
-    """A child is still agent working, as a run that ended without releasing it leaves it."""
+    """A child is still agent working: a run that ended without releasing it left it in that state."""
 
     def __init__(self, children: list[dict[str, Any]], label: str):
         numbers = ", ".join(f"#{child['number']}" for child in children)
@@ -859,7 +859,7 @@ def child_is_ready(state: RunState, issue: dict[str, Any]) -> bool:
 
 
 def child_is_agent_working(state: RunState, issue: dict[str, Any]) -> bool:
-    """A remaining child whose only triage or lifecycle label is agent-working."""
+    """A remaining child with no triage label whose only lifecycle label is agent-working."""
     return child_is_remaining(state, issue) and labels(issue) & (
         state.config.triage_labels | state.config.lifecycle_labels
     ) == {configured_label(state, "agent_working")}
