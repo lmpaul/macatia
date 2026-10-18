@@ -179,30 +179,6 @@ class RalphProcessTestCase(unittest.TestCase):
             "comments": list(comments),
         }
 
-    def _implementation_evidence(self, implementation_head, reviewed_head=None):
-        evidence = json.dumps(
-            {
-                "implementation_head": implementation_head,
-                "reviewed_head": reviewed_head or implementation_head,
-            },
-            separators=(",", ":"),
-        )
-        return {
-            "author": {"login": "lmpaul"},
-            "body": f"<!-- ralph-implementation-evidence: {evidence} -->",
-        }
-
-    def _legacy_implementation_evidence(self, base_head, reviewed_head):
-        return {
-            "author": {"login": "lmpaul"},
-            "body": (
-                f"Ralph verified implementation commits `{base_head}.."
-                f"{reviewed_head}` and reviewed head `{reviewed_head}` with no "
-                "corrections. Applicable local gates and canonical CI are green "
-                f"for exact head `{reviewed_head}`."
-            ),
-        }
-
     def _install_real_loop(self):
         shutil.copyfile(FIXTURES / "ralph.toml", self.repository / "ralph.toml")
 
@@ -563,19 +539,6 @@ class RalphProcessTestCase(unittest.TestCase):
                     "createdAt": created_at,
                 })
                 save_state()
-                if (
-                    number != state["parent"]["number"]
-                    and os.environ.get("RALPH_TEST_INTERRUPT_AFTER_EVIDENCE") == "1"
-                ):
-                    raise SystemExit("simulated interruption after evidence comment")
-                if (
-                    number == state["parent"]["number"]
-                    and os.environ.get(
-                        "RALPH_TEST_INTERRUPT_AFTER_PARENT_COMMENT"
-                    )
-                    == "1"
-                ):
-                    raise SystemExit("simulated interruption after parent comment")
                 if os.environ.get("RALPH_TEST_ADVANCE_AFTER_CI") == "1":
                     pathlib.Path("ci-advance.txt").write_text(
                         "advanced\n", encoding="utf-8"

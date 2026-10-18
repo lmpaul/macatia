@@ -129,6 +129,20 @@ def quality_manifest(local_gate_command):
     }
 
 
+class RunInterrupted(BaseException):
+    """The run's process died; nothing in the run may catch or report it."""
+
+
+def implementation_evidence(mode, implementation_head, verified_head=None):
+    """A trusted implementation evidence comment in the format the given run mode writes."""
+    heads = {
+        "implementation_head": implementation_head,
+        mode.evidence_head_key: verified_head or implementation_head,
+    }
+    body = f"{mode.implementation_evidence_prefix}{json.dumps(heads, separators=(',', ':'))} -->"
+    return {"author": {"login": TRUSTED_LOGIN}, "body": body}
+
+
 @dataclass
 class PullRequest:
     number: int
@@ -147,6 +161,8 @@ class FakeGitHub:
     blockers link them. Every check-runs request answers with the next scripted
     CI round for the requested head; the last round repeats. A round is one
     conclusion for every check, or a mapping from check name to conclusion.
+    Setting `interrupt_after_comment_on` to an issue number kills the run once,
+    right after its next comment on that issue is stored.
     """
 
     def __init__(
@@ -169,6 +185,7 @@ class FakeGitHub:
         self.job_log_output = job_log_output
         self.checked_heads = []
         self.revision = 0
+        self.interrupt_after_comment_on = None
 
     # Test setup and observation.
 
@@ -239,6 +256,9 @@ class FakeGitHub:
         self.issues[number]["comments"].append(
             {"author": {"login": self.login}, "body": body, "createdAt": created_at}
         )
+        if number == self.interrupt_after_comment_on:
+            self.interrupt_after_comment_on = None
+            raise RunInterrupted(f"interrupted after commenting on #{number}")
 
     def edit_issue_labels(self, number, add, remove):
         names = (self.labels(number) | {add}) - set(remove)
