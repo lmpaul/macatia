@@ -57,13 +57,14 @@ diagnostics to `.ralph/`; add `.ralph/` to the repository's `.gitignore`.
 ```sh
 git clone git@github.com:lmpaul/ralph-kit.git && cd ralph-kit
 uv tool install -e .                          # `ralph-kit` now runs this checkout
-uv run python -m unittest discover -s tests   # offline tests (~1.5 min), with dependencies
+uv run python -m unittest discover -s tests   # offline tests (~1 min), with dependencies
 ```
 
 Tests use temporary Git repositories and fake GitHub/Codex/Claude commands; they
 do not launch real agents or mutate remote issues. Run-level tests in
 `tests/test_run.py` start a whole run in memory through injected run adapters
-(`tests/run_support.py`: a GitHub fake and scripted sessions over real Git).
+(`tests/run_support.py`: a GitHub fake and scripted sessions or engine
+processes over real Git).
 
 ## The loop: `run` and `run --review`
 

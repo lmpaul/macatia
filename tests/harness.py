@@ -263,51 +263,12 @@ class RalphProcessTestCase(unittest.TestCase):
 
             model = arguments[arguments.index("--model") + 1]
             issue_number = int(re.search(r"issue #(\d+)", prompt).group(1))
-            is_correction = (
-                "Repair the failing local gate" in prompt
-                or "Repair the failing CI check" in prompt
-                or "Complete the remaining requirements" in prompt
-            )
-            outcome = os.environ.get("RALPH_TEST_AGENT_OUTCOME", "committed")
-            if (
-                is_correction
-                and os.environ.get("RALPH_TEST_CI_CORRECTION_NO_CHANGES") == "1"
-            ):
-                outcome = "no_changes"
-            if is_correction and os.environ.get("RALPH_TEST_CORRECTION_OUTCOME"):
-                outcome = os.environ["RALPH_TEST_CORRECTION_OUTCOME"]
-            results = json.loads(os.environ.get("RALPH_TEST_AGENT_RESULTS", "[]"))
-            scripted_result = results[call_index] if call_index < len(results) else {}
-            outcome = scripted_result.get("outcome", outcome)
-            creates_commit = scripted_result.get("commit", outcome == "committed")
             if model == "gpt-5.6-terra":
-                if (
-                    creates_commit
-                    and os.environ.get("RALPH_TEST_TERRA_SKIPS_COMMIT") != "1"
-                ):
-                    filename = (
-                        f"repair-{issue_number}.txt"
-                        if is_correction
-                        else f"feature-{issue_number}.txt"
-                    )
-                    contents = (
-                        f"repair {call_index}\n"
-                        if is_correction
-                        else "implemented\n"
-                    )
-                    target = pathlib.Path(filename)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    target.write_text(contents, encoding="utf-8")
-                summary = (
-                    "Repaired the failing local gate."
-                    if is_correction
-                    else "Implemented the requested child issue."
+                pathlib.Path(f"feature-{issue_number}.txt").write_text(
+                    "implemented\n", encoding="utf-8"
                 )
-                message = (
-                    f"Repair child issue {issue_number}"
-                    if is_correction
-                    else f"Implement child issue {issue_number}"
-                )
+                summary = "Implemented the requested child issue."
+                message = f"Implement child issue {issue_number}"
             elif model == "gpt-5.6-sol":
                 quality_log = pathlib.Path(os.environ["RALPH_TEST_QUALITY_LOG"])
                 quality_heads = (
@@ -321,52 +282,25 @@ class RalphProcessTestCase(unittest.TestCase):
                     text=True,
                     capture_output=True,
                 ).stdout.strip()
-                if (
-                    outcome in {"committed", "no_changes", "needs_correction"}
-                    and (outcome != "no_changes" or quality_heads)
-                    and (
-                    not quality_heads or quality_heads[-1] != current_head
-                    )
-                ):
+                if not quality_heads or quality_heads[-1] != current_head:
                     raise SystemExit("Sol started before local gates passed")
-                if creates_commit:
-                    pathlib.Path(f"review-{issue_number}.txt").write_text(
-                        f"corrected {call_index}\n", encoding="utf-8"
-                    )
+                pathlib.Path(f"review-{issue_number}.txt").write_text(
+                    f"corrected {call_index}\n", encoding="utf-8"
+                )
                 summary = "Reviewed the exact diff and committed one correction."
                 message = f"Correct reviewed implementation {issue_number}"
             else:
                 raise SystemExit(f"unexpected model: {model}")
 
-            if creates_commit and not (
-                model == "gpt-5.6-terra"
-                and os.environ.get("RALPH_TEST_TERRA_SKIPS_COMMIT") == "1"
-            ):
-                subprocess.run(["git", "add", "."], check=True)
-                subprocess.run(["git", "commit", "-m", message], check=True)
+            subprocess.run(["git", "add", "."], check=True)
+            subprocess.run(["git", "commit", "-m", message], check=True)
             output_path = pathlib.Path(
                 arguments[arguments.index("--output-last-message") + 1]
             )
-            if os.environ.get("RALPH_TEST_INVALID_OUTPUT") != "1":
-                reported_summary = os.environ.get("RALPH_TEST_SUMMARY", summary)
-                if model == "gpt-5.6-sol":
-                    reported_summary = os.environ.get(
-                        "RALPH_TEST_SOL_SUMMARY", reported_summary
-                    )
-                output_path.write_text(
-                    json.dumps({
-                        "outcome": outcome,
-                        "summary": reported_summary,
-                        "findings": scripted_result.get("findings", []),
-                    }),
-                    encoding="utf-8",
-                )
-            if os.environ.get("RALPH_TEST_LEAVE_DIRTY") == "1":
-                pathlib.Path("uncommitted-agent-output.txt").write_text(
-                    "dirty\n", encoding="utf-8"
-                )
-            if os.environ.get("RALPH_TEST_CODEX_NONZERO") == "1":
-                raise SystemExit("simulated interrupted Codex client")
+            output_path.write_text(
+                json.dumps({"outcome": "committed", "summary": summary, "findings": []}),
+                encoding="utf-8",
+            )
             '''
         )
         write_executable(
@@ -405,19 +339,7 @@ class RalphProcessTestCase(unittest.TestCase):
             ) as log:
                 log.write(json.dumps(arguments) + "\n")
 
-            if arguments[:2] == ["run", "view"]:
-                print("AssertionError: expected 42, received 0; token=ci-secret")
-                print("\n".join("CI progress " + str(i) for i in range(100)))
-                print("last CI log line")
-            elif arguments[0] == "api" and "/actions/jobs/" in arguments[1]:
-                head = subprocess.run(["git", "rev-parse", "HEAD"], check=True, text=True, capture_output=True).stdout.strip()
-                check_id = int(arguments[1].rsplit("/", 1)[1]) - 1000
-                print(json.dumps({
-                    "head_sha": head,
-                    "check_run_url": f"https://api.github.com/repos/lmpaul/buyr/check-runs/{check_id}",
-                    "steps": [{"name": "Run tests", "conclusion": "failure"}],
-                }))
-            elif arguments[:2] == ["repo", "view"]:
+            if arguments[:2] == ["repo", "view"]:
                 print(json.dumps({
                     "nameWithOwner": os.environ.get(
                         "RALPH_TEST_REPOSITORY", "lmpaul/buyr"
@@ -454,15 +376,6 @@ class RalphProcessTestCase(unittest.TestCase):
                     ).stdout.strip()
                     if head != actual:
                         raise SystemExit("CI requested for a stale head")
-                    responses_path = state_path.with_suffix(".ci-responses")
-                    responses = int(
-                        responses_path.read_text() if responses_path.exists() else "0"
-                    )
-                    responses_path.write_text(str(responses + 1), encoding="utf-8")
-                    outcomes = os.environ.get(
-                        "RALPH_TEST_CI_OUTCOMES", "success"
-                    ).split(",")
-                    outcome = outcomes[min(responses, len(outcomes) - 1)]
                     print(json.dumps({
                         "check_runs": [
                             {
@@ -471,7 +384,7 @@ class RalphProcessTestCase(unittest.TestCase):
                                 "name": "Canonical CI",
                                 "head_sha": head,
                                 "status": "completed",
-                                "conclusion": outcome,
+                                "conclusion": "success",
                             }
                         ]
                     }))
@@ -539,19 +452,6 @@ class RalphProcessTestCase(unittest.TestCase):
                 "a", encoding="utf-8"
             ) as log:
                 log.write(head + "\n")
-            quality_log = pathlib.Path(os.environ["RALPH_TEST_QUALITY_LOG"])
-            failures_path = quality_log.with_suffix(".failures")
-            failures = int(failures_path.read_text() if failures_path.exists() else "0")
-            failures_path.write_text(str(failures + 1), encoding="utf-8")
-            if failures < int(os.environ.get("RALPH_TEST_FAIL_GATE_COUNT", "0")):
-                print("AssertionError: expected local value 42, received 0")
-                print("\n".join("local progress " + str(i) for i in range(100)))
-                print("last local log line")
-                raise SystemExit(
-                    'fixture gate failed: password=super-secret '
-                    'token: "hidden-token" Bearer bearer-secret '
-                    'https://user:password@example.test ```escaped fence'
-                )
             '''
         )
 
@@ -610,17 +510,11 @@ class RalphProcessTestCase(unittest.TestCase):
             'subprocess.run(["git", "commit", "-m", message], check=True, capture_output=True)',
         )
         source += '''
-if os.environ.get("RALPH_TEST_CLAUDE_INVALID_JSON") == "1":
-    print("invalid JSON")
-else:
-    result = json.loads(output_path.read_text()) if output_path.exists() else None
-    if os.environ.get("RALPH_TEST_CLAUDE_RESULT_OVERRIDE"):
-        result = json.loads(os.environ["RALPH_TEST_CLAUDE_RESULT_OVERRIDE"])
-    print(json.dumps({
-        "type": "result",
-        "is_error": os.environ.get("RALPH_TEST_CLAUDE_ERROR") == "1",
-        "structured_output": result,
-    }))
+print(json.dumps({
+    "type": "result",
+    "is_error": False,
+    "structured_output": json.loads(output_path.read_text()),
+}))
 '''
         write_executable(self.fake_bin / "claude", source)
 
@@ -646,11 +540,3 @@ else:
     def assert_codex_did_not_start(self):
         self.assertFalse(self.codex_log.exists())
         self.assertFalse(self.claude_log.exists())
-
-    def _diagnostic_records(self):
-        runs = sorted((self.repository / ".ralph" / "diagnostics").glob("*/"))
-        self.assertEqual(len(runs), 1)
-        return [
-            json.loads(path.read_text())
-            for path in sorted((runs[0] / "sessions").glob("*/record.json"))
-        ]

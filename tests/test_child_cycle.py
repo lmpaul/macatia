@@ -302,6 +302,20 @@ class HumanReviewTests(unittest.TestCase):
         )
         self.assertEqual(budget.sessions, 1)
 
+    def test_failed_issue_correction_handoff_keeps_the_original_findings(self):
+        tools = FakeTools({
+            "implementation": [needs_correction("expose freshness", commits=1)],
+            "issue correction": [("failed", 0, [], "the toolchain crashed")],
+        })
+
+        result, _ = cycle(tools)
+
+        self.assert_handed_off(
+            tools, result,
+            "issue correction stopped with failed: the toolchain crashed",
+            "- expose freshness",
+        )
+
     def test_gate_correction_reporting_needs_correction_is_handed_off(self):
         tools = FakeTools(
             {

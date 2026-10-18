@@ -11,6 +11,7 @@ import dataclasses
 import io
 import json
 import pathlib
+import re
 import shutil
 import subprocess
 import sys
@@ -45,9 +46,13 @@ class RunRepository:
     `local_gate_results` ("pass" or "fail" per call, the last repeats) it runs
     the scripted gate in `fixtures/local_gate.py`. With both verification paths
     disabled, no quality policy is installed, so a run that loads it fails.
+    `engines` maps a model profile to the engine it uses, or to None to leave
+    the profile without an `engine` key; other profiles use Codex.
     """
 
-    def __init__(self, test_case, *, local_gate_results=None, local_checks=True, ci_checks=True):
+    def __init__(
+        self, test_case, *, local_gate_results=None, local_checks=True, ci_checks=True, engines=None
+    ):
         directory = tempfile.TemporaryDirectory()
         test_case.addCleanup(directory.cleanup)
         root = pathlib.Path(directory.name)
@@ -65,6 +70,8 @@ class RunRepository:
         configuration = configuration.replace(
             flags, f"local_checks = {str(local_checks).lower()}\nci_checks = {str(ci_checks).lower()}"
         )
+        for profile, engine in (engines or {}).items():
+            configuration = configure_engine(configuration, profile, engine)
         (self.path / "ralph.toml").write_text(configuration, encoding="utf-8")
         (self.path / ".gitignore").write_text(
             "__pycache__/\n*.py[cod]\n.ralph/\n", encoding="utf-8"
@@ -114,12 +121,38 @@ class RunRepository:
             for evidence in sorted((self.diagnostics() / "evidence").glob("*-local-gate"))
         ]
 
+    def session_records(self):
+        """The diagnostic record of each agent session, in order."""
+        return [
+            json.loads((session / "record.json").read_text())
+            for session in self.session_directories()
+        ]
+
+    def session_directories(self):
+        return sorted((self.diagnostics() / "sessions").glob("*/"))
+
     def ci_evidence(self):
         """The command metadata of each recorded CI failure evidence, in order."""
         return [
             json.loads((evidence / "command.json").read_text())
             for evidence in sorted((self.diagnostics() / "evidence").glob("*-ci"))
         ]
+
+
+def configure_engine(configuration, profile, engine):
+    """Set one model profile's engine; a Claude Code profile also gets a Claude model name."""
+    header = f"[models.{profile}]"
+    start = configuration.index(header)
+    end = configuration.find("\n[", start + len(header))
+    section = configuration[start:end]
+    assert 'engine = "codex"\n' in section, section
+    if engine is None:
+        section = section.replace('engine = "codex"\n', "")
+    else:
+        section = section.replace('engine = "codex"', f'engine = "{engine}"')
+    if engine == "claude":
+        section = re.sub(r'name = "gpt-[^"]+"', f'name = "claude-{profile}"', section)
+    return configuration[:start] + section + configuration[end:]
 
 
 def quality_manifest(local_gate_command):
@@ -452,6 +485,92 @@ class ScriptedSessions:
 
 
 @dataclass(frozen=True)
+class EngineResult:
+    """One scripted engine process: the result it reports and what it leaves in Git.
+
+    `commit` defaults to the outcome needing one; `dirty` leaves an uncommitted
+    file. `structured` replaces the reported result object, and with
+    `writes_result` false the engine reports no result at all. Claude Code
+    prints `stdout` instead of its result envelope when given, and flags the
+    envelope as an error with `is_error`.
+    """
+
+    outcome: str = "committed"
+    summary: str = "Did the requested work."
+    findings: tuple[str, ...] = ()
+    commit: bool | None = None
+    dirty: bool = False
+    returncode: int = 0
+    structured: dict | None = None
+    writes_result: bool = True
+    stdout: str | None = None
+    is_error: bool = False
+
+
+@dataclass(frozen=True)
+class EngineCall:
+    engine: str
+    arguments: list[str]
+
+    @property
+    def prompt(self):
+        return self.arguments[-1]
+
+    def option(self, flag):
+        return self.arguments[self.arguments.index(flag) + 1]
+
+
+class ScriptedEngine:
+    """Stands in for the `codex` and `claude` processes behind Ralph's real session handling.
+
+    Each engine command is answered with the next scripted result: the engine
+    commits for real, then writes its result the way that CLI does (Codex to
+    its result file, Claude Code in a JSON envelope on stdout).
+    """
+
+    def __init__(self, repository, *results):
+        self.repository = repository
+        self.script = list(results)
+        self.calls = []
+
+    def engines(self):
+        return [call.engine for call in self.calls]
+
+    def run(self, repository_root, arguments):
+        call = EngineCall(arguments[0], list(arguments))
+        if not self.script:
+            raise AssertionError(f"unscripted {call.engine} session: {call.prompt[:80]!r}")
+        session = self.script.pop(0)
+        self.calls.append(call)
+        path = self.repository.path
+        commit = session.commit if session.commit is not None else session.outcome == "committed"
+        if commit:
+            name = f"{call.engine}-session-{len(self.calls)}.txt"
+            (path / name).write_text(f"{session.summary}\n", encoding="utf-8")
+            git(path, "add", name)
+            git(path, "commit", "-m", f"{call.engine} session {len(self.calls)}")
+        if session.dirty:
+            (path / "uncommitted-agent-output.txt").write_text("unfinished\n", encoding="utf-8")
+        result = session.structured or {
+            "outcome": session.outcome,
+            "summary": session.summary,
+            "findings": list(session.findings),
+        }
+        stdout = ""
+        if call.engine == "codex":
+            if session.writes_result:
+                pathlib.Path(call.option("--output-last-message")).write_text(
+                    json.dumps(result), encoding="utf-8"
+                )
+        else:
+            envelope = {"type": "result", "is_error": session.is_error, "result": ""}
+            if session.writes_result:
+                envelope["structured_output"] = result
+            stdout = session.stdout if session.stdout is not None else json.dumps(envelope)
+        return subprocess.CompletedProcess(arguments, session.returncode, stdout, "")
+
+
+@dataclass(frozen=True)
 class RunResult:
     exit_code: int
     stdout: str
@@ -461,7 +580,11 @@ class RunResult:
 
 
 def start_run(mode, repository, github, sessions, *arguments):
-    """Start one run from the repository root with in-memory GitHub and sessions."""
+    """Start one run from the repository root with in-memory GitHub and sessions.
+
+    `sessions` is either `ScriptedSessions`, answering each session request, or
+    a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
+    """
 
     def child_cycle_adapters(context):
         def run_session(request):
@@ -473,11 +596,19 @@ def start_run(mode, repository, github, sessions, *arguments):
         )
 
     sleeps = []
-    adapters = loop_core.RunAdapters(
-        github=lambda repository_root, name: github,
-        child_cycle=child_cycle_adapters,
-        sleep=sleeps.append,
-    )
+    if isinstance(sessions, ScriptedEngine):
+        adapters = loop_core.RunAdapters(
+            github=lambda repository_root, name: github,
+            child_cycle=loop_core.real_child_cycle_adapters,
+            sleep=sleeps.append,
+            run_engine=sessions.run,
+        )
+    else:
+        adapters = loop_core.RunAdapters(
+            github=lambda repository_root, name: github,
+            child_cycle=child_cycle_adapters,
+            sleep=sleeps.append,
+        )
     stdout, stderr = io.StringIO(), io.StringIO()
     with (
         contextlib.chdir(repository.path),

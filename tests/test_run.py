@@ -1,5 +1,6 @@
 """In-memory run tests: the whole loop against a GitHub fake, scripted sessions, and real Git."""
 
+import dataclasses
 import json
 import os
 import pathlib
@@ -13,14 +14,16 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from ralph_kit import loop, loop_review
+from ralph_kit import loop, loop_core, loop_review
 from ralph_kit.commands import RalphError
 from run_support import (
     BRANCH,
     TRUSTED_LOGIN,
+    EngineResult,
     FakeGitHub,
     RunInterrupted,
     RunRepository,
+    ScriptedEngine,
     ScriptedResult,
     ScriptedSessions,
     git,
@@ -383,9 +386,15 @@ def evidence_files(prompt, stream):
 class VerificationTestCase(RunLevelTestCase):
     """One child under the parent; each test chooses its verification and CI."""
 
-    def new_child_run(self, *, local_gate_results=None, local_checks=True, ci_checks=True, **github):
+    def new_child_run(
+        self, *, local_gate_results=None, local_checks=True, ci_checks=True, engines=None, **github
+    ):
         self.repository = RunRepository(
-            self, local_gate_results=local_gate_results, local_checks=local_checks, ci_checks=ci_checks
+            self,
+            local_gate_results=local_gate_results,
+            local_checks=local_checks,
+            ci_checks=ci_checks,
+            engines=engines,
         )
         self.github = FakeGitHub(**github)
         self.github.add_issue(PARENT)
@@ -837,6 +846,325 @@ class RunBudgetTests(VerificationTestCase):
                     self.assertIsNone(pull)
                     with self.assertRaises(subprocess.CalledProcessError):
                         self.repository.pushed_head()
+
+
+class AgentSessionTestCase(VerificationTestCase):
+    """Ralph's real session handling, with scripted engine processes in place of the CLIs."""
+
+    def start_engine(self, mode, *results):
+        self.engine = ScriptedEngine(self.repository, *results)
+        self.sessions = self.engine
+        return start_run(mode, self.repository, self.github, self.engine, PARENT)
+
+    def session_file(self, index, name):
+        return (self.repository.session_directories()[index] / name).read_text()
+
+    def assert_nothing_published(self):
+        """Only the parent's terminal summary was written; the child and the branch are untouched."""
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assertEqual(self.github.comments(CHILD), [])
+        (summary,) = self.github.comments(PARENT)
+        self.assertIn("final outcome: stopped safely.", summary)
+        self.assertIsNone(self.github.pull_request())
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.repository.pushed_head()
+
+    def assert_stopped_without_publishing(self, result, reason):
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(reason, result.stderr)
+        self.assert_nothing_published()
+
+    def assert_handed_to_human_review(self, result, reason, *handoff_parts):
+        """The run stopped and handed the child to human review; returns the handoff comment."""
+        self.assert_not_implemented(result, reason)
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        handoff = self.github.comments(CHILD)[-1]
+        self.assertIn("This child remains open for human review.", handoff)
+        for part in handoff_parts:
+            self.assertIn(part, handoff)
+        return handoff
+
+
+class OutcomeContractTests(AgentSessionTestCase):
+    def test_results_breaking_the_outcome_contract_stop_without_publishing(self):
+        completed_work = (
+            "Updated the report fixture lookups after the internal ID change.",
+            "Focused persistence test passed; acceptance gates completed.",
+            "No push or GitHub state changes made.",
+        )
+        for name, run_options, results, reason in (
+            (
+                "needs_correction without findings",
+                {},
+                [EngineResult("needs_correction", commit=True)],
+                "needs_correction requires at least one unresolved actionable finding",
+            ),
+            (
+                "committed with remaining findings",
+                {},
+                [EngineResult("committed", findings=("Section freshness is missing.",))],
+                "committed requires an empty findings array",
+            ),
+            (
+                "completed work reported as findings",
+                {"local_gate_results": ("fail",)},
+                [EngineResult("committed"), EngineResult("committed", findings=completed_work)],
+                "put completed work and successful checks in summary",
+            ),
+            (
+                "a Claude Code result without findings",
+                {"engines": {"implementation": "claude"}},
+                [EngineResult(structured={"outcome": "committed", "summary": "Done"})],
+                "agent structured output does not match the Ralph contract",
+            ),
+        ):
+            with self.subTest(name):
+                self.new_child_run(**run_options)
+
+                result = self.start_engine(loop.MODE, *results)
+
+                self.assert_stopped_without_publishing(result, reason)
+                self.assertEqual(len(self.engine.calls), len(results))
+
+    def test_no_changes_is_published_after_a_clean_independent_review(self):
+        result = self.start_engine(
+            loop_review.MODE, EngineResult("no_changes"), EngineResult("no_changes")
+        )
+
+        evidence = self.assert_implemented(result)
+        self.assertEqual(len(self.engine.calls), 2)
+        self.assertEqual(self.repository.head(), self.repository.base_sha)
+        self.assertEqual(self.repository.pushed_head(), self.repository.base_sha)
+        self.assertIn(f"`{self.repository.base_sha}`", evidence)
+
+    def test_failed_session_with_a_commit_is_a_terminal_stop(self):
+        result = self.start_engine(loop.MODE, EngineResult("failed", "The build tool crashed.", commit=True))
+
+        self.assert_handed_to_human_review(
+            result,
+            "implementation stopped with failed: The build tool crashed.",
+            "implementation reported failed: The build tool crashed.",
+        )
+        self.assertEqual(len(self.engine.calls), 1)
+        self.assertIsNone(self.github.pull_request())
+
+    def test_claimed_commit_without_a_git_commit_hands_the_child_to_human_review(self):
+        result = self.start_engine(loop.MODE, EngineResult("committed", commit=False))
+
+        self.assert_handed_to_human_review(
+            result,
+            "implementation claimed committed without creating a Git commit",
+            "Ralph stopped because implementation claimed committed without creating a Git commit.",
+        )
+        self.assertEqual(len(self.engine.calls), 1)
+        self.assertIsNone(self.github.pull_request())
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.repository.pushed_head()
+
+    def test_dirty_agent_output_cannot_be_published_and_keeps_its_evidence(self):
+        result = self.start_engine(loop.MODE, EngineResult("committed", dirty=True))
+
+        self.assert_handed_to_human_review(result, "worktree is dirty after implementation")
+        self.assertIsNone(self.github.pull_request())
+        self.assertTrue((self.repository.path / "uncommitted-agent-output.txt").is_file())
+        (record,) = self.repository.session_records()
+        self.assertEqual(record["structured_result"]["outcome"], "committed")
+        self.assertIn(
+            "Rejected: worktree is dirty after implementation", self.session_file(0, "validation.txt")
+        )
+
+
+class InvalidOutputTests(AgentSessionTestCase):
+    def test_invalid_structured_output_stops_without_publishing_and_is_retained(self):
+        for name, engine, session, reason in (
+            ("Codex without a result", "codex", EngineResult(writes_result=False),
+             "agent did not return valid structured output"),
+            ("Claude Code printing invalid JSON", "claude", EngineResult(stdout="Not JSON output"),
+             "Claude Code did not return valid JSON output"),
+            ("Claude Code reporting an error", "claude", EngineResult(is_error=True),
+             "Claude Code reported an error; inspect retained session output"),
+            ("Claude Code without a structured result", "claude", EngineResult(writes_result=False),
+             "Claude Code did not return a structured_output object"),
+        ):
+            with self.subTest(name):
+                self.new_child_run(engines={"implementation": engine})
+
+                result = self.start_engine(loop_review.MODE, session)
+
+                self.assert_stopped_without_publishing(result, reason)
+                self.assertEqual(self.engine.engines(), [engine])
+                (record,) = self.repository.session_records()
+                self.assertEqual((record["engine"], record["returncode"]), (engine, 0))
+                self.assertIsNone(record["structured_result"])
+                self.assertIn(f"Rejected: {reason}", self.session_file(0, "validation.txt"))
+                if session.stdout is not None:
+                    self.assertIn(session.stdout, self.session_file(0, "stdout.txt"))
+
+
+class NonZeroExitTests(AgentSessionTestCase):
+    def test_nonzero_exit_with_a_valid_committed_result_is_still_verified(self):
+        result = self.start_engine(loop.MODE, EngineResult("committed", returncode=1))
+
+        self.assert_implemented(result)
+        (record,) = self.repository.session_records()
+        self.assertEqual((record["returncode"], record["structured_result"]["outcome"]), (1, "committed"))
+        self.assertIn(
+            "Accepted a valid committed result despite the non-zero Codex exit.",
+            self.session_file(0, "validation.txt"),
+        )
+        self.assertEqual(self.github.checked_heads, [self.repository.head()])
+
+    def test_nonzero_exit_without_a_committed_result_cannot_change_issue_state(self):
+        for session in (
+            EngineResult("blocked", "Needs a decision."),
+            EngineResult("needs_correction", findings=("Complete the journey.",), commit=True),
+        ):
+            with self.subTest(session.outcome):
+                self.new_child_run()
+
+                result = self.start_engine(loop.MODE, dataclasses.replace(session, returncode=1))
+
+                self.assert_stopped_without_publishing(
+                    result, "implementation exited non-zero without a committed outcome"
+                )
+                self.assertEqual(len(self.engine.calls), 1)
+
+
+class HumanReviewEvidenceTests(AgentSessionTestCase):
+    def test_blocked_sessions_leave_precise_human_review_evidence(self):
+        decision = "Needs a product decision on retention."
+        for role, run_options, results in (
+            ("implementation", {}, [EngineResult("blocked", decision)]),
+            ("CI correction", {"ci": ("failure",)}, [EngineResult("committed"), EngineResult("blocked", decision)]),
+        ):
+            with self.subTest(role):
+                self.new_child_run(**run_options)
+
+                result = self.start_engine(loop.MODE, *results)
+
+                self.assert_handed_to_human_review(
+                    result,
+                    f"{role} stopped with blocked: {decision}",
+                    f"Ralph stopped because {role} reported blocked: {decision}",
+                )
+                self.assertEqual(len(self.engine.calls), len(results))
+
+    def test_findings_are_preserved_in_full_and_redacted_for_correction_and_handoff(self):
+        details = "Section details. " * 100
+        finding = f"First requirement.\n{details}\nLast requirement. token=fixture-secret"
+
+        result = self.start_engine(
+            loop.MODE,
+            EngineResult("needs_correction", findings=(finding,), commit=True),
+            EngineResult("no_changes"),
+        )
+
+        handoff = self.assert_handed_to_human_review(result, "Issue correction did not create a new commit")
+        correction_prompt = self.engine.calls[1].prompt
+        self.assertIn("Complete the remaining requirements", correction_prompt)
+        for diagnostic in (correction_prompt, handoff):
+            self.assertIn("First requirement.", diagnostic)
+            self.assertIn(details, diagnostic)
+            self.assertIn("Last requirement. token=[REDACTED]", diagnostic)
+            self.assertNotIn("fixture-secret", diagnostic)
+
+
+class SessionSummaryTests(AgentSessionTestCase):
+    def test_long_and_multi_sentence_summaries_do_not_stop_a_verified_run(self):
+        for name, summary, recorded in (
+            ("multi-sentence", "One sentence. Two sentences. Three sentences.", None),
+            ("long", "x" * 501, loop_core.LONG_AGENT_SUMMARY),
+        ):
+            recorded = recorded or summary
+            with self.subTest(name):
+                self.new_child_run()
+
+                result = self.start_engine(
+                    loop_review.MODE, EngineResult("committed", summary), EngineResult("no_changes")
+                )
+
+                self.assert_implemented(result)
+                implementation, _review = self.repository.session_records()
+                self.assertEqual(implementation["structured_result"]["summary"], recorded)
+                self.assertIn(f"Previous session summary: {recorded}\n", self.engine.calls[1].prompt)
+
+    def test_each_session_receives_the_previous_session_summary(self):
+        self.new_child_run(local_gate_results=("fail", "pass"), ci=("failure", "success"))
+
+        result = self.start_engine(
+            loop.MODE,
+            EngineResult("committed", "Implemented the journey."),
+            EngineResult("committed", "Repaired the failing local gate."),
+            EngineResult("committed", "Repaired the failing CI check."),
+        )
+
+        self.assert_implemented(result)
+        prompts = [call.prompt for call in self.engine.calls]
+        self.assertNotIn("Previous session summary:", prompts[0])
+        self.assertIn("Previous session summary: Implemented the journey.\n", prompts[1])
+        self.assertIn("Previous session summary: Repaired the failing local gate.\n", prompts[2])
+
+
+class EngineSelectionTests(AgentSessionTestCase):
+    def test_each_role_can_use_either_engine(self):
+        for name, engines, expected in (
+            ("Codex for every role", {}, ["codex"] * 3),
+            ("Claude Code implementation with Codex review", {"implementation": "claude"},
+             ["claude", "codex", "codex"]),
+            ("Claude Code for every role", {"implementation": "claude", "review": "claude", "correction": "claude"},
+             ["claude"] * 3),
+        ):
+            with self.subTest(name):
+                self.new_child_run(local_gate_results=("fail", "pass"), engines=engines)
+
+                result = self.start_engine(
+                    loop_review.MODE,
+                    EngineResult("committed"),
+                    EngineResult("committed"),
+                    EngineResult("no_changes"),
+                )
+
+                self.assert_implemented(result)
+                self.assertEqual(self.engine.engines(), expected)
+                self.assertEqual(
+                    [record["engine"] for record in self.repository.session_records()], expected
+                )
+                implementation, gate_correction, review = (call.prompt for call in self.engine.calls)
+                command = "/implement" if expected[0] == "claude" else "$implement"
+                self.assertTrue(implementation.startswith(f"{command} issue #{CHILD}\n"), implementation)
+                self.assertIn("Repair the failing local gate", gate_correction)
+                self.assertIn("Review the exact", review)
+
+    def test_sessions_are_announced_with_their_engine_and_profile(self):
+        self.new_child_run(local_gate_results=("fail", "pass"), engines={"implementation": "claude"})
+
+        result = self.start_engine(loop.MODE, EngineResult("committed"), EngineResult("committed"))
+
+        self.assert_implemented(result)
+        self.assertIn(
+            f"🤖 Starting Claude Code implementation session (Terra - Medium) for child #{CHILD}.",
+            result.stdout,
+        )
+        self.assertIn(
+            f"🤖 Starting Codex local gate correction session (Terra - Medium) for child #{CHILD}.",
+            result.stdout,
+        )
+        self.assertIn(
+            f"🤖 Codex local gate correction session (Terra - Medium) finished for child #{CHILD} "
+            "(outcome: committed; commits: 1).",
+            result.stdout,
+        )
+        correction = self.engine.calls[1]
+        self.assertEqual(correction.option("--model"), "gpt-5.6-terra")
+        self.assertIn('model_reasoning_effort="medium"', correction.arguments)
+
+    def test_configuration_without_an_engine_still_uses_codex(self):
+        self.new_child_run(engines=dict.fromkeys(("implementation", "review", "correction")))
+
+        result = self.start_engine(loop_review.MODE, EngineResult("committed"), EngineResult("no_changes"))
+
+        self.assert_implemented(result)
+        self.assertEqual(self.engine.engines(), ["codex", "codex"])
 
 
 if __name__ == "__main__":

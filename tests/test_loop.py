@@ -48,9 +48,6 @@ class StartLoopTests(RalphProcessTestCase):
     def calls(self):
         return self._json_lines(self.codex_log)
 
-    def github_calls(self):
-        return self._json_lines(self.github_log)
-
     def state(self):
         return json.loads(self.github_state.read_text())
 
@@ -71,58 +68,6 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertIn("No separate Ralph review session was run", body)
         self.assertNotIn("reviewed_head", body)
 
-    def test_claude_implementation_and_correction_use_the_shared_adapter(self):
-        self._configure_engines(implementation="claude", correction="claude")
-        result = self.run_loop(RALPH_TEST_FAIL_GATE_COUNT="1")
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertFalse(self.codex_log.exists())
-        calls = self._json_lines(self.claude_log)
-        self.assertEqual(len(calls), 2)
-        self.assertTrue(calls[0]["prompt"].startswith("/implement issue #193\n"))
-        self.assertIn("Repair the failing local gate", calls[1]["prompt"])
-        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"implemented"})
-
-    def test_local_and_ci_repairs_chain_previous_context_without_sol(self):
-        self.assert_completed(self.run_loop(
-            RALPH_TEST_FAIL_GATE_COUNT="1", RALPH_TEST_CI_OUTCOMES="failure,success",
-        ), 3)
-        self.assertIn("Previous session summary: Repaired the failing local gate.", self.calls()[2]["prompt"])
-        self.assertEqual(len(self.quality_log.read_text().splitlines()), 3)
-
-    def test_unfinished_requirements_are_fixed_before_ci(self):
-        self.assert_completed(self.run_loop(RALPH_TEST_AGENT_RESULTS=json.dumps([
-            {"outcome": "needs_correction", "commit": True, "findings": ["Implement the missing acceptance criterion."]},
-            {"outcome": "committed"},
-        ])), 2)
-        self.assertIn("Implement the missing acceptance criterion.", self.calls()[1]["prompt"])
-
-    def test_local_gate_ci_and_issue_corrections_share_the_correction_limit(self):
-        self.assert_completed(self.run_loop(
-            RALPH_TEST_FAIL_GATE_COUNT="1",
-            RALPH_TEST_CI_OUTCOMES="failure,success",
-            RALPH_TEST_AGENT_RESULTS=json.dumps([
-                {"outcome": "committed"},
-                {"outcome": "committed"},
-                {"outcome": "needs_correction", "commit": True, "findings": ["Complete the journey."]},
-                {"outcome": "committed"},
-            ]),
-        ), 4)
-        prompts = [call["prompt"] for call in self.calls()]
-        self.assertIn("Repair the failing local gate", prompts[1])
-        self.assertIn("Correction attempt 1/3", prompts[1])
-        self.assertIn("Repair the failing CI check", prompts[2])
-        self.assertIn("Correction attempt 2/3", prompts[2])
-        self.assertIn("Complete the remaining requirements", prompts[3])
-        self.assertIn("Correction attempt 3/3", prompts[3])
-
-    def test_ci_correction_requires_a_new_commit(self):
-        result = self.run_loop(
-            RALPH_TEST_CI_OUTCOMES="failure", RALPH_TEST_CI_CORRECTION_NO_CHANGES="1",
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("CI correction did not create a new commit", result.stderr)
-        self.assertEqual({label["name"] for label in self.child()["labels"]}, {"human-review"})
-
     def test_review_profile_is_optional_for_a_standard_run(self):
         config = self.repository / "ralph.toml"
         config.write_text(re.sub(r"\[models.review\].*?(?=\[models.correction\])", "", config.read_text(), flags=re.S))
@@ -140,13 +85,6 @@ class StartLoopTests(RalphProcessTestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("configuration.models is missing keys: review", result.stderr)
         self.assertFalse(self.codex_log.exists())
-
-    def test_dirty_agent_output_cannot_be_published(self):
-        result = self.run_loop(RALPH_TEST_LEAVE_DIRTY="1")
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("worktree is dirty", result.stderr)
-        self.assertIsNone(self.state()["pull_request"])
-
 
 class RepeatedRunTests(RalphProcessTestCase):
     """Runs started one after the other in one Python process."""

@@ -273,6 +273,10 @@ class RunAdapters:
     child_cycle: Callable[[ChildCycleContext], ChildCycleAdapters]
     # Waits between CI polls and infrastructure retries.
     sleep: Callable[[float], None] = time.sleep
+    # (repository root, engine command) -> the finished engine process, run without a check.
+    run_engine: Callable[[pathlib.Path, list[str]], subprocess.CompletedProcess[str]] = (
+        functools.partial(run_command, check=False)
+    )
 
 
 @dataclass
@@ -957,12 +961,11 @@ def run_agent(
                 f"#{issue_number}.",
                 flush=True,
             )
-            completed = command(
-                state,
+            completed = state.adapters.run_engine(
+                state.repository_root,
                 agent_command(
                     profile, prompt, state.repository_root, OUTCOME_SCHEMA_PATH, output_path
                 ),
-                check=False,
             )
             record["returncode"] = completed.returncode
             record["structured_result"] = None
