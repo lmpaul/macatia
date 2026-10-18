@@ -480,7 +480,10 @@ def run_stop_actions(state: RunState, error: Exception) -> list[str]:
             f"Ralph crashed: inspect the run diagnostics in `{directory}`, fix the cause, "
             f"then {rerun_instruction(state)}."
         ]
-    if isinstance(error, (ChildHandedToHumanReview, DependencyDeadlock, NoRunnableChild)):
+    if isinstance(
+        error,
+        (ChildHandedToHumanReview, ChildLeftAgentWorking, DependencyDeadlock, NoRunnableChild),
+    ):
         return []
     return [f"Fix the stop reason, then {rerun_instruction(state)}."]
 
@@ -590,6 +593,16 @@ class ChildHandedToHumanReview(RalphError):
         super().__init__(cycle.reason)
         self.child_number = child_number
         self.cause = cycle.cause
+
+
+class ChildLeftAgentWorking(RalphError):
+    """A child is still agent working, as a run that ended without releasing it leaves it."""
+
+    def __init__(self, children: list[dict[str, Any]], label: str):
+        numbers = ", ".join(f"#{child['number']}" for child in children)
+        super().__init__(
+            f"{numbers} labelled {label}: another run started it and did not release it"
+        )
 
 
 class DependencyDeadlock(RalphError):
@@ -845,6 +858,13 @@ def child_is_ready(state: RunState, issue: dict[str, Any]) -> bool:
     )
 
 
+def child_is_agent_working(state: RunState, issue: dict[str, Any]) -> bool:
+    """A remaining child whose only triage or lifecycle label is agent-working."""
+    return child_is_remaining(state, issue) and labels(issue) & (
+        state.config.triage_labels | state.config.lifecycle_labels
+    ) == {configured_label(state, "agent_working")}
+
+
 def select_runnable_child(
     state: RunState,
     parent_issue: int,
@@ -1009,17 +1029,30 @@ def blocker_is_satisfied(state: RunState, blocker: dict[str, Any]) -> bool:
     return heads is not None and heads_are_on_current_branch(state, heads)
 
 
-def mark_child_implemented(state: RunState, child_number: int) -> None:
+def set_child_lifecycle(state: RunState, child_number: int, role: str) -> None:
+    """Label the child with the lifecycle label of role, removing every other lifecycle label."""
+    target = configured_label(state, role)
+    present = lifecycle_labels(state, issue_details(state, child_number))
+    state.github.edit_issue_labels(
+        child_number, add=target, remove=sorted(present - {target})
+    )
+
+
+def mark_child_agent_working(state: RunState, child_number: int) -> None:
     state.github.edit_issue_labels(
         child_number,
-        add=configured_label(state, "implemented"),
+        add=configured_label(state, "agent_working"),
         remove=[configured_label(state, "ready_for_agent")],
     )
 
 
+def mark_child_implemented(state: RunState, child_number: int) -> None:
+    set_child_lifecycle(state, child_number, "implemented")
+
+
 def recover_published_child(state: RunState, children: Iterable[dict[str, Any]]) -> bool:
     for child in children:
-        if not child_is_ready(state, child):
+        if not (child_is_ready(state, child) or child_is_agent_working(state, child)):
             continue
         details = issue_details(state, int(child["number"]))
         require_trusted_issue(state, details)
@@ -1412,11 +1445,7 @@ def run_local_gates(
 
 def send_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
     state.github.comment_on_issue(child_number, body)
-    state.github.edit_issue_labels(
-        child_number,
-        add=configured_label(state, "human_review"),
-        remove=[configured_label(state, "ready_for_agent")],
-    )
+    set_child_lifecycle(state, child_number, "human_review")
 
 
 def stop_children_for_dependency_deadlock(
@@ -1968,6 +1997,12 @@ def run_children(
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
         if recover_published_child(state, siblings):
             continue
+        if left_agent_working := [
+            child for child in siblings if child_is_agent_working(state, child)
+        ]:
+            raise ChildLeftAgentWorking(
+                left_agent_working, configured_label(state, "agent_working")
+            )
         try:
             selected_child, _blockers, siblings = select_runnable_child(state, parent_issue)
         except DependencyDeadlock as error:
@@ -1987,6 +2022,7 @@ def run_children(
         child_number = int(selected_child["number"])
         print(f"▶️  Starting child #{child_number}.", flush=True)
         require_trusted_issue(state, issue_details(state, child_number))
+        mark_child_agent_working(state, child_number)
         base_sha = current_head(state)
         state.diagnostics.issue_bases[child_number] = base_sha
         cycle = run_child_cycle(

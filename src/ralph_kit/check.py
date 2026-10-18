@@ -53,6 +53,7 @@ LABEL_DESCRIPTIONS = {
     "ready_for_agent": "Fully specified, ready for an AFK agent",
     "ready_for_human": "Requires human implementation",
     "wontfix": "Will not be actioned",
+    "agent_working": "A Ralph agent is working on this child",
     "human_review": "Ralph stopped; a human must review",
     "implemented": "Implemented by Ralph",
 }

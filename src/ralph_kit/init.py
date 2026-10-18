@@ -30,6 +30,7 @@ LABELS = {
     "ready_for_agent": "ready-for-agent",
     "ready_for_human": "ready-for-human",
     "wontfix": "wontfix",
+    "agent_working": "agent-working",
     "human_review": "human-review",
     "implemented": "implemented",
 }

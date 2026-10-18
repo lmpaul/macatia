@@ -296,7 +296,7 @@ class RecoveryTests(RunLevelTestCase):
 
                 with self.assertRaises(RunInterrupted):
                     self.start(mode, *passing_child_results(mode))
-                self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+                self.assertEqual(self.github.labels(CHILD), {"agent-working"})
                 self.assertIn(mode.implementation_evidence_prefix, self.github.comments(CHILD)[-1])
 
                 result = self.start(mode)
@@ -329,6 +329,106 @@ class RecoveryTests(RunLevelTestCase):
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [CHILD])
+
+
+class AgentWorkingTests(RunLevelTestCase):
+    """The child a run works on is labelled agent-working until it is implemented or handed off."""
+
+    def start_observing_labels(self, mode, *results):
+        """Start a run that records the child's labels as each agent session starts."""
+        self.sessions = ScriptedSessions(self.repository, *results)
+        observed = []
+        self.sessions.before_session = lambda request: observed.append(
+            (request.role, self.github.labels(request.child))
+        )
+        result = start_run(mode, self.repository, self.github, self.sessions, PARENT)
+        return result, observed
+
+    def test_child_is_agent_working_during_every_session_of_its_child_cycle(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+
+        result, observed = self.start_observing_labels(
+            loop_review.MODE,
+            ScriptedResult("committed"),
+            findings,
+            ScriptedResult("committed"),
+            ScriptedResult("no_changes"),
+        )
+
+        self.assert_completed(result, sessions=4)
+        self.assertEqual(
+            observed,
+            [
+                ("implementation", {"agent-working"}),
+                ("review", {"agent-working"}),
+                ("issue correction", {"agent-working"}),
+                ("review", {"agent-working"}),
+            ],
+        )
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_implemented_child_carries_only_the_implemented_lifecycle_label(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("ready-for-agent", "documentation"))
+
+        def human_adds_lifecycle_labels(number, body):
+            if number == CHILD:
+                self.github.edit_issue_labels(CHILD, add="human-review", remove=())
+                self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=())
+
+        self.github.after_comment = human_adds_lifecycle_labels
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.github.labels(CHILD), {"implemented", "documentation"})
+
+    def test_child_handed_to_human_review_carries_only_the_human_review_lifecycle_label(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+
+        def human_adds_lifecycle_label(number, body):
+            if number == CHILD:
+                self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=())
+
+        self.github.after_comment = human_adds_lifecycle_label
+
+        result, observed = self.start_observing_labels(
+            loop.MODE, ScriptedResult("blocked", "Needs a product decision.")
+        )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(observed, [("implementation", {"agent-working"})])
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+
+    def test_failed_agent_working_label_write_stops_before_any_session(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.label_edit_error = RalphError("gh issue edit failed: HTTP 502")
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(result, "gh issue edit failed: HTTP 502")
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+
+    def test_child_left_agent_working_by_a_dead_run_stops_before_any_session(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(
+            result,
+            f"Stop reason: #{CHILD} labelled agent-working: another run started it and did not "
+            "release it",
+        )
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
+        self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
+        summary = self.github.comments(PARENT)[-1]
+        self.assertIn(f"Remaining children:\n- #{CHILD}: labelled agent-working.", summary)
+        self.assertIn(
+            f"Next action:\n- #{CHILD} is labelled agent-working: implement and close it, "
+            f"or relabel it ready-for-agent, then run `ralph-kit run {PARENT}` again.",
+            summary,
+        )
 
 
 class ParentCompletionTests(RunLevelTestCase):
@@ -541,6 +641,24 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
 
         self.assert_rejected_at_startup(result, "invalid TOML")
 
+    def test_missing_agent_working_label_is_rejected_before_any_session(self):
+        self.repository.edit_configuration('agent_working = "agent-working"\n', "")
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(
+            result, "configuration.labels is missing keys: agent_working"
+        )
+
+    def test_duplicate_label_value_is_rejected_before_any_session(self):
+        self.repository.edit_configuration(
+            'agent_working = "agent-working"', 'agent_working = "implemented"'
+        )
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(result, "configuration.labels values must be unique")
+
     def test_unknown_engine_is_rejected_before_any_session(self):
         self.repository = RunRepository(self, engines={"implementation": "unknown"})
 
@@ -593,6 +711,7 @@ class ConfiguredTrustTests(RunLevelTestCase):
             "ready-for-agent": "r-ready-for-agent",
             "ready-for-human": "r-ready-for-human",
             "wontfix": "r-wontfix",
+            "agent-working": "r-agent-working",
             "human-review": "r-human-review",
             "implemented": "r-implemented",
         }
@@ -1042,7 +1161,7 @@ class CrashedRunTests(VerificationTestCase):
 
         self.assertIs(raised.exception, crash)
         self.assertIn("- final outcome: crashed", self.github.comments(PARENT)[-1])
-        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
         self.assertEqual(self.github.comments(CHILD), [])
 
 
@@ -1321,7 +1440,8 @@ class StopSummaryTests(VerificationTestCase):
             result,
             "Stop reason: gh failed: token=[REDACTED] Bearer [REDACTED]",
             f"Next action:\n- Fix the stop reason, then run `ralph-kit run {PARENT}` again.\n"
-            f"- #{CHILD} is runnable: run `ralph-kit run {PARENT}` again.",
+            f"- #{CHILD} is labelled agent-working: implement and close it, or relabel it "
+            f"ready-for-agent, then run `ralph-kit run {PARENT}` again.",
         )
         self.assertNotIn("hunter2", self.github.comments(PARENT)[-1])
 
@@ -1359,8 +1479,8 @@ class AgentSessionTestCase(VerificationTestCase):
         return (self.repository.session_directories()[index] / name).read_text()
 
     def assert_nothing_published(self):
-        """Only the parent's terminal summary was written; the child and the branch are untouched."""
-        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        """Only the parent's terminal summary was written; the child is left agent working and the branch untouched."""
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
         self.assertEqual(self.github.comments(CHILD), [])
         (summary,) = self.github.comments(PARENT)
         self.assertIn("- final outcome: stopped safely", summary)
