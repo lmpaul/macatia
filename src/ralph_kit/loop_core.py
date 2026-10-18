@@ -254,7 +254,7 @@ class RunState:
 
     The configuration and the GitHub adapter exist once the configuration is
     loaded, the diagnostics once the run has started recording, and the branch
-    once preflight has accepted it.
+    once the startup checks have accepted it.
     """
 
     mode: RunMode

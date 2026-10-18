@@ -384,5 +384,6 @@ class RepeatedRunTests(RalphProcessTestCase):
         runs = list((self.repository / ".ralph" / "diagnostics").glob("*/run.json"))
         self.assertEqual(len(runs), 2)
 
+
 if __name__ == "__main__":
     unittest.main()
