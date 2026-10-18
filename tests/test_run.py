@@ -1280,12 +1280,11 @@ class NonZeroExitTests(AgentSessionTestCase):
                 )
                 self.assertEqual(len(self.engine.calls), 1)
 
-
     def test_claude_code_failure_without_a_result_reports_its_exit_code_and_stderr(self):
         self.new_child_run(engines={"implementation": "claude"})
 
         result = self.start_engine(
-            loop.MODE,
+            loop_review.MODE,
             EngineResult(
                 returncode=1,
                 commit=False,

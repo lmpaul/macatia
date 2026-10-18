@@ -309,6 +309,7 @@ class ReadinessTests(unittest.TestCase):
                     contextlib.chdir(self.root),
                     contextlib.redirect_stdout(io.StringIO()),
                     contextlib.redirect_stderr(stderr),
+                    # The CLI turns bytecode writing off for the whole process.
                     mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
                 ):
                     code = cli.main(["run", *review, "1"])

@@ -64,7 +64,7 @@ The default suite is offline: it never starts `ralph-kit run` as a subprocess,
 launches a real agent, or calls GitHub. Each rule is tested at one level:
 
 - **Child cycle rules** (correction limit, review session order, handoff on
-  missing commits, budget checks inside a cycle): `tests/test_child_cycle.py`,
+  missing commits, run budget checks inside a cycle): `tests/test_child_cycle.py`,
   in memory through the child cycle adapters.
 - **Run rules** (child selection, blockers, deadlock, recovery, publication,
   parent completion, infrastructure retries, startup and trust):
