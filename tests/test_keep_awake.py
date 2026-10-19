@@ -82,19 +82,19 @@ class CaffeinateFlagTests(unittest.TestCase):
             with self.subTest(arguments=arguments):
                 entered, standard, reviewed = self.run_cli(*arguments)
                 self.assertTrue(entered)
-                standard.assert_called_once_with(["5"], prog="ralph-kit run")
+                standard.assert_called_once_with(["5"], prog="ralph-kit run", confirm=mock.ANY)
                 reviewed.assert_not_called()
 
     def test_flag_combines_with_review(self):
         entered, standard, reviewed = self.run_cli("--review", "--caffeinate", "5")
         self.assertTrue(entered)
-        reviewed.assert_called_once_with(["5"], prog="ralph-kit run --review")
+        reviewed.assert_called_once_with(["5"], prog="ralph-kit run --review", confirm=mock.ANY)
         standard.assert_not_called()
 
     def test_without_flag_the_machine_may_sleep(self):
         entered, standard, _ = self.run_cli("5")
         self.assertFalse(entered)
-        standard.assert_called_once_with(["5"], prog="ralph-kit run")
+        standard.assert_called_once_with(["5"], prog="ralph-kit run", confirm=mock.ANY)
 
 
 if __name__ == "__main__":

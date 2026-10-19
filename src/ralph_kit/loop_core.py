@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import functools
 import importlib.util
 import json
@@ -10,6 +11,7 @@ import os
 import pathlib
 import re
 import shlex
+import signal
 import subprocess
 import sys
 import tempfile
@@ -306,6 +308,9 @@ class RunAdapters:
     run_engine: Callable[[pathlib.Path, list[str]], subprocess.CompletedProcess[str]] = (
         functools.partial(run_command, check=False)
     )
+    # Asks the startup choice: question -> True to resume children left agent working.
+    # None when Ralph is not in a terminal, which always stops.
+    confirm: Callable[[str], bool] | None = None
 
 
 @dataclass
@@ -330,6 +335,8 @@ class RunState:
     rerun_command: str | None = None
     initial_implemented_children: set[int] | None = None
     summary: RunSummary = field(default_factory=RunSummary)
+    # The child the run holds agent working, with its base commit, until it leaves that state.
+    working_child: tuple[int, str] | None = None
 
     @property
     def config(self) -> RalphConfig:
@@ -373,9 +380,10 @@ def update_run_summary(
     state: RunState,
     parent_issue: int,
     children: Iterable[dict[str, Any]],
-    budget: RunBudget,
+    budget: RunBudget | None,
     infrastructure: InfrastructureRetryTracker,
 ) -> None:
+    """Count the children again; `budget` is None until the run has sized it."""
     child_list = list(children)
     implemented_children = {
         int(child["number"])
@@ -418,8 +426,8 @@ def open_pull_request(state: RunState, branch: str) -> dict[str, Any] | None:
     return pulls[0] if pulls else None
 
 
-def report_stop(state: RunState, outcome: str, error: Exception) -> None:
-    """Publish and print the terminal summary of a stopped or crashed run, with what to do next.
+def report_stop(state: RunState, outcome: str, error: BaseException) -> None:
+    """Publish and print the terminal summary of a stopped, crashed, or interrupted run, with what to do next.
 
     Stops before the run knows its parent issue stay terminal-only.
     """
@@ -442,9 +450,9 @@ class RemainingChild:
     action: str
 
 
-def stop_details(state: RunState, error: Exception) -> str:
+def stop_details(state: RunState, error: BaseException) -> str:
     message = " ".join(str(error).split())
-    if not isinstance(error, RalphError):
+    if not isinstance(error, (RalphError, Interrupted)):
         message = f"{type(error).__name__}: {message}"
     sections = [f"Stop reason: {sanitized_text(message)[:MAX_STOP_REASON_LENGTH]}"]
     try:
@@ -462,6 +470,8 @@ def stop_details(state: RunState, error: Exception) -> str:
         )
     actions = [*run_stop_actions(state, error), *(child.action for child in remaining)]
     sections.append("Next action:\n" + "\n".join(f"- {action}" for action in actions))
+    if isinstance(error, ChildLeftAgentWorking) and error.warning is not None:
+        sections.append(f"Warning: {error.warning}")
     return "\n\n".join(sections)
 
 
@@ -469,8 +479,12 @@ def rerun_instruction(state: RunState) -> str:
     return f"run `{state.rerun_command}` again"
 
 
-def run_stop_actions(state: RunState, error: Exception) -> list[str]:
+def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
     """The next action for the stop itself, when no remaining child's own action covers it."""
+    if isinstance(error, Interrupted):
+        if error.unverified is not None:
+            return []
+        return [f"Ralph was interrupted: {rerun_instruction(state)} to continue."]
     if not isinstance(error, RalphError):
         directory = (
             state.diagnostics.directory.relative_to(state.repository_root)
@@ -480,16 +494,33 @@ def run_stop_actions(state: RunState, error: Exception) -> list[str]:
             f"Ralph crashed: inspect the run diagnostics in `{directory}`, fix the cause, "
             f"then {rerun_instruction(state)}."
         ]
-    if isinstance(error, (ChildHandedToHumanReview, DependencyDeadlock, NoRunnableChild)):
+    if isinstance(
+        error,
+        (
+            ChildHandedToHumanReview,
+            ChildAgentWorkingInAnotherRun,
+            ChildLeftAgentWorking,
+            DependencyDeadlock,
+            NoRunnableChild,
+        ),
+    ):
         return []
     return [f"Fix the stop reason, then {rerun_instruction(state)}."]
 
 
-def remaining_children(state: RunState, error: Exception) -> list[RemainingChild]:
+def remaining_children(state: RunState, error: BaseException) -> list[RemainingChild]:
     assert state.summary.parent is not None
     deadlocked = (
         {int(child["number"]) for child in error.children}
         if isinstance(error, DependencyDeadlock) else set()
+    )
+    left_agent_working = (
+        {int(child["number"]) for child in error.children}
+        if isinstance(error, ChildLeftAgentWorking) else set()
+    )
+    agent_working_in_another_run = (
+        {int(child["number"]) for child in error.children}
+        if isinstance(error, ChildAgentWorkingInAnotherRun) else set()
     )
     ready_label = configured_label(state, "ready_for_agent")
     rerun = rerun_instruction(state)
@@ -505,6 +536,34 @@ def remaining_children(state: RunState, error: Exception) -> list[RemainingChild
             action = (
                 f"#{number} is part of a dependency deadlock with {blockers}: remove a "
                 f"blocked-by link from the cycle, relabel it {ready_label}, then {rerun}."
+            )
+        elif number in left_agent_working:
+            reason = "agent working from an earlier or concurrent run"
+            action = (
+                "If no other run is working on this parent, inspect the branch, relabel "
+                f"#{number} {ready_label}, then {rerun}."
+            )
+        elif number in agent_working_in_another_run:
+            reason = "agent working in another run on this parent"
+            action = (
+                f"Another run is working on #{number}: find and stop the run that should "
+                f"not be running, then {rerun} if this one should continue."
+            )
+        elif (
+            isinstance(error, Interrupted)
+            and error.unverified is not None
+            and error.unverified.child_number == number
+            and configured_label(state, "human_review") in child_labels
+        ):
+            handoff = handoff_comment_url(state, number) or "no handoff comment found"
+            commits = error.unverified.commits
+            reason = (
+                f"interrupted and handed to human review with the unverified commits "
+                f"{commits} ({handoff})"
+            )
+            action = (
+                f"#{number} was interrupted: inspect the unverified commits {commits}, then "
+                f"close it or relabel it {ready_label} and {rerun}."
             )
         elif configured_label(state, "human_review") in child_labels:
             handoff = handoff_comment_url(state, number) or "no handoff comment found"
@@ -574,6 +633,92 @@ def handoff_comment_url(state: RunState, child_number: int) -> str | None:
     return None
 
 
+class Interrupted(BaseException):
+    """A signal ended the run; like `KeyboardInterrupt`, only `run` catches it.
+
+    The exit code follows the shell convention for a process ended by that signal.
+    """
+
+    def __init__(self, signal_number: int):
+        super().__init__(f"interrupted by {signal.Signals(signal_number).name}")
+        self.exit_code = 128 + signal_number
+        # Set once the release has handed the interrupted child to human review.
+        self.unverified: UnverifiedCommits | None = None
+
+
+@dataclass(frozen=True)
+class UnverifiedCommits:
+    """The commits an interrupted child cycle made that no verification covered."""
+
+    child_number: int
+    commits: str
+
+
+def raise_interrupted(signal_number: int, _frame: Any) -> None:
+    raise Interrupted(signal_number)
+
+
+@contextlib.contextmanager
+def interruptions_raised():
+    """Raise `Interrupted` on SIGTERM and SIGHUP while the run lasts.
+
+    Python already raises `KeyboardInterrupt` on SIGINT. Either exception ends
+    the agent session in flight, whose engine process `subprocess.run` kills.
+    Like Python's SIGINT handling, a signal ignored at launch, such as SIGHUP
+    under `nohup`, stays ignored.
+    """
+    previous = {
+        signal_number: signal.signal(signal_number, raise_interrupted)
+        for signal_number in (signal.SIGTERM, signal.SIGHUP)
+        if signal.getsignal(signal_number) is not signal.SIG_IGN
+    }
+    try:
+        yield
+    finally:
+        for signal_number, handler in previous.items():
+            signal.signal(signal_number, handler)
+
+
+def as_interruption(error: KeyboardInterrupt | Interrupted) -> Interrupted:
+    """A `KeyboardInterrupt` is the SIGINT interruption."""
+    return error if isinstance(error, Interrupted) else Interrupted(signal.SIGINT)
+
+
+def release_interrupted_child(state: RunState, interruption: Interrupted) -> None:
+    """Release the child the run still holds agent working when it is interrupted.
+
+    A child whose branch has not moved goes back to ready-for-agent; one with
+    commits goes to human review naming them, since nothing verified them. A
+    child whose implementation evidence was already published is marked
+    implemented, as the next startup would.
+    """
+    if state.working_child is None:
+        return
+    child_number, base = state.working_child
+    details = issue_details(state, child_number)
+    if configured_label(state, "agent_working") not in labels(details):
+        return
+    if recover_published_child(state, [details]):
+        state.working_child = None
+        return
+    head = current_head(state)
+    if head == base:
+        set_child_lifecycle(state, child_number, "ready_for_agent")
+    else:
+        commits = f"{base}..{head}"
+        send_child_to_human_review(
+            state,
+            child_number,
+            f"Ralph stopped because the run was interrupted ({interruption}) before it "
+            f"verified this child. The unverified commits {commits} are on the branch: "
+            "inspect them, then close this child or relabel it "
+            f"{configured_label(state, 'ready_for_agent')} and rerun. This child remains "
+            "open for human review.",
+        )
+        interruption.unverified = UnverifiedCommits(child_number, commits)
+    state.working_child = None
+
+
 class NoRunnableChild(RalphError):
     """Children remain, but none of them can run."""
 
@@ -590,6 +735,75 @@ class ChildHandedToHumanReview(RalphError):
         super().__init__(cycle.reason)
         self.child_number = child_number
         self.cause = cycle.cause
+
+
+class ChildLeftAgentWorking(RalphError):
+    """Children were agent working at startup, left by an earlier run or held by a concurrent one.
+
+    `warning` is the startup warning, for the terminal summary.
+    """
+
+    def __init__(
+        self, children: list[dict[str, Any]], label: str, warning: str | None = None
+    ):
+        super().__init__(
+            f"{child_numbers(children)} labelled {label}: another run started them "
+            "and did not release them"
+        )
+        self.children = children
+        self.warning = warning
+
+
+class ChildAgentWorkingInAnotherRun(RalphError):
+    """Another run on the same parent is working on these children.
+
+    A run releases its own child before selecting the next one, so any child
+    still agent working at that point belongs to another run.
+    """
+
+    def __init__(self, children: list[dict[str, Any]], label: str):
+        super().__init__(
+            f"{child_numbers(children)} labelled {label}: another run on this parent is "
+            "working on it"
+        )
+        self.children = children
+
+
+def child_numbers(children: Iterable[dict[str, Any]]) -> str:
+    return ", ".join(f"#{child['number']}" for child in children)
+
+
+def left_agent_working_warning(state: RunState, children: list[dict[str, Any]]) -> str:
+    return (
+        f"{child_numbers(children)} labelled {configured_label(state, 'agent_working')}. "
+        "Ralph cannot tell an interrupted run from a run still active "
+        "elsewhere: resuming while another run is active makes two agents do the same work "
+        "on two branches. And resuming starts from the current branch head, so commits "
+        "already made for these children are not covered by their implementation evidence."
+    )
+
+
+def resolve_left_agent_working(state: RunState, children: list[dict[str, Any]]) -> None:
+    """Ask once whether to resume every child left agent working; anything but Resume stops the run.
+
+    Resume relabels them ready-for-agent. Without a terminal, or on Ctrl-C at the
+    prompt, Ralph stops.
+    """
+    label = configured_label(state, "agent_working")
+    warning = left_agent_working_warning(state, children)
+    confirm = state.adapters.confirm
+    if confirm is None:
+        raise ChildLeftAgentWorking(children, label, warning)
+    print(f"⚠️  {warning}", flush=True)
+    try:
+        resume = confirm(f"Resume {child_numbers(children)}?")
+    except KeyboardInterrupt:
+        resume = False
+    if not resume:
+        raise ChildLeftAgentWorking(children, label)
+    for child in children:
+        set_child_lifecycle(state, int(child["number"]), "ready_for_agent")
+        print(f"🔁 Resuming child #{child['number']}.", flush=True)
 
 
 class DependencyDeadlock(RalphError):
@@ -845,6 +1059,13 @@ def child_is_ready(state: RunState, issue: dict[str, Any]) -> bool:
     )
 
 
+def child_is_agent_working(state: RunState, issue: dict[str, Any]) -> bool:
+    """A remaining child with no triage label whose only lifecycle label is agent-working."""
+    return child_is_remaining(state, issue) and labels(issue) & (
+        state.config.triage_labels | state.config.lifecycle_labels
+    ) == {configured_label(state, "agent_working")}
+
+
 def select_runnable_child(
     state: RunState,
     parent_issue: int,
@@ -1009,17 +1230,30 @@ def blocker_is_satisfied(state: RunState, blocker: dict[str, Any]) -> bool:
     return heads is not None and heads_are_on_current_branch(state, heads)
 
 
-def mark_child_implemented(state: RunState, child_number: int) -> None:
+def set_child_lifecycle(state: RunState, child_number: int, role: str) -> None:
+    """Label the child with the lifecycle label of role, removing every other lifecycle label."""
+    target = configured_label(state, role)
+    present = lifecycle_labels(state, issue_details(state, child_number))
+    state.github.edit_issue_labels(
+        child_number, add=target, remove=sorted(present - {target})
+    )
+
+
+def mark_child_agent_working(state: RunState, child_number: int) -> None:
     state.github.edit_issue_labels(
         child_number,
-        add=configured_label(state, "implemented"),
+        add=configured_label(state, "agent_working"),
         remove=[configured_label(state, "ready_for_agent")],
     )
 
 
+def mark_child_implemented(state: RunState, child_number: int) -> None:
+    set_child_lifecycle(state, child_number, "implemented")
+
+
 def recover_published_child(state: RunState, children: Iterable[dict[str, Any]]) -> bool:
     for child in children:
-        if not child_is_ready(state, child):
+        if not (child_is_ready(state, child) or child_is_agent_working(state, child)):
             continue
         details = issue_details(state, int(child["number"]))
         require_trusted_issue(state, details)
@@ -1412,11 +1646,7 @@ def run_local_gates(
 
 def send_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
     state.github.comment_on_issue(child_number, body)
-    state.github.edit_issue_labels(
-        child_number,
-        add=configured_label(state, "human_review"),
-        remove=[configured_label(state, "ready_for_agent")],
-    )
+    set_child_lifecycle(state, child_number, "human_review")
 
 
 def stop_children_for_dependency_deadlock(
@@ -1889,9 +2119,10 @@ def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
     )
 
 
-def real_run_adapters() -> RunAdapters:
-    """The run adapters `ralph-kit run` uses: the `gh` CLI and the real child cycle adapters."""
-    return RunAdapters(github=GitHub, child_cycle=real_child_cycle_adapters)
+def real_run_adapters(confirm: Callable[[str], bool] | None = None) -> RunAdapters:
+    """The run adapters `ralph-kit run` uses: the `gh` CLI, the real child cycle adapters, and
+    the command line's confirm, None outside a terminal."""
+    return RunAdapters(github=GitHub, child_cycle=real_child_cycle_adapters, confirm=confirm)
 
 
 def main(
@@ -1953,11 +2184,20 @@ def run_children(
     branch = state.branch
     assert branch is not None
     require_trusted_issue(state, issue_details(state, parent_issue))
+    infrastructure = InfrastructureRetryTracker(state)
     siblings = state.github.sub_issues(parent_issue)
-    # The default counts the ready children once, as the run starts.
+    update_run_summary(state, parent_issue, siblings, None, infrastructure)
+    while recover_published_child(state, siblings):
+        siblings = state.github.sub_issues(parent_issue)
+    if left_agent_working := [
+        child for child in siblings if child_is_agent_working(state, child)
+    ]:
+        update_run_summary(state, parent_issue, siblings, None, infrastructure)
+        resolve_left_agent_working(state, left_agent_working)
+        siblings = state.github.sub_issues(parent_issue)
+    # The default counts the ready children once, after the startup choice.
     ready_children = [child for child in siblings if child_is_ready(state, child)]
     budget = RunBudget(run_budget or max(4, len(ready_children) * 5))
-    infrastructure = InfrastructureRetryTracker(state)
     update_run_summary(state, parent_issue, siblings, budget, infrastructure)
     adapters = state.adapters.child_cycle(
         ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
@@ -1966,6 +2206,15 @@ def run_children(
     while True:
         siblings = state.github.sub_issues(parent_issue)
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+        # Best-effort guard, not a lock: another run can still take a child
+        # between this read and this run's own agent-working write. It precedes
+        # recovery so that another run's published child is left to that run.
+        if agent_working_in_another_run := [
+            child for child in siblings if child_is_agent_working(state, child)
+        ]:
+            raise ChildAgentWorkingInAnotherRun(
+                agent_working_in_another_run, configured_label(state, "agent_working")
+            )
         if recover_published_child(state, siblings):
             continue
         try:
@@ -1988,11 +2237,14 @@ def run_children(
         print(f"▶️  Starting child #{child_number}.", flush=True)
         require_trusted_issue(state, issue_details(state, child_number))
         base_sha = current_head(state)
+        state.working_child = (child_number, base_sha)
+        mark_child_agent_working(state, child_number)
         state.diagnostics.issue_bases[child_number] = base_sha
         cycle = run_child_cycle(
             child_number, base_sha, budget, adapters, review=state.mode.review
         )
         if isinstance(cycle, HandedToHumanReview):
+            state.working_child = None
             raise ChildHandedToHumanReview(child_number, cycle)
 
         implementation_head = cycle.implementation_head
@@ -2010,6 +2262,7 @@ def run_children(
             correction_range,
             verified_head,
         )
+        state.working_child = None
         print(f"✅ Completed child #{child_number}", flush=True)
         print("🔄 Selecting the next runnable child.", flush=True)
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
@@ -2033,7 +2286,9 @@ def run(
 ) -> int:
     """Start a run from repository_root, by default the current directory.
 
-    The run reaches GitHub and agents through adapters.
+    The run reaches GitHub and agents through adapters. SIGINT, SIGTERM, and
+    SIGHUP release the child it is working on, then end it with an interrupted
+    terminal summary and the shell's exit code for the signal.
     """
     state = RunState(
         mode=mode,
@@ -2041,13 +2296,36 @@ def run(
         repository_root=(repository_root or pathlib.Path.cwd()).resolve(),
         started_at=time.monotonic(),
     )
-    try:
-        return main(state, argv, prog)
-    except RalphError as error:
-        if state.summary.parent is None:
-            print(f"Ralph stopped: {error}", file=sys.stderr)
-        report_stop(state, "stopped safely", error)
-        return 1
-    except Exception as error:
-        report_stop(state, "crashed", error)
-        raise
+    with interruptions_raised():
+        try:
+            try:
+                return main(state, argv, prog)
+            except RalphError as error:
+                if state.summary.parent is None:
+                    print(f"Ralph stopped: {error}", file=sys.stderr)
+                report_stop(state, "stopped safely", error)
+                return 1
+            except Exception as error:
+                report_stop(state, "crashed", error)
+                raise
+        except (KeyboardInterrupt, Interrupted) as error:
+            interruption = as_interruption(error)
+            if state.summary.parent is None:
+                print(f"Ralph {interruption}.", file=sys.stderr)
+            # A second interruption leaves the cleanup unfinished: the next startup handles it.
+            try:
+                try:
+                    release_interrupted_child(state, interruption)
+                except RalphError as release_error:
+                    print(
+                        f"Ralph could not release the interrupted child: {release_error}",
+                        file=sys.stderr,
+                    )
+                report_stop(state, "interrupted", interruption)
+            except (KeyboardInterrupt, Interrupted) as second:
+                print(
+                    "Ralph was interrupted again; exiting without finishing the cleanup.",
+                    file=sys.stderr,
+                )
+                return as_interruption(second).exit_code
+            return interruption.exit_code

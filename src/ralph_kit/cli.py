@@ -42,6 +42,13 @@ def init(argv: list[str]) -> int:
     return 0
 
 
+def resume_with_arrows(question: str) -> bool:
+    """Stop (the default) or Resume; Ctrl-C raises KeyboardInterrupt, which the run counts as Stop."""
+    from .check import arrow_select
+
+    return arrow_select(question, [("Stop", ""), ("Resume", "")], "Stop") == "Resume"
+
+
 def main(argv: list[str] | None = None) -> int:
     # Kept for source checkouts run with an older interpreter; pip enforces it otherwise.
     if sys.version_info < (3, 11):  # noqa: UP036
@@ -68,12 +75,13 @@ def main(argv: list[str] | None = None) -> int:
         else:
             from . import loop
         prog = "ralph-kit run" + (" --review" if review else "")
+        confirm = resume_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
         if not caffeinate:
-            return loop.run(arguments, prog=prog)
+            return loop.run(arguments, prog=prog, confirm=confirm)
         from .keep_awake import keep_awake
 
         with keep_awake():
-            return loop.run(arguments, prog=prog)
+            return loop.run(arguments, prog=prog, confirm=confirm)
     if command == "check":
         from . import check
 

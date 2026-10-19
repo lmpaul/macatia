@@ -157,6 +157,12 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.prompts[-1], "Choice [1]: ")
         self.assertEqual(created, [label for label in init.LABELS.values() if label != "needs-triage"])
         self.assertIn("✓ Label implemented created", self.output.getvalue())
+        self.assertIn("✓ Label agent-working created", self.output.getvalue())
+
+    def test_configuration_declares_the_agent_working_label(self):
+        config = self.run_init()
+        self.assertEqual(config.labels["agent_working"], "agent-working")
+        self.assertIn('agent_working = "agent-working"\n', (self.root / "ralph.toml").read_text())
 
     def test_labels_are_kept_for_later(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[]])

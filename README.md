@@ -125,7 +125,11 @@ Each run executes the loop over the parent issue's runnable children.
 `ralph-kit run` starts a standard run, with no review session.
 `ralph-kit run --review` starts a reviewed run: the same loop, plus a review
 session for each child once its local gates pass, repeated after each issue
-correction that review causes. The loop of a standard run is:
+correction that review causes. Once a child is selected and its issue trusted,
+Ralph replaces its `ready-for-agent` label with `agent-working` before the first
+agent session; if that label write fails, the run stops before any session. The
+child keeps `agent-working` throughout its child cycle. The loop of a standard
+run is:
 
 1. Run `$implement` with the configured implementation model. The review
    requested inside that skill stays.
@@ -136,15 +140,17 @@ correction that review causes. The loop of a standard run is:
    after the local gates pass without querying CI. On a product CI failure, collect diagnostic evidence, start a
    fresh CI correction, rerun local gates, push, and wait for CI again.
 4. Mark the child `implemented` only when the work is complete and verification
-   passes. Continue with the next runnable child. The parent ultimately goes to
-   human review; only a human merges.
+   passes, removing every other lifecycle label it carries. Continue with the
+   next runnable child. The parent ultimately goes to human review; only a human
+   merges.
 
 The optional final number is the run budget: the total number of agent
 sessions the run may start, shared by all children. The default is
 `max(4, ready_children * 5)`, where `ready_children` counts the ready children
-when the run starts: open, not `implemented`, with `ready-for-agent` as their
-only triage label and only lifecycle label, blocked or not. Closed,
-implemented, human-review, and ready-for-human children do not count, so
+when the run starts, after the startup choice below: open, not `implemented`,
+with `ready-for-agent` as their only triage label and only lifecycle label,
+blocked or not. Children resumed at that choice count. Closed, implemented,
+agent-working, human-review, and ready-for-human children do not count, so
 resuming a parent with one child left gets 5 sessions.
 The count is taken once; relabelling a child during the run does not change its
 budget. It counts sessions, not tokens or time.
@@ -193,7 +199,10 @@ list `.ralph/`.
 A standard run's implementation evidence uses separate markers (still named
 `ralph-experimental-*` for compatibility with earlier runs) and records the
 verified head rather than claiming independent review. Each kind of run only
-recovers its own interrupted publication markers. Existing `implemented` labels
+recovers its own interrupted publication markers: a child that is
+`ready-for-agent` or `agent-working`, whose latest update is that run kind's
+trusted implementation evidence with commits on the current branch, is marked
+`implemented` without another session. Existing `implemented` labels
 remain shared, so switching between standard and reviewed runs does not
 revalidate children already implemented. Blocker checks accept trusted
 implementation evidence from either kind of run when its commits are on the branch.
@@ -206,8 +215,12 @@ implementation evidence from either kind of run when its commits are on the bran
 - `trusted_authors` is the non-empty allowlist of trusted authors for parent
   issues and children. Include the GitHub account Ralph runs as so a restarted
   run can trust its own implementation evidence.
-- `labels` maps Ralph's seven label roles to labels in the target
-  repository. `init` and `check` offer to create missing ones (Yes / Later).
+- `labels` maps Ralph's eight label roles to labels in the target
+  repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
+  `ready_for_human`, and `wontfix`, and the lifecycle labels `ready_for_agent`,
+  `agent_working`, `human_review`, and `implemented`. `agent_working`
+  (`agent-working` by default) marks the child a run is working on; only Ralph
+  sets it. `init` and `check` offer to create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
 
@@ -332,13 +345,68 @@ CI corrections share one count, and each prompt shows it (`Correction attempt
 2/3`). Every correction also consumes the run budget. An exhausted correction
 limit or run budget, issue or CI corrections without a new commit,
 and `blocked` or `failed` results stop the run and leave the child open with
-`human-review`. The handoff comment includes the outstanding findings and, for
-local gate or CI failures, the last diagnostic.
+`human-review` as its only lifecycle label. The handoff comment includes the
+outstanding findings and, for local gate or CI failures, the last diagnostic.
 
 Ralph publishes implementation evidence and adds `implemented` only after the
 issue review and configured verification succeed for the final commit. A child
 already marked `human-review` is not resumed automatically; remove that label
 and restore `ready-for-agent` when it is ready for another run.
+
+A run that ends without releasing its child (a crash, an error stop, or a killed
+process) leaves it `agent-working`. At startup, before any agent session, a run
+first marks `implemented` every child whose implementation evidence was already
+published, without asking. If children of the parent are still `agent-working`
+after that, Ralph shows one warning naming them all: it cannot tell an
+interrupted run from a run still active elsewhere; resuming while another run is
+active makes two agents do the same work on two branches; and resuming starts
+from the current branch head, so commits already made for these children are not
+covered by their implementation evidence. One choice applies to all of them:
+
+- **Stop** (the default) ends the run as `stopped safely` before any session,
+  leaving the children `agent-working`. The terminal summary lists each one as
+  "agent working from an earlier or concurrent run", with the next action: if no
+  other run is working on this parent, inspect the branch, relabel the child
+  `ready-for-agent`, then rerun.
+- **Resume** relabels each of them `ready-for-agent` and the run continues; they
+  count in the default run budget.
+
+The choice uses the arrow keys and needs a terminal on both stdin and stdout.
+Without one (`nohup`, a scheduler, redirected output), Ralph takes the Stop path
+and puts the warning in the terminal summary. Ctrl-C at the prompt counts as
+Stop.
+
+A run always releases its own child before it selects the next one. So if,
+while selecting its next child, a run finds a remaining child `agent-working`,
+that child belongs to another run started on the same parent. The run stops
+safely, without a prompt, before any further agent session, and leaves that
+child as it is, even if its implementation evidence is already published. The
+stop reason and the terminal summary name the child, listed as "agent working
+in another run on this parent", so you can find and stop the run that should not
+be running. This guard is best-effort, not a lock: there is no run marker, no run
+identifier, and no read-after-write check. Two runs that read the labels before
+either writes `agent-working` can still both take the same child, and a run
+started on the same parent is only noticed at startup or at its next child
+selection.
+
+Ctrl-C (SIGINT), `kill` (SIGTERM), and closing the terminal (SIGHUP) all
+interrupt a run the same way. Ralph ends the agent session in flight,
+terminating its engine process, and releases the child it was working on. If the
+branch head still equals the child's base commit, nothing was committed for it:
+the child goes back to `ready-for-agent` and the next run starts it again.
+Otherwise the child goes to `human-review` with a handoff comment naming the
+unverified commit range `<base>..<head>`; inspect those commits, then close the
+child or relabel it `ready-for-agent` and rerun. A child whose implementation
+evidence was already published is marked `implemented` instead. Ralph then
+publishes the terminal summary with the outcome `interrupted` on the parent (and
+the draft PR, if one exists), listing that child with its reason and next
+action, prints it, and exits with the shell's code for that signal: 130, 143,
+or 129. An interruption between two children releases nothing and publishes the
+same summary. A second interruption during this cleanup exits immediately,
+leaving the labels as they are, so the next run asks about a child still
+`agent-working` as described above. `kill -9`, crashes, and power loss are never
+caught: they release nothing and publish no interrupted summary. A signal
+ignored at launch, such as SIGHUP under `nohup`, stays ignored.
 
 ## Readiness check
 

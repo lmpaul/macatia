@@ -15,6 +15,7 @@ LABEL_KEYS = {
     "ready_for_agent",
     "ready_for_human",
     "wontfix",
+    "agent_working",
     "human_review",
     "implemented",
 }
@@ -94,7 +95,7 @@ class RalphConfig:
     def lifecycle_labels(self) -> frozenset[str]:
         return frozenset(
             self.labels[key]
-            for key in ("ready_for_agent", "human_review", "implemented")
+            for key in ("ready_for_agent", "agent_working", "human_review", "implemented")
         )
 
 

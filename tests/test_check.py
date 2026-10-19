@@ -89,7 +89,7 @@ class ReadinessTests(unittest.TestCase):
         self.login = "reader"
         self.permission = True
         self.gh_version = "gh version 2.70.0 (2025-04-15)\nhttps://github.com/cli/cli/releases/tag/v2.70.0"
-        self.labels = ["needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix", "human-review", "implemented"]
+        self.labels = ["needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix", "agent-working", "human-review", "implemented"]
         self.commands = []
         self.help = {
             ("codex", "exec", "--help"): CODEX_HELP,
@@ -221,6 +221,18 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(questions, ["Create the 1 missing label on example/project?"])
         self.assertIn("✓ implemented created", output)
         self.assertIn(("gh", "label", "create", "implemented", "--repo", "example/project", "--description", "Implemented by Ralph"), self.commands)
+
+    def test_missing_agent_working_label_is_reported_and_created_once_confirmed(self):
+        self.labels.remove("agent-working")
+        self.assertEqual(self.run_check()[0], 1)
+        code, output = self.run_check(confirm=lambda question: True)
+        self.assertEqual(code, 0)
+        self.assertIn("✓ agent-working created", output)
+        self.assertIn(
+            ("gh", "label", "create", "agent-working", "--repo", "example/project",
+             "--description", "A Ralph agent is working on this child"),
+            self.commands,
+        )
 
     def test_labels_are_not_created_later_or_without_terminal(self):
         self.labels.remove("implemented")
