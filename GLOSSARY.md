@@ -102,7 +102,15 @@ The coding-agent CLI behind a session: Codex or Claude Code.
 _Avoid_: Provider, backend
 
 **Model profile**:
-The engine, model, and reasoning effort configured for one session role.
+The engine, model, and reasoning effort an agent session runs with: one for each session role, plus the backup when configured.
+
+**Backup**:
+The single optional model profile that takes over every session role for the rest of a run after an engine failure; its engine may differ from or match the others.
+_Avoid_: Fallback, backup engine, backup model, secondary profile
+
+**Engine failure**:
+An agent session that ends without a valid result, whatever the cause: quota, rate limit, login, outage, or an unknown model.
+_Avoid_: Crash, engine error
 
 ## Agent results
 
