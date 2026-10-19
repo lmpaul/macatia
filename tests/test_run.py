@@ -803,6 +803,24 @@ class ChildBaseTests(RunLevelTestCase):
         result = self.start(loop.MODE, *passing_child_results(loop.MODE))
 
         self.assert_completed(result, sessions=1)
+        self.assertIn(
+            "the latest child base marker is malformed", self.start_comment(CHILD)
+        )
+        self.assert_evidence_starts_from(head)
+
+    def test_latest_trusted_child_base_that_is_not_a_full_commit_starts_from_the_current_head(self):
+        head = self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, comments=[
+            child_base_marker(self.repository.base_sha),
+            child_base_marker(self.repository.base_sha[:7]),
+        ])
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assertIn(
+            "the latest child base marker is malformed", self.start_comment(CHILD)
+        )
         self.assert_evidence_starts_from(head)
 
     def test_untrusted_child_base_is_ignored(self):

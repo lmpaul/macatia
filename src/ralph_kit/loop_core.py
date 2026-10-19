@@ -1250,26 +1250,33 @@ def mark_child_agent_working(state: RunState, child_number: int) -> None:
     )
 
 
+def latest_child_base_comment(state: RunState, issue: dict[str, Any]) -> str | None:
+    """The body of the child's latest trusted comment carrying a child base marker."""
+    for comment in reversed(issue.get("comments", [])):
+        body = str(comment.get("body", ""))
+        if trusted_comment(state, comment) and CHILD_BASE_MARKER_PREFIX in body:
+            return body
+    return None
+
+
 def recorded_child_base(state: RunState, issue: dict[str, Any]) -> str | None:
     """The child base in the child's latest trusted child cycle start comment.
 
     None when there is none, or when that latest comment's marker is malformed.
     """
-    for comment in reversed(issue.get("comments", [])):
-        body = str(comment.get("body", ""))
-        if not trusted_comment(state, comment) or CHILD_BASE_MARKER_PREFIX not in body:
-            continue
-        match = re.search(re.escape(CHILD_BASE_MARKER_PREFIX) + r"(\{.*?\}) -->", body)
-        if match is None:
-            return None
-        try:
-            marker = json.loads(match.group(1))
-        except json.JSONDecodeError:
-            return None
-        child_base = marker.get("child_base") if isinstance(marker, dict) else None
-        if isinstance(child_base, str) and re.fullmatch(r"[0-9a-f]{40}", child_base):
-            return child_base
+    body = latest_child_base_comment(state, issue)
+    if body is None:
         return None
+    match = re.search(re.escape(CHILD_BASE_MARKER_PREFIX) + r"(\{.*?\}) -->", body)
+    if match is None:
+        return None
+    try:
+        marker = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    child_base = marker.get("child_base") if isinstance(marker, dict) else None
+    if isinstance(child_base, str) and re.fullmatch(r"[0-9a-f]{40}", child_base):
+        return child_base
     return None
 
 
@@ -1415,6 +1422,11 @@ def start_child_cycle(
                 " Ralph started from the current branch head because the recorded "
                 f"child base `{recorded}` is no longer on the branch."
             )
+    elif latest_child_base_comment(state, issue) is not None:
+        note = (
+            " Ralph started from the current branch head because the latest child base "
+            "marker is malformed."
+        )
     if child_base.moved_past is not None:
         note = (
             f"{child_base.uncovered_sentence()} The child base moved there from the recorded "

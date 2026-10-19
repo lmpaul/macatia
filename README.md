@@ -152,7 +152,8 @@ moved child base. Local gates and required CI checks are still selected from eve
 path changed since the recorded child base, which the new start comment keeps
 recording. If the recorded child base is no longer on the branch (it was
 rebased or rewritten), Ralph starts from the current head and says so in the
-comment. A child without a marker starts from the current head.
+comment; it does the same when the latest trusted marker is malformed. A child
+without a marker starts from the current head.
 
 The loop of a standard run is:
 
