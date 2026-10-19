@@ -384,10 +384,10 @@ process) leaves it `agent-working`. At startup, before any agent session, a run
 first marks `implemented` every child whose implementation evidence was already
 published, without asking. If children of the parent are still `agent-working`
 after that, Ralph shows one warning naming them all: it cannot tell an
-interrupted run from a run still active elsewhere; resuming while another run is
-active makes two agents do the same work on two branches. A resumed child keeps
-its recorded child base, so commits already made for it count as its work. One
-choice applies to all of them:
+interrupted run from a run still active elsewhere, and resuming while another run
+is active makes two agents do the same work on two branches. A resumed child keeps
+its recorded child base, as described above, so commits already made for it
+count as its work. One choice applies to all of them:
 
 - **Stop** (the default) ends the run as `stopped safely` before any session,
   leaving the children `agent-working`. The terminal summary lists each one as

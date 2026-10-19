@@ -712,7 +712,7 @@ def release_interrupted_child(state: RunState, interruption: Interrupted) -> Non
         set_child_lifecycle(state, child_number, "ready_for_agent")
     else:
         commits = f"{base}..{head}"
-        hand_started_child_to_human_review(
+        send_started_child_to_human_review(
             state,
             child_number,
             f"Ralph stopped because the run was interrupted ({interruption}) before it "
@@ -1835,7 +1835,7 @@ def send_child_to_human_review(state: RunState, child_number: int, body: str) ->
     set_child_lifecycle(state, child_number, "human_review")
 
 
-def hand_started_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
+def send_started_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
     """Hand a child whose child cycle started to human review, saying its commits stay.
 
     A child relabelled ready-for-agent resumes from its recorded child base, so the
@@ -2319,7 +2319,7 @@ def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
         run_local_gates=functools.partial(check_local_gates, context),
         verify_ci=functools.partial(verify_with_ci, context),
         hand_to_human_review=functools.partial(
-            hand_started_child_to_human_review, context.state
+            send_started_child_to_human_review, context.state
         ),
     )
 
