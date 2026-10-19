@@ -112,7 +112,7 @@ def configured_label(state: RunState, role: str) -> str:
 
 
 def agent_profile(state: RunState, role: str) -> AgentProfile:
-    if state.backup_switch is not None:
+    if state.backup_switch is not None and state.backup_switch.took_over:
         assert state.config.backup is not None
         return state.config.backup
     profile = {
@@ -372,9 +372,8 @@ class RunState:
     working_child: tuple[int, str] | None = None
     # The child base of each child this run started a child cycle for.
     child_bases: dict[int, ChildBase] = field(default_factory=dict)
-    # The engine failure after which the backup runs every session; None while
-    # the regular profiles do.
-    backup_switch: EngineFailure | None = None
+    # The engine failure that called the backup; None while no session ended in one.
+    backup_switch: BackupSwitch | None = None
 
     @property
     def config(self) -> RalphConfig:
@@ -402,12 +401,18 @@ def terminal_summary(state: RunState, outcome: str) -> str:
     phase_summary = (
         state.diagnostics.timing_summary() if state.diagnostics is not None else "unavailable"
     )
+    backup_line = (
+        state.backup_switch.summary_line(state.config.backup)
+        if state.backup_switch is not None and state.config.backup is not None
+        else ""
+    )
     return (
         f"🏁 Ralph summary for parent #{state.summary.parent}:\n"
         f"- implemented children this run: {state.summary.implemented}\n"
         f"- remaining children: {state.summary.remaining}\n"
         f"- agent sessions: {state.summary.agent_sessions}\n"
         f"- infrastructure retries: {state.summary.infra_retries}\n"
+        f"{backup_line}"
         f"- total duration: {format_elapsed_duration(elapsed_seconds)}\n"
         f"- phase timings: {phase_summary}\n"
         f"- final outcome: {outcome}"
@@ -766,6 +771,29 @@ class EngineFailure(RalphError):
         self.engine = engine
         self.reason = reason
         self.exit = engine_exit(name, completed)
+
+
+@dataclass(frozen=True)
+class BackupSwitch:
+    """The engine failure of a regular profile that called the backup, and the session it ended."""
+
+    failure: EngineFailure
+    role: str
+    child: int
+    # False when the run budget left no session to replay the failed one with the backup.
+    took_over: bool
+
+    def summary_line(self, backup: AgentProfile) -> str:
+        cause = (
+            f"after a {engine_name(self.failure.engine)} engine failure "
+            f"({self.role} session, child #{self.child})"
+        )
+        if self.took_over:
+            return f"- backup: {profile_label(backup)} took over {cause}\n"
+        return (
+            f"- backup: {profile_label(backup)} did not take over {cause}: "
+            "the run budget left no session to replay it\n"
+        )
 
 
 class NoRunnableChild(RalphError):
@@ -2305,9 +2333,10 @@ def run_session(state: RunState, request: SessionRequest) -> SessionResult:
         if backup is None:
             raise
         if state.backup_switch is not None:
+            regular_failure = state.backup_switch.failure
             raise RalphError(
                 f"engine failure of the backup ({engine_name(backup.engine)}): {failure}; after "
-                f"the {engine_name(state.backup_switch.engine)} engine failure: {state.backup_switch}"
+                f"the {engine_name(regular_failure.engine)} engine failure: {regular_failure}"
             ) from failure
         switch_to_backup(state, request, failure, start_head)
         return run_session(state, request)
@@ -2333,10 +2362,11 @@ def switch_to_backup(
     try:
         budget.start(request.role)
     except RunBudgetExhausted as error:
+        state.backup_switch = BackupSwitch(failure, request.role, request.child, took_over=False)
         print(f"{announcement} The run budget leaves no session to replay it with the backup.", flush=True)
         error.diagnostic = str(failure)
         raise
-    state.backup_switch = failure
+    state.backup_switch = BackupSwitch(failure, request.role, request.child, took_over=True)
     state.diagnostics.record_backup_switch(failure, request.role, request.child, backup)
     print(
         f"{announcement} The backup, {engine_name(backup.engine)} ({profile_label(backup)}), "

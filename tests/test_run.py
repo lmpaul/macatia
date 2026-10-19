@@ -2713,6 +2713,21 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assertEqual(call.engine, "claude")
         self.assertEqual((call.option("--model"), call.option("--effort")), ("opus", "high"))
 
+    def published_summaries(self, result, stream="stdout"):
+        """The run summary on the parent, on the cumulative draft PR when there is one, and in the terminal."""
+        marker = "🏁 Ralph summary"
+        summaries = [
+            next(comment for comment in reversed(self.github.comments(PARENT)) if marker in comment),
+            getattr(result, stream),
+        ]
+        if self.github.pull_request() is not None:
+            summaries.append(self.github.pull_request().comments[-1])
+        return summaries
+
+    def assert_backup_line(self, result, line, stream="stdout"):
+        for summary in self.published_summaries(result, stream):
+            self.assertIn(f"\n{line}\n", summary)
+
     def test_each_engine_failure_kind_is_replayed_by_the_backup_and_the_run_continues(self):
         for name, engines, failure in ENGINE_FAILURES:
             with self.subTest(name):
@@ -2803,6 +2818,32 @@ class BackupTakeoverTests(AgentSessionTestCase):
             f"⚠️ Codex engine failure in the review session for child #{CHILD}", result.stdout
         )
 
+    def test_run_summary_reports_the_backup_takeover(self):
+        result = self.start_engine(
+            loop_review.MODE,
+            EngineResult("committed"),
+            EngineResult(writes_result=False, commit=False),
+            EngineResult("no_changes"),
+        )
+
+        self.assert_implemented(result)
+        self.assert_backup_line(
+            result,
+            f"- backup: Opus - High took over after a Codex engine failure (review session, child #{CHILD})",
+        )
+
+    def test_run_summary_without_a_switch_has_no_backup_line(self):
+        for backup in (True, False):
+            with self.subTest(backup=backup):
+                self.new_child_run(backup=backup)
+
+                result = self.start_engine(loop.MODE, EngineResult("committed"))
+
+                self.assert_implemented(result)
+                for summary in self.published_summaries(result):
+                    self.assertIn("- infrastructure retries: 0\n- total duration: ", summary)
+                    self.assertNotIn("backup", summary)
+
     def test_switch_is_announced_and_recorded_in_the_run_diagnostics(self):
         result = self.start_engine(
             loop.MODE,
@@ -2848,6 +2889,13 @@ class BackupTakeoverTests(AgentSessionTestCase):
             "structured output",
         )
         self.assertEqual(self.engine.engines(), ["codex", "claude"])
+        line = (
+            f"- backup: Opus - High took over after a Codex engine failure "
+            f"(implementation session, child #{CHILD})"
+        )
+        (summary,) = self.github.comments(PARENT)
+        for published in (summary, result.stderr):
+            self.assertIn(f"\n{line}\n", published)
 
     def test_new_run_resuming_an_agent_working_child_starts_on_the_regular_profiles(self):
         self.start_engine(
@@ -2929,6 +2977,12 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assertNotIn("takes over every session", result.stdout)
         self.assertEqual(self.repository.head(), self.start_head)
         self.assertTrue(self.repository.is_clean())
+        self.assert_backup_line(
+            result,
+            f"- backup: Opus - High did not take over after a Codex engine failure "
+            f"(implementation session, child #{CHILD}): the run budget left no session to replay it",
+            stream="stderr",
+        )
 
     def test_failed_correction_and_its_replay_count_as_one_correction(self):
         self.new_child_run(local_gate_results=("fail", "fail", "fail", "pass"))
