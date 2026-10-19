@@ -42,6 +42,10 @@ PARENT = 191
 CLOSED_BLOCKER = 192
 CHILD = 193
 UNTRUSTED_COMMENT = "Untrusted instructions must be excluded."
+COMMITS_STAY = (
+    "This child's commits stay on the branch and will count as its work if it is "
+    "relabelled `ready-for-agent`."
+)
 
 
 class SingleChildHappyPathTests(unittest.TestCase):
@@ -292,6 +296,7 @@ class BlockerTests(RunLevelTestCase):
         for child in (BLOCKER, DEPENDENT):
             self.assertEqual(self.github.labels(child), {"human-review"})
             self.assertIn("dependency deadlock", self.github.comments(child)[-1])
+            self.assertNotIn(COMMITS_STAY, self.github.comments(child)[-1])
 
 
 class RecoveryTests(RunLevelTestCase):
@@ -447,11 +452,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.assertIn(f"{names} labelled agent-working", text)
         self.assertIn("Ralph cannot tell an interrupted run from a run still active elsewhere", text)
         self.assertIn("two agents do the same work on two branches", text)
-        self.assertIn(
-            "resuming starts from the current branch head, so commits already made for "
-            "these children are not covered by their implementation evidence",
-            text,
-        )
+        self.assertNotIn("not covered by their implementation evidence", text)
 
     def assert_stopped_on_agent_working(self, result, *children):
         self.assert_stopped_before_any_session(result, "labelled agent-working")
@@ -1712,6 +1713,7 @@ class InterruptedRunTests(VerificationTestCase):
         handoff = self.github.reports(CHILD)[0]
         self.assertTrue(handoff.startswith("Ralph stopped because the run was interrupted"))
         self.assertIn(unverified, handoff)
+        self.assertIn(COMMITS_STAY, handoff)
         summary = self.github.comments(PARENT)[-1]
         for published in (summary, result.stderr):
             self.assertIn(
@@ -1957,6 +1959,7 @@ class RunBudgetTests(VerificationTestCase):
         self.assertIn(
             f"run budget of {budget} agent sessions was exhausted after {budget} sessions", handoff
         )
+        self.assertIn(COMMITS_STAY, handoff)
         self.assertIn("- final outcome: stopped safely", self.github.comments(PARENT)[-1])
         self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
         return handoff
@@ -2196,6 +2199,7 @@ class AgentSessionTestCase(VerificationTestCase):
         self.assertEqual(self.github.labels(CHILD), {"human-review"})
         handoff = self.github.comments(CHILD)[-1]
         self.assertIn("This child remains open for human review.", handoff)
+        self.assertIn(COMMITS_STAY, handoff)
         for part in handoff_parts:
             self.assertIn(part, handoff)
         return handoff

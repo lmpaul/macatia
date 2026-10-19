@@ -712,7 +712,7 @@ def release_interrupted_child(state: RunState, interruption: Interrupted) -> Non
         set_child_lifecycle(state, child_number, "ready_for_agent")
     else:
         commits = f"{base}..{head}"
-        send_child_to_human_review(
+        hand_started_child_to_human_review(
             state,
             child_number,
             f"Ralph stopped because the run was interrupted ({interruption}) before it "
@@ -784,8 +784,7 @@ def left_agent_working_warning(state: RunState, children: list[dict[str, Any]]) 
         f"{child_numbers(children)} labelled {configured_label(state, 'agent_working')}. "
         "Ralph cannot tell an interrupted run from a run still active "
         "elsewhere: resuming while another run is active makes two agents do the same work "
-        "on two branches. And resuming starts from the current branch head, so commits "
-        "already made for these children are not covered by their implementation evidence."
+        "on two branches."
     )
 
 
@@ -1836,6 +1835,20 @@ def send_child_to_human_review(state: RunState, child_number: int, body: str) ->
     set_child_lifecycle(state, child_number, "human_review")
 
 
+def hand_started_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
+    """Hand a child whose child cycle started to human review, saying its commits stay.
+
+    A child relabelled ready-for-agent resumes from its recorded child base, so the
+    commits on the branch count as its work.
+    """
+    send_child_to_human_review(
+        state,
+        child_number,
+        f"{body}\n\nThis child's commits stay on the branch and will count as its work "
+        f"if it is relabelled `{configured_label(state, 'ready_for_agent')}`.",
+    )
+
+
 def stop_children_for_dependency_deadlock(
     state: RunState, children: Iterable[dict[str, Any]]
 ) -> None:
@@ -2305,7 +2318,9 @@ def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
         run_session=functools.partial(run_session, context.state),
         run_local_gates=functools.partial(check_local_gates, context),
         verify_ci=functools.partial(verify_with_ci, context),
-        hand_to_human_review=functools.partial(send_child_to_human_review, context.state),
+        hand_to_human_review=functools.partial(
+            hand_started_child_to_human_review, context.state
+        ),
     )
 
 

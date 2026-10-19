@@ -370,6 +370,9 @@ limit or run budget, issue or CI corrections without a new commit,
 and `blocked` or `failed` results stop the run and leave the child open with
 `human-review` as its only lifecycle label. The handoff comment includes the
 outstanding findings and, for local gate or CI failures, the last diagnostic.
+Every handoff comment for a child whose child cycle started also says that the
+child's commits stay on the branch and will count as its work if it is
+relabelled `ready-for-agent`.
 
 Ralph publishes implementation evidence and adds `implemented` only after the
 issue review and configured verification succeed for the final commit. A child
@@ -382,9 +385,9 @@ first marks `implemented` every child whose implementation evidence was already
 published, without asking. If children of the parent are still `agent-working`
 after that, Ralph shows one warning naming them all: it cannot tell an
 interrupted run from a run still active elsewhere; resuming while another run is
-active makes two agents do the same work on two branches; and resuming starts
-from the current branch head, so commits already made for these children are not
-covered by their implementation evidence. One choice applies to all of them:
+active makes two agents do the same work on two branches. A resumed child keeps
+its recorded child base, so commits already made for it count as its work. One
+choice applies to all of them:
 
 - **Stop** (the default) ends the run as `stopped safely` before any session,
   leaving the children `agent-working`. The terminal summary lists each one as
