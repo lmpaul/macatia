@@ -1865,7 +1865,10 @@ def stop_children_for_dependency_deadlock(
 ) -> None:
     for child in children:
         child_number = int(child["number"])
-        send_child_to_human_review(
+        # Only a child that would resume from its recorded child base keeps its commits.
+        recorded = recorded_child_base(state, issue_details(state, child_number))
+        resumable = recorded is not None and is_ancestor(state, recorded, current_head(state))
+        (send_started_child_to_human_review if resumable else send_child_to_human_review)(
             state,
             child_number,
             "Ralph stopped because the parent has a dependency deadlock. This child "

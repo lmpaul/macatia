@@ -817,6 +817,30 @@ class ChildBaseTests(RunLevelTestCase):
         self.assertNotIn("no longer on the branch", self.start_comment(CHILD))
         self.assert_evidence_starts_from(head)
 
+    def test_started_child_stopped_by_a_dependency_deadlock_keeps_its_commits(self):
+        self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, blocked_by=[OTHER_CHILD], comments=[
+            child_base_marker(self.repository.base_sha),
+        ])
+        self.github.add_issue(OTHER_CHILD, parent=PARENT, blocked_by=[CHILD])
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(result, "dependency deadlock")
+        self.assertIn(COMMITS_STAY, self.github.comments(CHILD)[-1])
+        self.assertNotIn(COMMITS_STAY, self.github.comments(OTHER_CHILD)[-1])
+
+    def test_child_whose_child_base_left_the_branch_is_stopped_by_a_deadlock_without_commits(self):
+        self.github.add_issue(CHILD, parent=PARENT, blocked_by=[OTHER_CHILD], comments=[
+            child_base_marker(self.commit_off_the_branch()),
+        ])
+        self.github.add_issue(OTHER_CHILD, parent=PARENT, blocked_by=[CHILD])
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(result, "dependency deadlock")
+        self.assertNotIn(COMMITS_STAY, self.github.comments(CHILD)[-1])
+
     def implement_other_child(self, mode):
         """A run that implements OTHER_CHILD on top of the branch while CHILD is in human review."""
         self.start(mode, *passing_child_results(mode))
