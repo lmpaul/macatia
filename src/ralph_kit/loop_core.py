@@ -1280,9 +1280,10 @@ class ChildBase:
 
     # Implementation evidence and the review session cover every commit after it.
     commit: str
-    # The child base the child's start comment records; local gates are selected
-    # from every path changed since it. It differs from `commit` only when the
-    # child base moved past other children implemented after it (ADR 0001).
+    # The child base the child's start comment records; local gates and required
+    # CI checks are selected from every path changed since it. It differs from
+    # `commit` only when the child base moved past other children implemented
+    # after it (ADR 0001).
     recorded: str
     # The latest child implemented after `recorded`, when the child base moved to its verified head.
     moved_past: int | None = None
@@ -1408,8 +1409,8 @@ def start_child_cycle(
         note = (
             f"{child_base.uncovered_sentence()} The child base moved there from the recorded "
             f"child base `{child_base.recorded}` because #{child_base.moved_past} was "
-            "implemented after it; local gates are still selected from every path changed "
-            f"since `{child_base.recorded}`."
+            "implemented after it; local gates and required CI checks are still selected "
+            f"from every path changed since `{child_base.recorded}`."
         )
     state.working_child = (child_number, head)
     state.child_bases[child_number] = child_base

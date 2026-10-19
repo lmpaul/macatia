@@ -146,11 +146,11 @@ The start comment, the implementation evidence, and the review prompt then name
 the commits of the child's earlier child cycles that this no longer covers,
 taken up to the child base recorded by the first child implemented on top; if
 that child has no recorded child base, they name every commit before the moved
-child base. Local gates are still selected from every path changed since the
-recorded child base, which the new start comment keeps recording. If the recorded
-child base is no longer on the branch (it was rebased or rewritten), Ralph
-starts from the current head and says so in the comment. A child without a
-marker starts from the current head.
+child base. Local gates and required CI checks are still selected from every
+path changed since the recorded child base, which the new start comment keeps
+recording. If the recorded child base is no longer on the branch (it was
+rebased or rewritten), Ralph starts from the current head and says so in the
+comment. A child without a marker starts from the current head.
 
 The loop of a standard run is:
 

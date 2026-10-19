@@ -70,7 +70,8 @@ class ChildCycleAdapters:
     # (child, gate base, head_sha) -> None when every local gate that applies to the
     # paths changed since the gate base passes.
     run_local_gates: Callable[[int, str, str], GateFailure | None]
-    # (child, base_sha, head_sha) -> None once head_sha is published and verified.
+    # (child, gate base, head_sha) -> None once head_sha is published and every CI
+    # check required by the paths changed since the gate base is green.
     verify_ci: Callable[[int, str, str], CIFailure | CIUnavailable | None]
     # (child, comment body)
     hand_to_human_review: Callable[[int, str], None]
@@ -182,8 +183,8 @@ def run_child_cycle(
 ) -> Verified | HandedToHumanReview:
     """Take one child to a verified head, or hand it to human review and say why.
 
-    Local gates are selected from the paths changed since `gate_base`, which
-    defaults to the child base `base_sha`.
+    Local gates and required CI checks are selected from the paths changed since
+    `gate_base`, which defaults to the child base `base_sha`.
     """
     cause = None
     try:
@@ -252,7 +253,7 @@ class _ChildCycle:
         implementation = self.session(SessionRequest("implementation", self.child))
         verified_head = self.complete(implementation)
         while True:
-            verdict = self.adapters.verify_ci(self.child, self.base_sha, verified_head)
+            verdict = self.adapters.verify_ci(self.child, self.gate_base, verified_head)
             if verdict is None:
                 return Verified(implementation.head, verified_head)
             if isinstance(verdict, CIUnavailable):
