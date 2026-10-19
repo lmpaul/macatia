@@ -142,7 +142,7 @@ class DiagnosticRecorder:
         self.sessions_directory.mkdir(parents=True)
         self.sequence = 0
         self.evidence_sequence = 0
-        self.issue_bases: dict[int, str] = {}
+        self.child_bases: dict[int, str] = {}
         self.latest_sessions: dict[int, tuple[pathlib.Path, str]] = {}
         self.phases: list[dict[str, Any]] = []
         self._write_json(
@@ -1251,16 +1251,17 @@ def mark_child_agent_working(state: RunState, child_number: int) -> None:
 
 
 def recorded_child_base(state: RunState, issue: dict[str, Any]) -> str | None:
-    """The child base in the child's latest trusted child cycle start comment, if valid."""
+    """The child base in the child's latest trusted child cycle start comment.
+
+    None when there is none, or when that latest comment's marker is malformed.
+    """
     for comment in reversed(issue.get("comments", [])):
-        if not trusted_comment(state, comment):
+        body = str(comment.get("body", ""))
+        if not trusted_comment(state, comment) or CHILD_BASE_MARKER_PREFIX not in body:
             continue
-        match = re.search(
-            re.escape(CHILD_BASE_MARKER_PREFIX) + r"(\{.*?\}) -->",
-            str(comment.get("body", "")),
-        )
+        match = re.search(re.escape(CHILD_BASE_MARKER_PREFIX) + r"(\{.*?\}) -->", body)
         if match is None:
-            continue
+            return None
         try:
             marker = json.loads(match.group(1))
         except json.JSONDecodeError:
@@ -1297,8 +1298,8 @@ def start_child_cycle(state: RunState, child_number: int, issue: dict[str, Any])
     state.github.comment_on_issue(
         child_number,
         f"{CHILD_BASE_MARKER_PREFIX}{marker} -->\n"
-        f"Ralph started a child cycle from child base `{child_base}`: its implementation "
-        f"evidence and review cover every commit after it.{note}",
+        f"Ralph started a child cycle from child base `{child_base}`: this child's "
+        f"implementation evidence covers every commit after it.{note}",
     )
     return child_base
 
@@ -1524,7 +1525,7 @@ def session_context(state: RunState, issue_number: int, head_sha: str) -> str:
     context = (
         f"\n\nShared context:\nIssue: https://github.com/{repository}/issues/{issue_number}\n"
         f"Parent: https://github.com/{repository}/issues/{state.summary.parent}\n"
-        f"Issue base commit: {state.diagnostics.issue_bases.get(issue_number, head_sha)}\n"
+        f"Child base commit: {state.diagnostics.child_bases.get(issue_number, head_sha)}\n"
         f"Current commit: {head_sha}\nWorking directory: {state.repository_root}\n"
         f"Verification evidence (command metadata identifies each commit): {state.diagnostics.directory / 'evidence'}\n"
     )
@@ -2293,10 +2294,10 @@ def run_children(
         print(f"▶️  Starting child #{child_number}.", flush=True)
         details = issue_details(state, child_number)
         require_trusted_issue(state, details)
-        base_sha = start_child_cycle(state, child_number, details)
-        state.diagnostics.issue_bases[child_number] = base_sha
+        child_base = start_child_cycle(state, child_number, details)
+        state.diagnostics.child_bases[child_number] = child_base
         cycle = run_child_cycle(
-            child_number, base_sha, budget, adapters, review=state.mode.review
+            child_number, child_base, budget, adapters, review=state.mode.review
         )
         if isinstance(cycle, HandedToHumanReview):
             state.working_child = None
@@ -2304,7 +2305,7 @@ def run_children(
 
         implementation_head = cycle.implementation_head
         verified_head = cycle.verified_head
-        implementation_range = f"{base_sha}..{implementation_head}"
+        implementation_range = f"{child_base}..{implementation_head}"
         correction_range = (
             f"{implementation_head}..{verified_head}"
             if implementation_head != verified_head else None

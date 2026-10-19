@@ -664,7 +664,7 @@ class ChildBaseTests(RunLevelTestCase):
     def start_comment(self, child):
         return next(
             comment for comment in reversed(self.github.comments(child))
-            if loop_core.CHILD_BASE_MARKER_PREFIX in comment
+            if is_child_cycle_start(comment)
         )
 
     def local_gate_bases(self):
@@ -675,7 +675,7 @@ class ChildBaseTests(RunLevelTestCase):
 
     def forget_diagnostics(self):
         """Drop the finished run's diagnostics, so the next run's are the only ones."""
-        shutil.rmtree(self.repository.path / ".ralph" / "diagnostics")
+        shutil.rmtree(self.repository.diagnostics())
 
     def hand_off(self, mode, path):
         """Run one child cycle that commits `path` and hands the child to human review."""
@@ -697,10 +697,12 @@ class ChildBaseTests(RunLevelTestCase):
     def test_child_cycle_start_records_the_child_base_after_marking_the_child_agent_working(self):
         self.github.add_issue(CHILD, parent=PARENT)
         labels_at_start = []
-        self.github.after_comment = lambda number, body: (
-            loop_core.CHILD_BASE_MARKER_PREFIX in body
-            and labels_at_start.append(self.github.labels(number))
-        )
+
+        def observe_labels_at_start(number, body):
+            if is_child_cycle_start(body):
+                labels_at_start.append(self.github.labels(number))
+
+        self.github.after_comment = observe_labels_at_start
 
         result = self.start(loop.MODE, *passing_child_results(loop.MODE))
 
@@ -747,11 +749,18 @@ class ChildBaseTests(RunLevelTestCase):
         self.commit_file("partial.txt", "Partial work of the interrupted child cycle")
         self.forget_diagnostics()
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE), confirm=ScriptedConfirm(RESUME))
+        result = self.start(
+            loop_review.MODE, ScriptedResult("committed"), ScriptedResult("no_changes"),
+            confirm=ScriptedConfirm(RESUME),
+        )
 
-        self.assert_completed(result, sessions=1)
+        self.assert_completed(result, sessions=2)
         self.assertEqual(self.child_bases(CHILD), [base_sha] * 2)
         self.assert_evidence_starts_from(base_sha)
+        self.assertIn(
+            f"Review the exact `{base_sha}...{self.repository.head()}` diff",
+            self.sessions.prompts[1],
+        )
         self.assertEqual(self.local_gate_bases(), [base_sha])
 
     def test_latest_trusted_child_base_off_the_branch_starts_from_the_current_head(self):
@@ -773,6 +782,21 @@ class ChildBaseTests(RunLevelTestCase):
         self.assertIn(
             f"the recorded child base `{off_the_branch}` is no longer on the branch", start
         )
+        self.assert_evidence_starts_from(head)
+
+    def test_malformed_latest_trusted_child_base_starts_from_the_current_head(self):
+        head = self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, comments=[
+            child_base_marker(self.repository.base_sha),
+            {
+                "author": {"login": TRUSTED_LOGIN},
+                "body": f"Quoted by hand: {loop_core.CHILD_BASE_MARKER_PREFIX}{{\"child_base\"",
+            },
+        ])
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
         self.assert_evidence_starts_from(head)
 
     def test_untrusted_child_base_is_ignored(self):
