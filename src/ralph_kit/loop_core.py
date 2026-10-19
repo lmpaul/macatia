@@ -1213,17 +1213,15 @@ def latest_update_is_trusted_marker_comment(
     )
 
 
+def is_ancestor(state: RunState, ancestor: str, descendant: str) -> bool:
+    return command(
+        state, ["git", "merge-base", "--is-ancestor", ancestor, descendant], check=False
+    ).returncode == 0
+
+
 def heads_are_on_current_branch(state: RunState, heads: Iterable[str]) -> bool:
     branch_head = current_head(state)
-    return all(
-        command(
-            state,
-            ["git", "merge-base", "--is-ancestor", head, branch_head],
-            check=False,
-        ).returncode
-        == 0
-        for head in heads
-    )
+    return all(is_ancestor(state, head, branch_head) for head in heads)
 
 
 def blocker_is_satisfied(state: RunState, blocker: dict[str, Any]) -> bool:
@@ -1278,7 +1276,7 @@ def recorded_child_base(state: RunState, issue: dict[str, Any]) -> str | None:
 
 @dataclass(frozen=True)
 class ChildBase:
-    """Where a child cycle's implementation evidence, review session, and local gates start."""
+    """The child base of one child cycle, and where its local gate selection starts."""
 
     # Implementation evidence and the review session cover every commit after it.
     commit: str
@@ -1311,12 +1309,6 @@ class ChildBase:
         )
 
 
-def is_ancestor(state: RunState, ancestor: str, descendant: str) -> bool:
-    return command(
-        state, ["git", "merge-base", "--is-ancestor", ancestor, descendant], check=False
-    ).returncode == 0
-
-
 def children_implemented_after(
     state: RunState,
     child_number: int,
@@ -1324,14 +1316,16 @@ def children_implemented_after(
     recorded: str,
     head: str,
 ) -> list[tuple[str, dict[str, Any]]]:
-    """The other implemented children whose verified head lies after `recorded` on the branch.
+    """The other children whose trusted implementation evidence names a verified head
+    after `recorded` on the branch, each with that verified head, earliest first.
 
-    Each comes with its verified head, earliest first.
+    The evidence decides, not the implemented label, so a relabelled child's
+    commits are still never claimed.
     """
     implemented = []
     for sibling in siblings:
         number = int(sibling["number"])
-        if number == child_number or configured_label(state, "implemented") not in labels(sibling):
+        if number == child_number:
             continue
         details = issue_details(state, number)
         heads = verified_implementation_heads(state, details)
@@ -1508,11 +1502,7 @@ def verify_agent_git_effect(
     after_head = current_head(state)
     if git(state, "status", "--porcelain"):
         raise ChildWorkRejected(f"worktree is dirty after {role}")
-    if command(
-        state,
-        ["git", "merge-base", "--is-ancestor", before_head, after_head],
-        check=False,
-    ).returncode != 0:
+    if not is_ancestor(state, before_head, after_head):
         raise ChildWorkRejected(f"{role} rewrote or replaced the verified commit base")
     commits = git(state, "rev-list", "--reverse", f"{before_head}..{after_head}").splitlines()
     if result["outcome"] == "committed" and not commits:

@@ -885,7 +885,7 @@ class ChildBaseTests(RunLevelTestCase):
         self.assert_names_uncovered_commits(f"{base_sha}..{earlier_cycles_head}")
         self.assertEqual(self.local_gate_bases(), [base_sha])
 
-    def test_other_child_without_a_recorded_start_names_every_commit_before_the_child_base(self):
+    def test_other_child_without_a_recorded_child_base_names_every_commit_before_the_child_base(self):
         self.github.add_issue(CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
         self.hand_off(loop.MODE, "a1.txt")
