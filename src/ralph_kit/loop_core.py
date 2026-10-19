@@ -786,10 +786,11 @@ class BackupSwitch:
             f"after a {engine_name(self.failure.engine)} engine failure "
             f"({self.role} session, child #{self.child})"
         )
+        label = f"{engine_name(backup.engine)} {profile_label(backup)}"
         if self.took_over:
-            return f"- backup: {profile_label(backup)} took over {cause}\n"
+            return f"- backup: {label} took over {cause}\n"
         return (
-            f"- backup: {profile_label(backup)} did not take over {cause}: "
+            f"- backup: {label} did not take over {cause}: "
             "the run budget left no session to replay it\n"
         )
 

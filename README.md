@@ -331,10 +331,10 @@ whatever its role; the console announces the switch with the failed engine, its
 exit detail, and the backup, and later session lines show the backup's engine
 and profile. The run diagnostics keep the failed session and record the switch
 in `run.json`. The run summary, in the terminal and on the parent issue and the
-cumulative draft PR, gains a line such as `- backup: Opus - High took over after
-a Codex engine failure (review session, child #12)`; it still names the engine
-failure when the backup failed too or the run budget left no session to replay
-it, and has no such line without an engine failure. The failed session counts
+cumulative draft PR, gains a line such as `- backup: Claude Code Opus - High took
+over after a Codex engine failure (review session, child #12)`; it still names
+the engine failure when the backup failed too or the run budget left no session
+to replay it, and has no such line without an engine failure. The failed session counts
 toward the run budget; when it was the
 last session the budget allowed, the child goes to human review as for any
 exhausted run budget. A failed correction and its replay count as one

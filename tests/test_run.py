@@ -2831,7 +2831,8 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assertIn("🏁 Ralph summary", self.github.pull_request().comments[-1])
         self.assert_backup_line(
             result,
-            f"- backup: Opus - High took over after a Codex engine failure (review session, child #{CHILD})",
+            f"- backup: Claude Code Opus - High took over after a Codex engine failure "
+            f"(review session, child #{CHILD})",
         )
 
     def test_run_summary_without_a_switch_has_no_backup_line(self):
@@ -2893,7 +2894,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assertEqual(self.engine.engines(), ["codex", "claude"])
         self.assert_backup_line(
             result,
-            f"- backup: Opus - High took over after a Codex engine failure "
+            f"- backup: Claude Code Opus - High took over after a Codex engine failure "
             f"(implementation session, child #{CHILD})",
             stream="stderr",
         )
@@ -2980,7 +2981,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assertTrue(self.repository.is_clean())
         self.assert_backup_line(
             result,
-            f"- backup: Opus - High did not take over after a Codex engine failure "
+            f"- backup: Claude Code Opus - High did not take over after a Codex engine failure "
             f"(implementation session, child #{CHILD}): the run budget left no session to replay it",
             stream="stderr",
         )
