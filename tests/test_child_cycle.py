@@ -54,6 +54,7 @@ class FakeTools:
         self.ci = list(ci)
         self.requests = []
         self.gate_heads = []
+        self.gate_bases = []
         self.ci_heads = []
         self.handoffs = []
         self.adapters = ChildCycleAdapters(
@@ -74,6 +75,7 @@ class FakeTools:
 
     def run_local_gates(self, child, base_sha, head_sha):
         self.gate_heads.append(head_sha)
+        self.gate_bases.append(base_sha)
         return self.gates.pop(0) if self.gates else None
 
     def verify_ci(self, child, base_sha, head_sha):
@@ -110,6 +112,17 @@ class VerifiedCycleTests(unittest.TestCase):
         self.assertEqual(result, Verified("implementation-1-0", "implementation-1-0"))
         review = tools.requests[1]
         self.assertEqual((review.base_sha, review.head_sha), (BASE, "implementation-1-0"))
+        self.assertEqual(tools.gate_bases, [BASE])
+
+    def test_local_gates_select_from_the_gate_base_while_review_covers_the_child_base(self):
+        tools = FakeTools({"implementation": [committed()], "review": [no_changes()]})
+
+        run_child_cycle(
+            CHILD, BASE, RunBudget(20), tools.adapters, review=True, gate_base="earlier"
+        )
+
+        self.assertEqual(tools.requests[1].base_sha, BASE)
+        self.assertEqual(tools.gate_bases, ["earlier"])
 
     def test_findings_are_corrected_before_gates_and_ci(self):
         tools = FakeTools({

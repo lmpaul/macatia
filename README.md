@@ -137,7 +137,17 @@ trusted authors count, and the latest one is authoritative. A child resumed
 after human review, or resumed from `agent-working`, keeps the recorded child
 base while it is an ancestor of the branch head, and its new comment carries it
 forward. So the commits of its earlier child cycles, and any commits a human
-made on the branch in the meantime, count as the child's work. If the recorded
+made on the branch in the meantime, count as the child's work. If other
+children were implemented after the recorded child base, the child base moves
+to the verified head of the latest one, so the child's implementation evidence
+and review session never claim their commits (see
+[ADR 0001](docs/adr/0001-child-base-falls-back-when-another-child-lands-on-top.md)).
+The start comment, the implementation evidence, and the review prompt then name
+the commits of the child's earlier child cycles that this no longer covers,
+taken up to the child base recorded by the first child implemented on top; if
+that child has no recorded child base, they name every commit before the moved
+child base. Local gates are still selected from every path changed since the
+recorded child base, which the new start comment keeps recording. If the recorded
 child base is no longer on the branch (it was rebased or rewritten), Ralph
 starts from the current head and says so in the comment. A child without a
 marker starts from the current head.

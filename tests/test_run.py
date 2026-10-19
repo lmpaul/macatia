@@ -648,6 +648,11 @@ class ConcurrentRunTests(RunLevelTestCase):
         self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT, DEPENDENT])
 
 
+# Children implemented on the branch while CHILD waits in human review.
+OTHER_CHILD = 195
+LATER_CHILD = 196
+
+
 class ChildBaseTests(RunLevelTestCase):
     """Each child cycle records its child base; a resumed child starts from the recorded one."""
 
@@ -810,6 +815,104 @@ class ChildBaseTests(RunLevelTestCase):
         self.assert_completed(result, sessions=1)
         self.assertNotIn("no longer on the branch", self.start_comment(CHILD))
         self.assert_evidence_starts_from(head)
+
+    def implement_other_child(self, mode):
+        """A run that implements OTHER_CHILD on top of the branch while CHILD is in human review."""
+        self.start(mode, *passing_child_results(mode))
+        self.assertEqual(self.github.labels(OTHER_CHILD), {"implemented"})
+        self.forget_diagnostics()
+        return self.repository.head()
+
+    def add_implemented_child(self, number, verified_head, *comments):
+        self.github.add_issue(
+            number, parent=PARENT, labels=("implemented",),
+            comments=[*comments, implementation_evidence(loop.MODE, verified_head)],
+        )
+
+    def assert_names_uncovered_commits(self, uncovered_range):
+        uncovered = f"`{uncovered_range}`"
+        self.assertIn(uncovered, self.start_comment(CHILD))
+        self.assertIn(uncovered, self.github.comments(CHILD)[-1])
+
+    def test_child_resumed_after_another_child_was_implemented_on_top_moves_its_child_base(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(OTHER_CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        self.hand_off(loop_review.MODE, "a1.txt")
+        self.relabel_ready()
+        earlier_cycles_head = self.hand_off(loop_review.MODE, "a2.txt")
+        other_child_head = self.implement_other_child(loop_review.MODE)
+        human_commit = self.commit_file("human-fix.txt", "Fix during human review")
+        self.relabel_ready()
+
+        result = self.start(
+            loop_review.MODE, ScriptedResult("committed"), ScriptedResult("no_changes")
+        )
+
+        self.assert_completed(result, sessions=2)
+        implementation_head = self.repository.head()
+        uncovered = f"{base_sha}..{earlier_cycles_head}"
+        self.assertEqual(self.child_bases(CHILD), [base_sha] * 3)
+        self.assertIn(f"child base `{other_child_head}`", self.start_comment(CHILD))
+        self.assert_evidence_starts_from(other_child_head)
+        self.assert_names_uncovered_commits(uncovered)
+        evidence = self.github.comments(CHILD)[-1]
+        self.assertNotIn(f"`{earlier_cycles_head}..", evidence)
+        self.assertIn(human_commit, self.repository.commits_since(other_child_head))
+        review = self.sessions.prompts[1]
+        self.assertIn(f"Review the exact `{other_child_head}...{implementation_head}` diff", review)
+        self.assertIn(f"`{uncovered}`", review)
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_child_base_moves_to_the_latest_child_implemented_after_the_recorded_one(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        earlier_cycles_head = self.hand_off(loop.MODE, "a1.txt")
+        other_child_head = self.commit_file("other.txt", "Implement the other child")
+        later_child_head = self.commit_file("later.txt", "Implement the later child")
+        self.add_implemented_child(
+            LATER_CHILD, later_child_head, child_base_marker(other_child_head)
+        )
+        self.add_implemented_child(
+            OTHER_CHILD, other_child_head, child_base_marker(earlier_cycles_head)
+        )
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(later_child_head)
+        self.assert_names_uncovered_commits(f"{base_sha}..{earlier_cycles_head}")
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_other_child_without_a_recorded_start_names_every_commit_before_the_child_base(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        self.hand_off(loop.MODE, "a1.txt")
+        other_child_head = self.commit_file("other.txt", "Implement the other child")
+        self.add_implemented_child(OTHER_CHILD, other_child_head)
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(other_child_head)
+        self.assert_names_uncovered_commits(f"{base_sha}..{other_child_head}")
+
+    def test_child_implemented_before_the_recorded_child_base_does_not_move_it(self):
+        prior = self.commit_prior_child()
+        self.add_implemented_child(OTHER_CHILD, prior)
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.hand_off(loop.MODE, "a1.txt")
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(prior)
+        self.assertNotIn("not covered", self.start_comment(CHILD))
+        self.assertNotIn("not covered", self.github.comments(CHILD)[-1])
+        self.assertEqual(self.local_gate_bases(), [prior])
 
 
 class StartupChoiceCommandLineTests(unittest.TestCase):
