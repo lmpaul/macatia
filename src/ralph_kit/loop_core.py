@@ -79,6 +79,8 @@ class RunMode:
 DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
 MAX_STOP_REASON_LENGTH = 1600
 ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
+# Persisted in child cycle start comments, so its value must never change.
+CHILD_BASE_MARKER_PREFIX = "<!-- ralph-child-base: "
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
@@ -335,7 +337,8 @@ class RunState:
     rerun_command: str | None = None
     initial_implemented_children: set[int] | None = None
     summary: RunSummary = field(default_factory=RunSummary)
-    # The child the run holds agent working, with its base commit, until it leaves that state.
+    # The child the run holds agent working, with the branch head its child cycle
+    # started from, until it leaves that state.
     working_child: tuple[int, str] | None = None
 
     @property
@@ -1245,6 +1248,59 @@ def mark_child_agent_working(state: RunState, child_number: int) -> None:
         add=configured_label(state, "agent_working"),
         remove=[configured_label(state, "ready_for_agent")],
     )
+
+
+def recorded_child_base(state: RunState, issue: dict[str, Any]) -> str | None:
+    """The child base in the child's latest trusted child cycle start comment, if valid."""
+    for comment in reversed(issue.get("comments", [])):
+        if not trusted_comment(state, comment):
+            continue
+        match = re.search(
+            re.escape(CHILD_BASE_MARKER_PREFIX) + r"(\{.*?\}) -->",
+            str(comment.get("body", "")),
+        )
+        if match is None:
+            continue
+        try:
+            marker = json.loads(match.group(1))
+        except json.JSONDecodeError:
+            return None
+        child_base = marker.get("child_base") if isinstance(marker, dict) else None
+        if isinstance(child_base, str) and re.fullmatch(r"[0-9a-f]{40}", child_base):
+            return child_base
+        return None
+    return None
+
+
+def start_child_cycle(state: RunState, child_number: int, issue: dict[str, Any]) -> str:
+    """Mark the child agent working, record its child base on the child, and return it.
+
+    A resumed child keeps the child base its latest trusted start comment
+    records while that commit is still on the branch, so its implementation
+    evidence, review session, and local gates cover its earlier child cycles.
+    """
+    head = current_head(state)
+    recorded = recorded_child_base(state, issue)
+    child_base = head
+    note = ""
+    if recorded is not None:
+        if heads_are_on_current_branch(state, [recorded]):
+            child_base = recorded
+        else:
+            note = (
+                " Ralph started from the current branch head because the recorded "
+                f"child base `{recorded}` is no longer on the branch."
+            )
+    state.working_child = (child_number, head)
+    mark_child_agent_working(state, child_number)
+    marker = json.dumps({"child_base": child_base}, separators=(",", ":"))
+    state.github.comment_on_issue(
+        child_number,
+        f"{CHILD_BASE_MARKER_PREFIX}{marker} -->\n"
+        f"Ralph started a child cycle from child base `{child_base}`: its implementation "
+        f"evidence and review cover every commit after it.{note}",
+    )
+    return child_base
 
 
 def mark_child_implemented(state: RunState, child_number: int) -> None:
@@ -2235,10 +2291,9 @@ def run_children(
 
         child_number = int(selected_child["number"])
         print(f"▶️  Starting child #{child_number}.", flush=True)
-        require_trusted_issue(state, issue_details(state, child_number))
-        base_sha = current_head(state)
-        state.working_child = (child_number, base_sha)
-        mark_child_agent_working(state, child_number)
+        details = issue_details(state, child_number)
+        require_trusted_issue(state, details)
+        base_sha = start_child_cycle(state, child_number, details)
         state.diagnostics.issue_bases[child_number] = base_sha
         cycle = run_child_cycle(
             child_number, base_sha, budget, adapters, review=state.mode.review

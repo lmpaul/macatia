@@ -128,8 +128,21 @@ session for each child once its local gates pass, repeated after each issue
 correction that review causes. Once a child is selected and its issue trusted,
 Ralph replaces its `ready-for-agent` label with `agent-working` before the first
 agent session; if that label write fails, the run stops before any session. The
-child keeps `agent-working` throughout its child cycle. The loop of a standard
-run is:
+child keeps `agent-working` throughout its child cycle.
+
+Ralph then posts a trusted comment on the child naming its child base, the
+commit its implementation evidence, review session diff, and local gate
+selection start from, with a hidden machine-readable marker. Only markers from
+trusted authors count, and the latest one is authoritative. A child resumed
+after human review, or resumed from `agent-working`, keeps the recorded child
+base while it is an ancestor of the branch head, and its new comment carries it
+forward. So the commits of its earlier child cycles, and any commits a human
+made on the branch in the meantime, count as the child's work. If the recorded
+child base is no longer on the branch (it was rebased or rewritten), Ralph
+starts from the current head and says so in the comment. A child without a
+marker starts from the current head.
+
+The loop of a standard run is:
 
 1. Run `$implement` with the configured implementation model. The review
    requested inside that skill stays.
@@ -392,7 +405,8 @@ selection.
 Ctrl-C (SIGINT), `kill` (SIGTERM), and closing the terminal (SIGHUP) all
 interrupt a run the same way. Ralph ends the agent session in flight,
 terminating its engine process, and releases the child it was working on. If the
-branch head still equals the child's base commit, nothing was committed for it:
+branch head still equals the commit its child cycle started from, nothing was
+committed for it in that child cycle:
 the child goes back to `ready-for-agent` and the next run starts it again.
 Otherwise the child goes to `human-review` with a handoff comment naming the
 unverified commit range `<base>..<head>`; inspect those commits, then close the
