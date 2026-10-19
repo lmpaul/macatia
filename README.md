@@ -54,6 +54,12 @@ catalog (`codex debug models`, with a free-text fallback); Claude Code has no
 model listing, so `init` offers its documented aliases (`fable`, `opus`,
 `sonnet`, `haiku`), which always follow the latest version. Without a terminal
 (agents, CI) it asks nothing and leaves placeholders that `ralph-kit check` reports.
+After the model profiles, `init` asks for a backup (see
+[Engine failures and the backup](#engine-failures-and-the-backup)) among the installed
+agent CLIs, plus "No backup". It recommends and preselects the other installed CLI,
+since an engine failure is rarely limited to one model, and preselects "No backup"
+when only one CLI is installed. A chosen backup gets the same model and reasoning
+effort questions, and must differ from the other profiles.
 `--config path/to/other.toml` selects another configuration. Ralph writes run
 diagnostics to `.ralph/`. Unless Git already ignores it, `init` appends `.ralph/` to the
 repository's `.gitignore` (creating the file if needed) and says so. Commit it with `ralph.toml`;
@@ -249,6 +255,11 @@ implementation evidence from either kind of run when its commits are on the bran
   sets it. `init` and `check` offer to create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
+- `models.backup` is optional: one more model profile, with the same keys, that
+  takes over every session role for the rest of a run after an engine failure.
+  It has one model and one reasoning effort for all roles. It may use the same
+  engine as the other profiles or another one, but it must differ from each of
+  them in engine, model, or reasoning effort.
 
 The loader rejects missing and unknown settings, duplicate TOML keys, duplicate
 authors, duplicate label values, unsafe repository paths, and unsupported mode
@@ -261,6 +272,16 @@ Omitting `engine` defaults to Codex, preserving existing configurations. Choose
 an engine separately for implementation, independent review, and corrections;
 a standard run uses only the implementation and correction profiles.
 Use a model name supported by the selected CLI and your account.
+
+For example, a backup on the other engine:
+
+```toml
+[models.backup]
+engine = "codex"
+name = "gpt-5.6-sol"
+display_name = "Sol"
+reasoning_effort = "medium"
+```
 
 For example, to implement and correct with Claude while retaining the existing
 Codex reviewer, change the implementation and correction profiles:
@@ -288,8 +309,39 @@ account availability are checked by the respective CLI at session start.
 Both kinds of run use `ralph_kit/agent.py` for engine-specific commands and result
 normalization. Codex writes the schema result to a file; Claude runs in print
 mode and returns it in `structured_output`. The same Ralph contract and Git
-checks apply to both. Claude error envelopes or missing structured results stop
-the run; session outputs remain in the run diagnostics with the engine and return code.
+checks apply to both. Session outputs remain in the run diagnostics with the
+engine and return code.
+
+### Engine failures and the backup
+
+An **engine failure** is a session that ends without a valid result, whatever
+the cause (quota, rate limit, expired login, outage, unknown model): a Claude
+Code error envelope, Claude Code output that is not valid JSON or has no
+structured result, a missing Codex result file, a result that breaks the Ralph
+contract, or a non-zero exit without a `committed` outcome. A non-zero exit with
+a valid `committed` result is accepted. Agent outcomes (`failed`, `blocked`,
+`needs_correction`, `no_changes`), rejected Git effects, and interruptions are
+not engine failures.
+
+Without `models.backup`, an engine failure stops the run safely. With one, Ralph
+drops the failed session's commits and uncommitted files, so they are never
+pushed, and replays the same session with the backup from the head the failed
+session started from. The backup then runs every later session of the run,
+whatever its role; the console announces the switch with the failed engine, its
+exit detail, and the backup, confirms it once the replay returns a result, and
+later session lines show the backup's engine and profile. The run diagnostics
+keep the failed session and record the switch in `run.json`. The run summary, in
+the terminal and on the parent issue and the cumulative draft PR, gains a line
+such as `- backup: Claude Code Opus - High took over after a Codex engine failure
+(review session, child #12)`, kept when the backup failed too, and has no such
+line without an engine failure. The failed session counts toward the run budget;
+when it was the last session the budget allowed, no switch happens: the console
+and the run summary report the engine failure alone, such as `- engine failure:
+Codex in the review session for child #12`, and the child goes to human review
+as for any exhausted run budget. A failed correction and its replay count as one
+correction. An engine failure of the backup stops the run, naming both failures;
+there is no second backup and no switch back. The next run starts on the regular
+profiles again.
 
 For Claude, Ralph invokes `/implement` directly and explicitly instructs the
 agent to read `AGENTS.md`. Repo skills are exposed through individual relative
@@ -454,7 +506,9 @@ and clean worktree, `.ralph/` ignored by Git (any ignore source counts; the chec
 never edits `.gitignore`), GitHub access/repository/trusted account/write permission/labels,
 the packaged result schema, the implement skill for each engine, the flags Ralph passes
 to each configured engine (listed in the engine's own help, so an update that drops one
-blocks before a run), and the enabled quality policy.
+blocks before a run), and the enabled quality policy. A configured backup's engine counts
+as a configured engine (CLI, implement skill, and flags), and its model name is checked
+for placeholders like the others.
 It inspects local gate commands and CI check names without executing them.
 Disabled verification may keep placeholder entries; when both are disabled the
 quality policy is not loaded.

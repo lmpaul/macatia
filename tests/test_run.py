@@ -1314,6 +1314,86 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
 
         self.assert_rejected_at_startup(result, "configuration.models is missing keys: review")
 
+    def add_backup(self, profile):
+        self.repository.edit_configuration("\n[verification]", f"\n[models.backup]\n{profile}\n\n[verification]")
+
+    def test_valid_backup_on_the_same_or_another_engine_is_accepted(self):
+        for profile in (
+            'engine = "codex"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"',
+            # The regular profiles' model at another effort is not identical.
+            'engine = "codex"\nname = "gpt-5.6-terra"\ndisplay_name = "Terra"\nreasoning_effort = "low"',
+            'engine = "claude"\nname = "opus"\ndisplay_name = "Opus"\nreasoning_effort = "medium"',
+        ):
+            with self.subTest(profile=profile):
+                self.setUp()
+                self.add_backup(profile)
+
+                result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+                self.assert_completed(result, sessions=1)
+                self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_invalid_backup_is_rejected_before_any_session(self):
+        for profile, reason in (
+            (
+                'engine = "codex"\nname = "gpt-5.6-luna"\nreasoning_effort = "medium"',
+                "configuration.models.backup is missing keys: display_name",
+            ),
+            (
+                'engine = "codex"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"\nroles = "all"',
+                "configuration.models.backup has unknown keys: roles",
+            ),
+            (
+                'engine = "unknown"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"',
+                "configuration.models.backup.engine must be codex or claude",
+            ),
+            (
+                'engine = "claude"\nname = "opus"\ndisplay_name = "Opus"\nreasoning_effort = "minimal"',
+                "configuration.models.backup.reasoning_effort must be one of",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.add_backup(profile)
+
+                result = self.start(loop.MODE)
+
+                self.assert_rejected_at_startup(result, reason)
+
+    def test_backup_identical_to_a_regular_profile_is_rejected_before_any_session(self):
+        for role, profile in (
+            ("implementation", 'engine = "codex"\nname = "gpt-5.6-terra"\ndisplay_name = "Other name"\nreasoning_effort = "medium"'),
+            # Omitting the engine means codex, as for the other profiles.
+            ("implementation", 'name = "gpt-5.6-terra"\ndisplay_name = "Terra"\nreasoning_effort = "medium"'),
+            ("review", 'engine = "codex"\nname = "gpt-5.6-sol"\ndisplay_name = "Sol"\nreasoning_effort = "high"'),
+        ):
+            with self.subTest(role=role, profile=profile):
+                self.setUp()
+                self.add_backup(profile)
+
+                result = self.start(loop.MODE)
+
+                self.assert_rejected_at_startup(
+                    result,
+                    f"configuration.models.backup must differ from configuration.models.{role} "
+                    "in engine, model, or reasoning effort",
+                )
+
+    def test_backup_identical_to_the_correction_profile_is_rejected_before_any_session(self):
+        self.repository.edit_configuration(
+            '[models.correction]\nengine = "codex"\nname = "gpt-5.6-terra"',
+            '[models.correction]\nengine = "codex"\nname = "gpt-5.6-luna"',
+        )
+        self.add_backup('engine = "codex"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"')
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(
+            result,
+            "configuration.models.backup must differ from configuration.models.correction "
+            "in engine, model, or reasoning effort",
+        )
+
 
 class ConfiguredTrustTests(RunLevelTestCase):
     def test_repository_trusted_authors_remote_and_labels_come_from_the_configuration(self):
@@ -2261,9 +2341,13 @@ class StopSummaryTests(VerificationTestCase):
 class AgentSessionTestCase(VerificationTestCase):
     """Ralph's real session handling, with scripted engine processes in place of the CLIs."""
 
-    def start_engine(self, mode, *results):
+    def start_engine(self, mode, *results, budget=None, confirm=None):
         self.engine = ScriptedEngine(self.repository, *results)
-        return start_run(mode, self.repository, self.github, self.engine, PARENT)
+        budget_argument = () if budget is None else (budget,)
+        return start_run(
+            mode, self.repository, self.github, self.engine, PARENT, *budget_argument,
+            confirm=confirm,
+        )
 
     def session_file(self, index, name):
         return (self.repository.session_directories()[index] / name).read_text()
@@ -2594,6 +2678,341 @@ class EngineSelectionTests(AgentSessionTestCase):
 
         self.assert_implemented(result)
         self.assertEqual(self.engine.engines(), ["codex", "codex"])
+
+
+BACKUP_PROFILE = 'engine = "claude"\nname = "opus"\ndisplay_name = "Opus"\nreasoning_effort = "high"'
+FAILED_ENGINE_STDERR = "Error: You have hit your usage limit.\n"
+# One session of each engine failure kind, with the engines of the regular profiles it runs on.
+ENGINE_FAILURES = (
+    ("Claude Code error envelope", {"implementation": "claude"},
+     EngineResult(is_error=True, commit=False)),
+    ("Claude Code invalid JSON", {"implementation": "claude"},
+     EngineResult(stdout="Not JSON output", commit=False)),
+    ("Claude Code without a structured result", {"implementation": "claude"},
+     EngineResult(writes_result=False, commit=False)),
+    ("Codex without a result file", {}, EngineResult(writes_result=False, commit=False)),
+    ("result breaking the Ralph contract", {},
+     EngineResult(structured={"outcome": "committed", "summary": "Done"})),
+    ("non-zero exit without a committed outcome", {},
+     EngineResult("blocked", "Usage limit.", returncode=1, stderr=FAILED_ENGINE_STDERR)),
+)
+
+
+class BackupTakeoverTests(AgentSessionTestCase):
+    """A configured backup replays a session that ended in an engine failure and runs the rest of the run."""
+
+    def new_child_run(self, *, backup=True, **options):
+        super().new_child_run(**options)
+        if backup:
+            self.repository.edit_configuration(
+                "\n[verification]", f"\n[models.backup]\n{BACKUP_PROFILE}\n\n[verification]"
+            )
+        self.start_head = self.repository.head()
+
+    def assert_backup_call(self, call):
+        self.assertEqual(call.engine, "claude")
+        self.assertEqual((call.option("--model"), call.option("--effort")), ("opus", "high"))
+
+    def published_summaries(self, result, stream="stdout"):
+        """The run summary on the parent, on the cumulative draft PR when there is one, and in the terminal."""
+        marker = "🏁 Ralph summary"
+        summaries = [
+            next(comment for comment in reversed(self.github.comments(PARENT)) if marker in comment),
+            getattr(result, stream),
+        ]
+        pull = self.github.pull_request()
+        if pull is not None:
+            summaries.append(pull.comments[-1])
+        return summaries
+
+    def assert_backup_line(self, result, line, stream="stdout"):
+        for summary in self.published_summaries(result, stream):
+            self.assertIn(f"\n{line}\n", summary)
+
+    def test_each_engine_failure_kind_is_replayed_by_the_backup_and_the_run_continues(self):
+        for name, engines, failure in ENGINE_FAILURES:
+            with self.subTest(name):
+                self.new_child_run(engines=engines)
+
+                result = self.start_engine(loop.MODE, failure, EngineResult("committed"))
+
+                self.assert_implemented(result)
+                failed, replay = self.engine.calls
+                self.assertEqual(failed.engine, engines.get("implementation", "codex"))
+                self.assert_backup_call(replay)
+                # The same request: Claude Code only spells the implement skill differently.
+                self.assertEqual(replay.prompt, failed.prompt.replace("$implement ", "/implement ", 1))
+                self.assertIn("- agent sessions: 2\n", result.stdout)
+
+    def test_replay_starts_from_the_head_the_failed_session_started_from(self):
+        result = self.start_engine(
+            loop.MODE,
+            EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
+            EngineResult("committed"),
+        )
+
+        self.assert_implemented(result)
+        (commit,) = self.repository.commits_since(self.start_head)
+        self.assertEqual(git(self.repository.path, "log", "-1", "--format=%s", commit), "claude session 2")
+        self.assertFalse((self.repository.path / "codex-session-1.txt").exists())
+        self.assertFalse((self.repository.path / "uncommitted-agent-output.txt").exists())
+        self.assertTrue(self.repository.is_clean())
+        self.assertEqual(self.repository.pushed_head(), self.repository.head())
+        self.assertNotIn(
+            "codex session 1", git(self.repository.origin, "log", "--all", "--format=%s")
+        )
+
+    def test_backup_runs_every_later_session_of_the_run(self):
+        self.new_child_run(local_gate_results=("fail", "pass"), ci=("failure", "success"))
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+        finding = ("Handle empty carts.",)
+
+        result = self.start_engine(
+            loop_review.MODE,
+            EngineResult(writes_result=False, commit=False),
+            EngineResult("committed"),
+            EngineResult("committed"),
+            EngineResult("needs_correction", findings=finding),
+            EngineResult("committed"),
+            EngineResult("no_changes"),
+            EngineResult("committed"),
+            EngineResult("no_changes"),
+            EngineResult("committed"),
+            EngineResult("no_changes"),
+            budget=10,
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertEqual(self.github.labels(DEPENDENT), {"implemented"})
+        self.assertEqual(self.engine.calls[0].engine, "codex")
+        for call in self.engine.calls[1:]:
+            self.assert_backup_call(call)
+        roles = [record["role"] for record in self.repository.session_records()]
+        self.assertEqual(roles, [
+            "implementation", "implementation", "local gate correction", "review",
+            "issue correction", "review", "CI correction", "review", "implementation", "review",
+        ])
+        for kind in ("implementation", "local gate correction", "review", "issue correction", "CI correction"):
+            self.assertIn(
+                f"🤖 Starting Claude Code {kind} session (Opus - High) for child #{CHILD}.",
+                result.stdout,
+            )
+        self.assertIn(
+            f"🤖 Starting Claude Code implementation session (Opus - High) for child #{DEPENDENT}.",
+            result.stdout,
+        )
+
+    def test_failed_review_session_is_replayed_by_the_backup(self):
+        result = self.start_engine(
+            loop_review.MODE,
+            EngineResult("committed"),
+            EngineResult(writes_result=False, commit=False),
+            EngineResult("no_changes"),
+        )
+
+        self.assert_implemented(result)
+        self.assertEqual(self.engine.engines(), ["codex", "codex", "claude"])
+        self.assert_backup_call(self.engine.calls[2])
+        self.assertEqual(self.engine.calls[2].prompt, self.engine.calls[1].prompt)
+        self.assertIn(
+            f"⚠️ Codex engine failure in the review session for child #{CHILD}", result.stdout
+        )
+
+    def test_run_summary_reports_the_backup_takeover(self):
+        result = self.start_engine(
+            loop_review.MODE,
+            EngineResult("committed"),
+            EngineResult(writes_result=False, commit=False),
+            EngineResult("no_changes"),
+        )
+
+        self.assert_implemented(result)
+        self.assertIn("🏁 Ralph summary", self.github.pull_request().comments[-1])
+        self.assert_backup_line(
+            result,
+            f"- backup: Claude Code Opus - High took over after a Codex engine failure "
+            f"(review session, child #{CHILD})",
+        )
+
+    def test_run_summary_without_a_switch_has_no_backup_line(self):
+        for backup in (True, False):
+            with self.subTest(backup=backup):
+                self.new_child_run(backup=backup)
+
+                result = self.start_engine(loop.MODE, EngineResult("committed"))
+
+                self.assert_implemented(result)
+                for summary in self.published_summaries(result):
+                    self.assertIn("- infrastructure retries: 0\n- total duration: ", summary)
+                    self.assertNotIn("- backup:", summary)
+
+    def test_switch_is_announced_and_recorded_in_the_run_diagnostics(self):
+        result = self.start_engine(
+            loop.MODE,
+            EngineResult("blocked", "Usage limit.", returncode=1, stderr=FAILED_ENGINE_STDERR),
+            EngineResult("committed"),
+        )
+
+        self.assert_implemented(result)
+        self.assertIn(
+            f"⚠️ Codex engine failure in the implementation session for child #{CHILD}: "
+            "implementation exited non-zero without a committed outcome "
+            "(Codex exited with code 1: Error: You have hit your usage limit.). "
+            "Switching to the backup, Claude Code (Opus - High).\n",
+            result.stdout,
+        )
+        self.assertIn(
+            "✅ The backup took over and runs every session for the rest of the run.\n", result.stdout
+        )
+        failed, replay = self.repository.session_records()
+        self.assertEqual((failed["engine"], failed["returncode"]), ("codex", 1))
+        self.assertIn("Rejected: implementation exited non-zero", self.session_file(0, "validation.txt"))
+        self.assertEqual(replay["engine"], "claude")
+        run_record = json.loads((self.repository.diagnostics() / "run.json").read_text())
+        self.assertEqual(run_record["backup_switch"], {
+            "failed_engine": "codex",
+            "role": "implementation",
+            "child": CHILD,
+            "failure": "implementation exited non-zero without a committed outcome "
+                       "(Codex exited with code 1: Error: You have hit your usage limit.)",
+            "backup": {
+                "engine": "claude", "model": "opus", "display_name": "Opus", "reasoning_effort": "high",
+            },
+        })
+
+    def test_engine_failure_of_the_backup_stops_the_run_naming_both_failures(self):
+        result = self.start_engine(
+            loop.MODE,
+            EngineResult(writes_result=False, commit=False),
+            EngineResult(is_error=True, commit=False),
+        )
+
+        self.assert_stopped_without_publishing(
+            result,
+            "engine failure of the backup (Claude Code): Claude Code reported an error; inspect "
+            "retained session output; after the Codex engine failure: agent did not return valid "
+            "structured output",
+        )
+        self.assertEqual(self.engine.engines(), ["codex", "claude"])
+        self.assertNotIn("✅ The backup took over", result.stdout)
+        self.assert_backup_line(
+            result,
+            f"- backup: Claude Code Opus - High took over after a Codex engine failure "
+            f"(implementation session, child #{CHILD})",
+            stream="stderr",
+        )
+
+    def test_new_run_resuming_an_agent_working_child_starts_on_the_regular_profiles(self):
+        self.start_engine(
+            loop.MODE,
+            EngineResult(writes_result=False, commit=False),
+            EngineResult(writes_result=False, commit=False),
+        )
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
+
+        result = self.start_engine(
+            loop.MODE, EngineResult("committed"), confirm=lambda question: True
+        )
+
+        self.assert_implemented(result)
+        self.assertEqual(self.engine.engines(), ["codex"])
+        self.assertEqual(self.engine.calls[0].option("--model"), "gpt-5.6-terra")
+
+    def test_agent_outcomes_git_effect_rejections_and_interruptions_never_start_the_backup(self):
+        for name, results, expected_exit in (
+            ("failed", [EngineResult("failed", "The build tool crashed.")], 1),
+            ("blocked", [EngineResult("blocked", "Needs a decision.")], 1),
+            ("no_changes", [EngineResult("no_changes")], 0),
+            ("needs_correction", [
+                EngineResult("needs_correction", findings=("Handle empty carts.",)),
+                EngineResult("committed"),
+            ], 0),
+            ("Git effect rejection", [EngineResult("committed", commit=False)], 1),
+            ("Ctrl-C", [KeyboardInterrupt()], 130),
+            ("SIGTERM", [loop_core.Interrupted(signal.SIGTERM)], 143),
+        ):
+            with self.subTest(name):
+                self.new_child_run()
+
+                result = self.start_engine(loop.MODE, *results)
+
+                self.assertEqual(result.exit_code, expected_exit, result.stderr)
+                self.assertEqual(self.engine.engines(), ["codex"] * len(results))
+                self.assertNotIn("backup", result.stdout)
+
+    def test_nonzero_exit_with_a_valid_committed_result_is_accepted_without_switching(self):
+        result = self.start_engine(loop.MODE, EngineResult("committed", returncode=1))
+
+        self.assert_implemented(result)
+        self.assertEqual(self.engine.engines(), ["codex"])
+        self.assertNotIn("backup", result.stdout)
+
+    def test_failed_session_counts_toward_the_run_budget(self):
+        self.new_child_run()
+
+        result = self.start_engine(
+            loop_review.MODE,
+            EngineResult(writes_result=False, commit=False),
+            EngineResult("committed"),
+            budget=2,
+        )
+
+        self.assert_handed_to_human_review(
+            result,
+            "run budget exhausted before review",
+            "run budget of 2 agent sessions was exhausted after 2 sessions",
+        )
+        self.assertEqual(self.engine.engines(), ["codex", "claude"])
+
+    def test_engine_failure_on_the_last_budgeted_session_exhausts_the_run_budget_instead_of_replaying(self):
+        result = self.start_engine(
+            loop.MODE,
+            EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
+            budget=1,
+        )
+
+        self.assert_handed_to_human_review(
+            result,
+            "run budget exhausted before implementation",
+            "Ralph stopped before implementation because the run budget of 1 agent sessions "
+            "was exhausted after 1 sessions.",
+            "implementation exited non-zero without a committed outcome",
+        )
+        self.assertEqual(self.engine.engines(), ["codex"])
+        self.assertNotIn("backup", result.stdout)
+        self.assertEqual(self.repository.head(), self.start_head)
+        self.assertTrue(self.repository.is_clean())
+        self.assertIn(
+            f"⚠️ Codex engine failure in the implementation session for child #{CHILD}: "
+            "implementation exited non-zero without a committed outcome",
+            result.stdout,
+        )
+        self.assert_backup_line(
+            result,
+            f"- engine failure: Codex in the implementation session for child #{CHILD}",
+            stream="stderr",
+        )
+        for summary in self.published_summaries(result, stream="stderr"):
+            self.assertNotIn("backup", summary)
+        run_record = json.loads((self.repository.diagnostics() / "run.json").read_text())
+        self.assertNotIn("backup_switch", run_record)
+
+    def test_failed_correction_and_its_replay_count_as_one_correction(self):
+        self.new_child_run(local_gate_results=("fail", "fail", "fail", "pass"))
+
+        result = self.start_engine(
+            loop.MODE,
+            EngineResult("committed"),
+            EngineResult(writes_result=False, commit=False),
+            EngineResult("committed"),
+            EngineResult("committed"),
+            EngineResult("committed"),
+        )
+
+        self.assert_implemented(result)
+        self.assertEqual(self.engine.engines(), ["codex", "codex", "claude", "claude", "claude"])
+        self.assertIn("Repair the failing local gate", self.engine.calls[2].prompt)
 
 
 if __name__ == "__main__":

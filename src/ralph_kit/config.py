@@ -19,7 +19,10 @@ LABEL_KEYS = {
     "human_review",
     "implemented",
 }
-MODEL_KEYS = {"implementation", "review", "correction"}
+MODEL_ROLES = ("implementation", "review", "correction")
+MODEL_KEYS = set(MODEL_ROLES)
+# The optional profile that takes over every session role after an engine failure.
+BACKUP_MODEL_KEY = "backup"
 REASONING_EFFORTS = {
     "none",
     "minimal",
@@ -77,6 +80,8 @@ class RalphConfig:
     labels: dict[str, str]
     models: dict[str, AgentProfile]
     verification: VerificationConfig
+    # Not one of `models`, which holds a profile per session role.
+    backup: AgentProfile | None = None
 
     @property
     def triage_labels(self) -> frozenset[str]:
@@ -214,12 +219,32 @@ def load_config(
 
     required_models = MODEL_KEYS if require_review else MODEL_KEYS - {"review"}
     model_values = _mapping(
-        values["models"], "configuration.models", required_models, MODEL_KEYS - required_models
+        values["models"],
+        "configuration.models",
+        required_models,
+        (MODEL_KEYS - required_models) | {BACKUP_MODEL_KEY},
     )
     models = {
         key: _profile(model_values[key], f"configuration.models.{key}")
         for key in model_values
+        if key != BACKUP_MODEL_KEY
     }
+    backup = None
+    if BACKUP_MODEL_KEY in model_values:
+        backup = _profile(
+            model_values[BACKUP_MODEL_KEY], f"configuration.models.{BACKUP_MODEL_KEY}"
+        )
+        for key in MODEL_ROLES:
+            profile = models.get(key)
+            if profile and (profile.engine, profile.name, profile.reasoning_effort) == (
+                backup.engine,
+                backup.name,
+                backup.reasoning_effort,
+            ):
+                raise RalphConfigError(
+                    f"configuration.models.{BACKUP_MODEL_KEY} must differ from "
+                    f"configuration.models.{key} in engine, model, or reasoning effort"
+                )
 
     verification_values = _mapping(
         values["verification"],
@@ -237,6 +262,7 @@ def load_config(
         trusted_authors=trusted_authors,
         labels=labels,
         models=models,
+        backup=backup,
         verification=VerificationConfig(
             local_checks=verification_values["local_checks"],
             ci_checks=verification_values["ci_checks"],

@@ -75,9 +75,9 @@ class InitTests(unittest.TestCase):
         return path.read_bytes().decode() if path.exists() else None
 
     def test_detected_values_are_not_asked(self):
-        # Only the engine, two models and two efforts are asked; Enter keeps every default.
-        config = self.run_init(answers=[""] * 5)
-        self.assertEqual(len(self.prompts), 5)
+        # Only the engine, two models, two efforts and the backup are asked; Enter keeps every default.
+        config = self.run_init(answers=[""] * 8)
+        self.assertEqual(len(self.prompts), 8)
         self.assertEqual(config.repository, "acme/widget")
         self.assertEqual(config.base_branch, "trunk")
         self.assertEqual(config.remote, "origin")
@@ -102,6 +102,7 @@ class InitTests(unittest.TestCase):
             "alice, bob, alice",          # trusted authors, deduplicated
             "", "high",                   # implementation: first listed model, then effort
             "3", "custom-review", "",     # review: "other", free name, default effort
+            "",                           # backup: default "No backup"
         ])
         self.assertEqual(config.repository, "acme/widget")
         self.assertIn("expected format", self.output.getvalue())
@@ -115,7 +116,7 @@ class InitTests(unittest.TestCase):
 
     def test_only_installed_engines_are_offered(self):
         self.installed = {"claude"}
-        self.run_init(answers=[""] * 4)
+        self.run_init(answers=[""] * 5)
         self.assertIn("Claude Code (only CLI installed)", self.output.getvalue())
         self.assertNotIn("codex", self.output.getvalue())
 
@@ -137,9 +138,81 @@ class InitTests(unittest.TestCase):
         config = load_config(path, self.root)
         self.assertEqual(asked[0], ("Agent engine", ["claude", "codex"], "claude"))
         self.assertEqual(asked[1][1], ["fable", "opus", "sonnet", "haiku", init.OTHER])
-        self.assertEqual(len(asked), 5)
+        self.assertEqual(len(asked), 8)
         self.assertEqual(config.models["implementation"].reasoning_effort, "max")
         self.assertNotIn("Choice [", self.output.getvalue())
+
+    def select_backup(self, engine):
+        """Run init with an arrow selector choosing the regular engine and every other default."""
+        asked = []
+
+        def select(question, options, default):
+            asked.append((question, options, default))
+            return engine if question == "Agent engine" else default
+
+        prompter = init.Prompter(interactive=True, read=lambda prompt: "", output=self.output, select=select)
+        path = init.run(self.root, prompter, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
+        return load_config(path, self.root), asked
+
+    def test_backup_recommends_the_other_installed_engine(self):
+        for engine, other, model in (("claude", "codex", "codex-large"), ("codex", "claude", "opus")):
+            with self.subTest(engine=engine):
+                config, asked = self.select_backup(engine)
+                questions = [question for question, _, _ in asked]
+                # Asked after the regular model profiles, then the backup's own model and effort.
+                self.assertTrue(questions[5].startswith("Backup"))
+                _, options, default = asked[5]
+                self.assertEqual([value for value, _ in options], [other, engine, init.NO_BACKUP])
+                self.assertIn("recommended", options[0][1])
+                self.assertNotIn("recommended", options[1][1])
+                self.assertEqual(default, other)
+                self.assertEqual(questions[6], "Model for the backup")
+                self.assertEqual(questions[7], f"Reasoning effort for {model}")
+                self.assertEqual(
+                    (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
+                    (other, model, "medium"),
+                )
+                self.assertIn("[models.backup]", (self.root / "ralph.toml").read_text())
+                (self.root / "ralph.toml").unlink()
+
+    def test_single_engine_defaults_to_no_backup(self):
+        self.installed = {"claude"}
+        config = self.run_init(answers=[""] * 5)
+        self.assertIsNone(config.backup)
+        self.assertNotIn("[models.backup]", (self.root / "ralph.toml").read_text())
+        output = self.output.getvalue()
+        self.assertIn("? Backup", output)
+        backup_options = output.split("? Backup", 1)[1]
+        self.assertIn("1) claude", backup_options)
+        self.assertIn(f"2) {init.NO_BACKUP}", backup_options)
+        self.assertNotIn("codex", backup_options)
+        self.assertEqual(self.prompts[-1], "Choice [2]: ")
+
+    def test_backup_on_the_same_engine_must_differ_from_the_regular_profiles(self):
+        self.installed = {"claude"}
+        config = self.run_init(answers=[
+            "", "", "", "",  # implementation sonnet/medium, review opus/high
+            "1",             # backup: claude
+            "3", "2",        # sonnet/medium, identical to implementation: asked again
+            "1", "2", "",    # claude, opus/medium
+        ])
+        self.assertIn("must differ from the implementation model profile", self.output.getvalue())
+        self.assertEqual(
+            (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
+            ("claude", "opus", "medium"),
+        )
+
+    def test_a_clashing_backup_can_still_be_dropped(self):
+        # Codex defaults to the same first model and effort for the backup as for implementation.
+        self.installed = {"codex"}
+        config = self.run_init(answers=["", "", "", "", "1", "", "", ""])
+        self.assertIn("must differ from the implementation model profile", self.output.getvalue())
+        self.assertIsNone(config.backup)
+
+    def test_no_backup_with_both_engines_writes_no_section(self):
+        config = self.run_init(answers=[""] * 5 + ["3"])
+        self.assertIsNone(config.backup)
+        self.assertNotIn("[models.backup]", (self.root / "ralph.toml").read_text())
 
     def test_missing_labels_are_offered_and_created_after_writing(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[{"name": "needs-triage"}]])
@@ -153,7 +226,7 @@ class InitTests(unittest.TestCase):
             return self.responses.get(args)
 
         self.command = command
-        self.run_init(answers=[""] * 6)  # Enter keeps "Yes".
+        self.run_init(answers=[""] * 9)  # Enter keeps "Yes".
         self.assertEqual(self.prompts[-1], "Choice [1]: ")
         self.assertEqual(created, [label for label in init.LABELS.values() if label != "needs-triage"])
         self.assertIn("✓ Label implemented created", self.output.getvalue())
@@ -166,7 +239,7 @@ class InitTests(unittest.TestCase):
 
     def test_labels_are_kept_for_later(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[]])
-        self.run_init(answers=[""] * 5 + ["2"])
+        self.run_init(answers=[""] * 8 + ["2"])
         self.assertNotIn("created", self.output.getvalue())
         # Without a terminal, missing labels are only reported.
         self.run_init(force=True)
@@ -201,7 +274,7 @@ class InitTests(unittest.TestCase):
 
     def test_codex_catalog_drives_models_and_efforts(self):
         self.installed = {"codex"}
-        config = self.run_init(answers=["", "", "2", ""])
+        config = self.run_init(answers=["", "", "2", "", ""])
         output = self.output.getvalue()
         self.assertNotIn("codex-hidden", output)
         self.assertLess(output.index("codex-large"), output.index("codex-small"))
@@ -215,7 +288,7 @@ class InitTests(unittest.TestCase):
     def test_unavailable_codex_catalog_falls_back_to_free_text(self):
         self.installed = {"codex"}
         del self.responses[("codex", "debug", "models")]
-        config = self.run_init(answers=["my-model", "", "my-reviewer", ""])
+        config = self.run_init(answers=["my-model", "", "my-reviewer", "", ""])
         self.assertIn("Codex model list unavailable", self.output.getvalue())
         self.assertEqual(config.models["implementation"].name, "my-model")
         self.assertEqual(config.models["review"].name, "my-reviewer")
@@ -227,13 +300,17 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.prompts, [])
         self.assertTrue(check.placeholder([config.repository, config.trusted_authors]))
         self.assertTrue(check.placeholder(config.models["implementation"].name))
+        # The preselected backup on the other engine also waits for its model.
+        self.assertEqual(config.backup.engine, "codex")
+        self.assertTrue(check.placeholder(config.backup.name))
         self.assertIn("Values to fill in", self.output.getvalue())
+        self.assertIn("CHOOSE_MODEL_FOR_BACKUP", self.output.getvalue())
 
     def test_quality_policy_enables_checks(self):
         (self.root / ".github/scripts").mkdir(parents=True)
         (self.root / init.QUALITY_MODULE).write_text("")
         (self.root / init.QUALITY_MANIFEST).write_text("{}")
-        config = self.run_init(answers=[""] * 5)
+        config = self.run_init(answers=[""] * 8)
         self.assertTrue(config.verification.local_checks and config.verification.ci_checks)
 
     def test_existing_config_is_kept_before_any_question(self):
@@ -242,7 +319,7 @@ class InitTests(unittest.TestCase):
             self.run_init(answers=[])
         self.assertEqual(self.prompts, [])
         self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
-        self.run_init(answers=[""] * 5, force=True)
+        self.run_init(answers=[""] * 8, force=True)
 
     def test_must_run_from_repository_root(self):
         self.responses[("git", "rev-parse", "--show-toplevel")] = str(self.root.parent)
@@ -251,7 +328,7 @@ class InitTests(unittest.TestCase):
         self.assertFalse((self.root / "ralph.toml").exists())
 
     def test_missing_gitignore_is_created_with_the_diagnostics_entry(self):
-        self.run_init(answers=[""] * 5)
+        self.run_init(answers=[""] * 8)
         self.assertEqual(self.gitignore(), ".ralph/\n")
         self.assertIn("Next step: commit ralph.toml and .gitignore, then run `ralph-kit check`.", self.output.getvalue())
 
@@ -263,7 +340,7 @@ class InitTests(unittest.TestCase):
         ):
             with self.subTest(existing=existing):
                 (self.root / ".gitignore").write_bytes(existing.encode())
-                self.run_init(answers=[""] * 5, force=True)
+                self.run_init(answers=[""] * 8, force=True)
                 self.assertEqual(self.gitignore(), expected)
                 self.assertIn("Added .ralph/ to .gitignore", self.output.getvalue())
 
@@ -278,7 +355,7 @@ class InitTests(unittest.TestCase):
                 (self.root / ".gitignore").unlink(missing_ok=True)
                 (self.root / ".git/info/exclude").write_text("")
                 (self.root / path).write_text(rules)
-                self.run_init(answers=[""] * 5, force=True)
+                self.run_init(answers=[""] * 8, force=True)
                 self.assertEqual(self.gitignore(), rules if path == ".gitignore" else None)
                 self.assertNotIn("Added .ralph/", self.output.getvalue())
                 self.assertIn("Next step: commit ralph.toml, then run", self.output.getvalue())

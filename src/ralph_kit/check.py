@@ -337,7 +337,8 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
     try:
         config = load_config(config_path, root, require_review=with_review)
         roles = ("implementation", "correction", "review") if with_review else ("implementation", "correction")
-        require(not placeholder([config.repository, config.trusted_authors, [config.models[role].name for role in roles]]), "repository, authors or models still have placeholders")
+        profiles = [config.models[role] for role in roles] + ([config.backup] if config.backup else [])
+        require(not placeholder([config.repository, config.trusted_authors, [profile.name for profile in profiles]]), "repository, authors or models still have placeholders")
     except MissingConfigError:
         report.add("fail", config_path.name, "not found: this repository is not set up yet", "ralph-kit init")
         render(console, report)
@@ -349,7 +350,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
     report.add("ok", config_path.name, "values filled in")
 
     report.section("Tools")
-    engines = {config.models[role].engine for role in roles}
+    engines = {profile.engine for profile in profiles}
     available = set()
     def read_version(executable):
         try:
