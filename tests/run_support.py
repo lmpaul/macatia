@@ -634,7 +634,9 @@ class ScriptedEngine:
 
     Each engine command is answered with the next scripted result: the engine
     commits for real, then writes its result the way that CLI does (Codex to
-    its result file, Claude Code in a JSON envelope on stdout).
+    its result file, Claude Code in a JSON envelope on stdout). A scripted
+    `BaseException`, such as `KeyboardInterrupt`, is raised by its command
+    instead, as an interrupted engine process would.
     """
 
     def __init__(self, repository, *results):
@@ -652,6 +654,8 @@ class ScriptedEngine:
             raise AssertionError(f"unscripted {call.engine} session: {call.prompt[:80]!r}")
         session = self.script.pop(0)
         self.calls.append(call)
+        if isinstance(session, BaseException):
+            raise session
         path = self.repository.path
         commit = session.commit if session.commit is not None else session.outcome == "committed"
         if commit:

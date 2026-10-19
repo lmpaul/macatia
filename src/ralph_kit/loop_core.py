@@ -35,6 +35,7 @@ from .child_cycle import (
     HandedToHumanReview,
     HandoffCause,
     RunBudget,
+    RunBudgetExhausted,
     SessionRequest,
     SessionResult,
     run_child_cycle,
@@ -111,6 +112,9 @@ def configured_label(state: RunState, role: str) -> str:
 
 
 def agent_profile(state: RunState, role: str) -> AgentProfile:
+    if state.backup_switch is not None:
+        assert state.config.backup is not None
+        return state.config.backup
     profile = {
         "implementation": "implementation",
         "review": "review",
@@ -119,6 +123,14 @@ def agent_profile(state: RunState, role: str) -> AgentProfile:
         "CI correction": "correction",
     }[role]
     return state.config.models[profile]
+
+
+def engine_label(engine: str) -> str:
+    return "Claude Code" if engine == "claude" else "Codex"
+
+
+def profile_label(profile: AgentProfile) -> str:
+    return f"{profile.display_name} - {profile.reasoning_effort.title()}"
 
 
 def utc_timestamp() -> str:
@@ -146,10 +158,10 @@ class DiagnosticRecorder:
         self.child_bases: dict[int, str] = {}
         self.latest_sessions: dict[int, tuple[pathlib.Path, str]] = {}
         self.phases: list[dict[str, Any]] = []
-        self._write_json(
-            self.directory / "run.json",
-            {"run_id": self.run_id, "started_at": utc_timestamp(), "loop": loop_label},
-        )
+        self.run_record: dict[str, Any] = {
+            "run_id": self.run_id, "started_at": utc_timestamp(), "loop": loop_label,
+        }
+        self._write_json(self.directory / "run.json", self.run_record)
 
     @staticmethod
     def _write_json(path: pathlib.Path, value: dict[str, Any]) -> None:
@@ -221,6 +233,23 @@ class DiagnosticRecorder:
                 )
         record["finished_at"] = utc_timestamp()
         self._write_json(directory / "record.json", record)
+
+    def record_backup_switch(
+        self, failure: EngineFailure, role: str, child: int, backup: AgentProfile
+    ) -> None:
+        self.run_record["backup_switch"] = {
+            "failed_engine": failure.engine,
+            "role": role,
+            "child": child,
+            "failure": str(failure),
+            "backup": {
+                "engine": backup.engine,
+                "model": backup.name,
+                "display_name": backup.display_name,
+                "reasoning_effort": backup.reasoning_effort,
+            },
+        }
+        self._write_json(self.directory / "run.json", self.run_record)
 
     def record_phase(
         self,
@@ -343,6 +372,9 @@ class RunState:
     working_child: tuple[int, str] | None = None
     # The child base of each child this run started a child cycle for.
     child_bases: dict[int, ChildBase] = field(default_factory=dict)
+    # The engine failure after which the backup runs every session; None while
+    # the regular profiles do.
+    backup_switch: EngineFailure | None = None
 
     @property
     def config(self) -> RalphConfig:
@@ -723,6 +755,16 @@ def release_interrupted_child(state: RunState, interruption: Interrupted) -> Non
         )
         interruption.unverified = UnverifiedCommits(child_number, commits)
     state.working_child = None
+
+
+class EngineFailure(RalphError):
+    """An agent session that ended without a valid result, whatever the cause."""
+
+    def __init__(self, reason: str, engine: str, completed: subprocess.CompletedProcess[str]):
+        super().__init__(reason + agent_exit_detail(engine_label(engine), completed))
+        self.engine = engine
+        self.reason = reason
+        self.exit = engine_exit(engine_label(engine), completed)
 
 
 class NoRunnableChild(RalphError):
@@ -1546,15 +1588,22 @@ def diff_stats(state: RunState, before_head: str, after_head: str) -> str:
     return f"files changed: {files}; +{insertions}/-{deletions}"
 
 
+def engine_exit(engine_label: str, completed: subprocess.CompletedProcess[str]) -> str:
+    """How the CLI exited, with its own error when it exited non-zero."""
+    if completed.returncode == 0:
+        return f"{engine_label} exited with code 0"
+    lines = [line for line in sanitized_text(completed.stderr or "").splitlines() if line.strip()]
+    reason = lines[-1].strip()[:300] if lines else "no stderr output"
+    return f"{engine_label} exited with code {completed.returncode}: {reason}"
+
+
 def agent_exit_detail(
     engine_label: str, completed: subprocess.CompletedProcess[str]
 ) -> str:
     """Surface the CLI's own error when it exits before producing a result."""
     if completed.returncode == 0:
         return ""
-    lines = [line for line in sanitized_text(completed.stderr or "").splitlines() if line.strip()]
-    reason = lines[-1].strip()[:300] if lines else "no stderr output"
-    return f" ({engine_label} exited with code {completed.returncode}: {reason})"
+    return f" ({engine_exit(engine_label, completed)})"
 
 
 def run_agent(
@@ -1572,8 +1621,8 @@ def run_agent(
         "CI correction": "CI correction",
     }[role]
     profile = agent_profile(state, role)
-    engine_label = "Claude Code" if profile.engine == "claude" else "Codex"
-    session_label = f"{profile.display_name} - {profile.reasoning_effort.title()}"
+    label = engine_label(profile.engine)
+    session_label = profile_label(profile)
     session_directory, record = state.diagnostics.start_session(
         role, issue_number, before_head
     )
@@ -1591,7 +1640,7 @@ def run_agent(
         output_path = pathlib.Path(temporary_directory) / "result.json"
         try:
             print(
-                f"🤖 Starting {engine_label} {session_kind} session ({session_label}) for child "
+                f"🤖 Starting {label} {session_kind} session ({session_label}) for child "
                 f"#{issue_number}.",
                 flush=True,
             )
@@ -1606,31 +1655,32 @@ def run_agent(
             try:
                 write_agent_result(profile.engine, completed.stdout, output_path)
             except ValueError as error:
-                raise RalphError(
-                    str(error) + agent_exit_detail(engine_label, completed)
-                ) from error
+                raise EngineFailure(str(error), profile.engine, completed) from error
             structured_output = (
                 output_path.read_text(encoding="utf-8") if output_path.exists() else None
             )
             if completed.returncode != 0:
-                validation.append(f"{engine_label} exited non-zero; inspecting retained output and Git state.")
-            result = parse_agent_result(output_path)
+                validation.append(f"{label} exited non-zero; inspecting retained output and Git state.")
+            try:
+                result = parse_agent_result(output_path)
+            except RalphError as error:
+                raise EngineFailure(str(error), profile.engine, completed) from error
             record["structured_result"] = result
             validation.append("Structured output passed the Ralph contract.")
             if completed.returncode != 0 and result["outcome"] != "committed":
-                raise RalphError(
-                    f"{role} exited non-zero without a committed outcome"
+                raise EngineFailure(
+                    f"{role} exited non-zero without a committed outcome", profile.engine, completed
                 )
             after_head, commits = verify_agent_git_effect(state, role, before_head, result)
             state.diagnostics.latest_sessions[issue_number] = (session_directory, result["summary"])
             validation.append("Git effect and clean-worktree checks passed.")
             if completed.returncode != 0:
                 validation.append(
-                    f"Accepted a valid committed result despite the non-zero {engine_label} exit."
+                    f"Accepted a valid committed result despite the non-zero {label} exit."
                 )
             change = f"; {diff_stats(state, before_head, after_head)}" if commits else ""
             print(
-                f"🤖 {engine_label} {session_kind} session ({session_label}) finished for child "
+                f"🤖 {label} {session_kind} session ({session_label}) finished for child "
                 f"#{issue_number} in "
                 f"{format_elapsed_duration(round(time.monotonic() - started_at))} "
                 f"(outcome: {result['outcome']}; commits: {len(commits)}{change}).",
@@ -2237,13 +2287,64 @@ def mark_pull_request_ready(state: RunState, branch: str) -> None:
 
 
 def run_session(state: RunState, request: SessionRequest) -> SessionResult:
-    """Child cycle adapter: run one agent session for a request."""
-    result, head, commits = run_agent(
-        state,
-        request.role, session_request_prompt(state, request), request.child
-    )
+    """Child cycle adapter: run one agent session for a request.
+
+    After the run's first engine failure, a configured backup replays the
+    session from the head it started from and runs every later session; the
+    child cycle sees one session either way.
+    """
+    start_head = current_head(state)
+    try:
+        result, head, commits = run_agent(
+            state,
+            request.role, session_request_prompt(state, request), request.child
+        )
+    except EngineFailure as failure:
+        backup = state.config.backup
+        if backup is None:
+            raise
+        if state.backup_switch is not None:
+            raise RalphError(
+                f"backup {engine_label(backup.engine)} engine failure: {failure}; after the "
+                f"{engine_label(state.backup_switch.engine)} engine failure: {state.backup_switch}"
+            ) from failure
+        switch_to_backup(state, request, failure, start_head)
+        return run_session(state, request)
     return SessionResult(
         result["outcome"], result["summary"], result["findings"], head, commits
+    )
+
+
+def switch_to_backup(
+    state: RunState, request: SessionRequest, failure: EngineFailure, start_head: str
+) -> None:
+    """Drop what the failed session left, then let the backup take over if the run budget allows its replay."""
+    git(state, "reset", "--hard", start_head)
+    # Ignored files, Ralph's diagnostics among them, stay.
+    git(state, "clean", "-fd")
+    budget = state.summary.budget
+    assert budget is not None and state.config.backup is not None
+    try:
+        budget.start(request.role)
+    except RunBudgetExhausted as error:
+        print(
+            f"⚠️ {engine_label(failure.engine)} engine failure in the {request.role} session for "
+            f"child #{request.child}: {failure}. The run budget leaves no session to replay it "
+            "with the backup.",
+            flush=True,
+        )
+        error.diagnostic = str(failure)
+        raise
+    backup = state.config.backup
+    state.backup_switch = failure
+    assert state.diagnostics is not None
+    state.diagnostics.record_backup_switch(failure, request.role, request.child, backup)
+    print(
+        f"⚠️ {engine_label(failure.engine)} engine failure in the {request.role} session for "
+        f"child #{request.child}: {failure.reason} ({failure.exit}). The backup, "
+        f"{engine_label(backup.engine)} ({profile_label(backup)}), takes over every session "
+        "for the rest of the run.",
+        flush=True,
     )
 
 

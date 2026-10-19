@@ -303,8 +303,33 @@ account availability are checked by the respective CLI at session start.
 Both kinds of run use `ralph_kit/agent.py` for engine-specific commands and result
 normalization. Codex writes the schema result to a file; Claude runs in print
 mode and returns it in `structured_output`. The same Ralph contract and Git
-checks apply to both. Claude error envelopes or missing structured results stop
-the run; session outputs remain in the run diagnostics with the engine and return code.
+checks apply to both. Session outputs remain in the run diagnostics with the
+engine and return code.
+
+### Engine failures and the backup
+
+An **engine failure** is a session that ends without a valid result, whatever
+the cause (quota, rate limit, expired login, outage, unknown model): a Claude
+Code error envelope, Claude Code output that is not valid JSON or has no
+structured result, a missing Codex result file, a result that breaks the Ralph
+contract, or a non-zero exit without a `committed` outcome. A non-zero exit with
+a valid `committed` result is accepted. Agent outcomes (`failed`, `blocked`,
+`needs_correction`, `no_changes`), rejected Git effects, and interruptions are
+not engine failures.
+
+Without `models.backup`, an engine failure stops the run safely. With one, Ralph
+drops the failed session's commits and uncommitted files, so they are never
+pushed, and replays the same session with the backup from the head the failed
+session started from. The backup then runs every later session of the run,
+whatever its role; the console announces the switch with the failed engine, its
+exit detail, and the backup, and later session lines show the backup's engine
+and profile. The run diagnostics keep the failed session and record the switch
+in `run.json`. The failed session counts toward the run budget; when it was the
+last session the budget allowed, the child goes to human review as for any
+exhausted run budget. A failed correction and its replay count as one
+correction. An engine failure of the backup stops the run, naming both failures;
+there is no second backup and no switch back. The next run starts on the regular
+profiles again.
 
 For Claude, Ralph invokes `/implement` directly and explicitly instructs the
 agent to read `AGENTS.md`. Repo skills are exposed through individual relative
