@@ -1314,6 +1314,86 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
 
         self.assert_rejected_at_startup(result, "configuration.models is missing keys: review")
 
+    def add_backup(self, profile):
+        self.repository.edit_configuration("\n[verification]", f"\n[models.backup]\n{profile}\n\n[verification]")
+
+    def test_valid_backup_on_the_same_or_another_engine_is_accepted(self):
+        for profile in (
+            'engine = "codex"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"',
+            # The regular profiles' model at another effort is not identical.
+            'engine = "codex"\nname = "gpt-5.6-terra"\ndisplay_name = "Terra"\nreasoning_effort = "low"',
+            'engine = "claude"\nname = "opus"\ndisplay_name = "Opus"\nreasoning_effort = "medium"',
+        ):
+            with self.subTest(profile=profile):
+                self.setUp()
+                self.add_backup(profile)
+
+                result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+                self.assert_completed(result, sessions=1)
+                self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_invalid_backup_is_rejected_before_any_session(self):
+        for profile, reason in (
+            (
+                'engine = "codex"\nname = "gpt-5.6-luna"\nreasoning_effort = "medium"',
+                "configuration.models.backup is missing keys: display_name",
+            ),
+            (
+                'engine = "codex"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"\nroles = "all"',
+                "configuration.models.backup has unknown keys: roles",
+            ),
+            (
+                'engine = "unknown"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"',
+                "configuration.models.backup.engine must be codex or claude",
+            ),
+            (
+                'engine = "claude"\nname = "opus"\ndisplay_name = "Opus"\nreasoning_effort = "minimal"',
+                "configuration.models.backup.reasoning_effort must be one of",
+            ),
+        ):
+            with self.subTest(reason=reason):
+                self.setUp()
+                self.add_backup(profile)
+
+                result = self.start(loop.MODE)
+
+                self.assert_rejected_at_startup(result, reason)
+
+    def test_backup_identical_to_a_regular_profile_is_rejected_before_any_session(self):
+        for role, profile in (
+            ("implementation", 'engine = "codex"\nname = "gpt-5.6-terra"\ndisplay_name = "Other name"\nreasoning_effort = "medium"'),
+            # Omitting the engine means codex, as for the other profiles.
+            ("implementation", 'name = "gpt-5.6-terra"\ndisplay_name = "Terra"\nreasoning_effort = "medium"'),
+            ("review", 'engine = "codex"\nname = "gpt-5.6-sol"\ndisplay_name = "Sol"\nreasoning_effort = "high"'),
+        ):
+            with self.subTest(role=role, profile=profile):
+                self.setUp()
+                self.add_backup(profile)
+
+                result = self.start(loop.MODE)
+
+                self.assert_rejected_at_startup(
+                    result,
+                    f"configuration.models.backup must differ from configuration.models.{role} "
+                    "in engine, model, or reasoning effort",
+                )
+
+    def test_backup_identical_to_the_correction_profile_is_rejected_before_any_session(self):
+        self.repository.edit_configuration(
+            '[models.correction]\nengine = "codex"\nname = "gpt-5.6-terra"',
+            '[models.correction]\nengine = "codex"\nname = "gpt-5.6-luna"',
+        )
+        self.add_backup('engine = "codex"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"')
+
+        result = self.start(loop.MODE)
+
+        self.assert_rejected_at_startup(
+            result,
+            "configuration.models.backup must differ from configuration.models.correction "
+            "in engine, model, or reasoning effort",
+        )
+
 
 class ConfiguredTrustTests(RunLevelTestCase):
     def test_repository_trusted_authors_remote_and_labels_come_from_the_configuration(self):

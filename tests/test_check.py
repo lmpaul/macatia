@@ -281,6 +281,48 @@ class ReadinessTests(unittest.TestCase):
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.help_requests(), expected)
 
+    def add_backup(self, engine, name):
+        text = self.config.read_text().replace("\n[verification]", f'\n[models.backup]\nengine = "{engine}"\nname = "{name}"\ndisplay_name = "Backup"\nreasoning_effort = "medium"\n\n[verification]')
+        self.config.write_text(text)
+        if engine == "claude":
+            (self.root / ".claude/skills").mkdir(parents=True, exist_ok=True)
+            (self.root / ".claude/skills/implement").symlink_to("../../.agents/skills/implement")
+
+    def test_backup_engine_has_its_cli_and_flags_checked(self):
+        self.add_backup("claude", "opus")
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.help_requests(), [("claude", "--help"), ("codex", "exec", "--help")])
+        self.assertIn("Flags (claude)", output)
+
+    def test_backup_on_the_regular_engine_adds_no_check(self):
+        self.add_backup("codex", "other-model")
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.help_requests(), [("codex", "exec", "--help")])
+
+    def test_missing_backup_cli_blocks(self):
+        self.add_backup("claude", "opus")
+        code, output = self.run_check(missing="claude")
+        self.assertEqual(code, 1)
+        self.assertIn("claude not found in PATH", output)
+        self.assertIn("not verified: claude missing", output)
+
+    def test_flag_missing_from_backup_engine_help_blocks(self):
+        self.add_backup("claude", "opus")
+        self.help[("claude", "--help")] = CLAUDE_HELP.replace("--json-schema", "--json")
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("Claude Code does not list --json-schema in claude --help", " ".join(output.split()))
+        self.assertIn("1 blocker", output)
+
+    def test_backup_model_placeholder_blocks_before_commands(self):
+        self.add_backup("claude", "CHOOSE_MODEL")
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("still have placeholders", output)
+        self.assertEqual(self.commands, [])
+
     def test_flags_missing_from_help_block_with_engine_flags_and_fix(self):
         wrapped = "  --bare                                Minimal mode; still honours\n                                        --json-schema, --add-dir\n"
         for engine, page, expected in (

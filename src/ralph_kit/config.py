@@ -20,6 +20,8 @@ LABEL_KEYS = {
     "implemented",
 }
 MODEL_KEYS = {"implementation", "review", "correction"}
+# The optional profile that takes over every session role after an engine failure.
+BACKUP_MODEL_KEY = "backup"
 REASONING_EFFORTS = {
     "none",
     "minimal",
@@ -77,6 +79,10 @@ class RalphConfig:
     labels: dict[str, str]
     models: dict[str, AgentProfile]
     verification: VerificationConfig
+
+    @property
+    def backup(self) -> AgentProfile | None:
+        return self.models.get(BACKUP_MODEL_KEY)
 
     @property
     def triage_labels(self) -> frozenset[str]:
@@ -214,12 +220,27 @@ def load_config(
 
     required_models = MODEL_KEYS if require_review else MODEL_KEYS - {"review"}
     model_values = _mapping(
-        values["models"], "configuration.models", required_models, MODEL_KEYS - required_models
+        values["models"],
+        "configuration.models",
+        required_models,
+        (MODEL_KEYS - required_models) | {BACKUP_MODEL_KEY},
     )
     models = {
         key: _profile(model_values[key], f"configuration.models.{key}")
         for key in model_values
     }
+    if backup := models.get(BACKUP_MODEL_KEY):
+        for key in ("implementation", "review", "correction"):
+            profile = models.get(key)
+            if profile and (profile.engine, profile.name, profile.reasoning_effort) == (
+                backup.engine,
+                backup.name,
+                backup.reasoning_effort,
+            ):
+                raise RalphConfigError(
+                    f"configuration.models.{BACKUP_MODEL_KEY} must differ from "
+                    f"configuration.models.{key} in engine, model, or reasoning effort"
+                )
 
     verification_values = _mapping(
         values["verification"],

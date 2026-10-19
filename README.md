@@ -249,6 +249,11 @@ implementation evidence from either kind of run when its commits are on the bran
   sets it. `init` and `check` offer to create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
+- `models.backup` is optional: one more model profile, with the same keys, that
+  takes over every session role after an engine failure. It has one model and one
+  reasoning effort for all roles. It may use the same engine as the other
+  profiles or another one, but it must differ from each of them in engine, model,
+  or reasoning effort.
 
 The loader rejects missing and unknown settings, duplicate TOML keys, duplicate
 authors, duplicate label values, unsafe repository paths, and unsupported mode
@@ -261,6 +266,16 @@ Omitting `engine` defaults to Codex, preserving existing configurations. Choose
 an engine separately for implementation, independent review, and corrections;
 a standard run uses only the implementation and correction profiles.
 Use a model name supported by the selected CLI and your account.
+
+For example, a backup on the other engine:
+
+```toml
+[models.backup]
+engine = "codex"
+name = "gpt-5.6-sol"
+display_name = "Sol"
+reasoning_effort = "medium"
+```
 
 For example, to implement and correct with Claude while retaining the existing
 Codex reviewer, change the implementation and correction profiles:
@@ -454,7 +469,8 @@ and clean worktree, `.ralph/` ignored by Git (any ignore source counts; the chec
 never edits `.gitignore`), GitHub access/repository/trusted account/write permission/labels,
 the packaged result schema, the implement skill for each engine, the flags Ralph passes
 to each configured engine (listed in the engine's own help, so an update that drops one
-blocks before a run), and the enabled quality policy.
+blocks before a run), and the enabled quality policy. A configured backup's engine counts
+as a configured engine, and its model name is checked for placeholders like the others.
 It inspects local gate commands and CI check names without executing them.
 Disabled verification may keep placeholder entries; when both are disabled the
 quality policy is not loaded.
