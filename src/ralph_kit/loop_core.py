@@ -234,14 +234,12 @@ class DiagnosticRecorder:
         record["finished_at"] = utc_timestamp()
         self._write_json(directory / "record.json", record)
 
-    def record_backup_switch(
-        self, failure: EngineFailure, role: str, child: int, backup: AgentProfile
-    ) -> None:
+    def record_backup_switch(self, switch: BackupSwitch, backup: AgentProfile) -> None:
         self.run_record["backup_switch"] = {
-            "failed_engine": failure.engine,
-            "role": role,
-            "child": child,
-            "failure": str(failure),
+            "failed_engine": switch.failure.engine,
+            "role": switch.role,
+            "child": switch.child,
+            "failure": str(switch.failure),
             "backup": {
                 "engine": backup.engine,
                 "model": backup.name,
@@ -372,7 +370,8 @@ class RunState:
     working_child: tuple[int, str] | None = None
     # The child base of each child this run started a child cycle for.
     child_bases: dict[int, ChildBase] = field(default_factory=dict)
-    # The engine failure that called the backup; None while no session ended in one.
+    # The engine failure that ended a regular profile's session with a backup
+    # configured; None while no such session ended in one.
     backup_switch: BackupSwitch | None = None
 
     @property
@@ -401,11 +400,10 @@ def terminal_summary(state: RunState, outcome: str) -> str:
     phase_summary = (
         state.diagnostics.timing_summary() if state.diagnostics is not None else "unavailable"
     )
-    backup_line = (
-        state.backup_switch.summary_line(state.config.backup)
-        if state.backup_switch is not None and state.config.backup is not None
-        else ""
-    )
+    backup_line = ""
+    if state.backup_switch is not None:
+        assert state.config.backup is not None
+        backup_line = state.backup_switch.summary_line(state.config.backup)
     return (
         f"🏁 Ralph summary for parent #{state.summary.parent}:\n"
         f"- implemented children this run: {state.summary.implemented}\n"
@@ -2367,7 +2365,7 @@ def switch_to_backup(
         error.diagnostic = str(failure)
         raise
     state.backup_switch = BackupSwitch(failure, request.role, request.child, took_over=True)
-    state.diagnostics.record_backup_switch(failure, request.role, request.child, backup)
+    state.diagnostics.record_backup_switch(state.backup_switch, backup)
     print(
         f"{announcement} The backup, {engine_name(backup.engine)} ({profile_label(backup)}), "
         "takes over every session for the rest of the run.",

@@ -2720,8 +2720,9 @@ class BackupTakeoverTests(AgentSessionTestCase):
             next(comment for comment in reversed(self.github.comments(PARENT)) if marker in comment),
             getattr(result, stream),
         ]
-        if self.github.pull_request() is not None:
-            summaries.append(self.github.pull_request().comments[-1])
+        pull = self.github.pull_request()
+        if pull is not None:
+            summaries.append(pull.comments[-1])
         return summaries
 
     def assert_backup_line(self, result, line, stream="stdout"):
@@ -2827,6 +2828,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         )
 
         self.assert_implemented(result)
+        self.assertIn("🏁 Ralph summary", self.github.pull_request().comments[-1])
         self.assert_backup_line(
             result,
             f"- backup: Opus - High took over after a Codex engine failure (review session, child #{CHILD})",
@@ -2842,7 +2844,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
                 self.assert_implemented(result)
                 for summary in self.published_summaries(result):
                     self.assertIn("- infrastructure retries: 0\n- total duration: ", summary)
-                    self.assertNotIn("backup", summary)
+                    self.assertNotIn("- backup:", summary)
 
     def test_switch_is_announced_and_recorded_in_the_run_diagnostics(self):
         result = self.start_engine(
@@ -2889,13 +2891,12 @@ class BackupTakeoverTests(AgentSessionTestCase):
             "structured output",
         )
         self.assertEqual(self.engine.engines(), ["codex", "claude"])
-        line = (
+        self.assert_backup_line(
+            result,
             f"- backup: Opus - High took over after a Codex engine failure "
-            f"(implementation session, child #{CHILD})"
+            f"(implementation session, child #{CHILD})",
+            stream="stderr",
         )
-        (summary,) = self.github.comments(PARENT)
-        for published in (summary, result.stderr):
-            self.assertIn(f"\n{line}\n", published)
 
     def test_new_run_resuming_an_agent_working_child_starts_on_the_regular_profiles(self):
         self.start_engine(
