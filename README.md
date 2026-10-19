@@ -250,10 +250,10 @@ implementation evidence from either kind of run when its commits are on the bran
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
 - `models.backup` is optional: one more model profile, with the same keys, that
-  takes over every session role after an engine failure. It has one model and one
-  reasoning effort for all roles. It may use the same engine as the other
-  profiles or another one, but it must differ from each of them in engine, model,
-  or reasoning effort.
+  takes over every session role for the rest of a run after an engine failure.
+  It has one model and one reasoning effort for all roles. It may use the same
+  engine as the other profiles or another one, but it must differ from each of
+  them in engine, model, or reasoning effort.
 
 The loader rejects missing and unknown settings, duplicate TOML keys, duplicate
 authors, duplicate label values, unsafe repository paths, and unsupported mode
@@ -470,7 +470,8 @@ never edits `.gitignore`), GitHub access/repository/trusted account/write permis
 the packaged result schema, the implement skill for each engine, the flags Ralph passes
 to each configured engine (listed in the engine's own help, so an update that drops one
 blocks before a run), and the enabled quality policy. A configured backup's engine counts
-as a configured engine, and its model name is checked for placeholders like the others.
+as a configured engine (CLI, implement skill, and flags), and its model name is checked
+for placeholders like the others.
 It inspects local gate commands and CI check names without executing them.
 Disabled verification may keep placeholder entries; when both are disabled the
 quality policy is not loaded.

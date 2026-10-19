@@ -19,7 +19,8 @@ LABEL_KEYS = {
     "human_review",
     "implemented",
 }
-MODEL_KEYS = {"implementation", "review", "correction"}
+MODEL_ROLES = ("implementation", "review", "correction")
+MODEL_KEYS = set(MODEL_ROLES)
 # The optional profile that takes over every session role after an engine failure.
 BACKUP_MODEL_KEY = "backup"
 REASONING_EFFORTS = {
@@ -79,10 +80,8 @@ class RalphConfig:
     labels: dict[str, str]
     models: dict[str, AgentProfile]
     verification: VerificationConfig
-
-    @property
-    def backup(self) -> AgentProfile | None:
-        return self.models.get(BACKUP_MODEL_KEY)
+    # Not one of `models`, which holds a profile per session role.
+    backup: AgentProfile | None = None
 
     @property
     def triage_labels(self) -> frozenset[str]:
@@ -228,9 +227,14 @@ def load_config(
     models = {
         key: _profile(model_values[key], f"configuration.models.{key}")
         for key in model_values
+        if key != BACKUP_MODEL_KEY
     }
-    if backup := models.get(BACKUP_MODEL_KEY):
-        for key in ("implementation", "review", "correction"):
+    backup = None
+    if BACKUP_MODEL_KEY in model_values:
+        backup = _profile(
+            model_values[BACKUP_MODEL_KEY], f"configuration.models.{BACKUP_MODEL_KEY}"
+        )
+        for key in MODEL_ROLES:
             profile = models.get(key)
             if profile and (profile.engine, profile.name, profile.reasoning_effort) == (
                 backup.engine,
@@ -258,6 +262,7 @@ def load_config(
         trusted_authors=trusted_authors,
         labels=labels,
         models=models,
+        backup=backup,
         verification=VerificationConfig(
             local_checks=verification_values["local_checks"],
             ci_checks=verification_values["ci_checks"],
