@@ -1354,27 +1354,38 @@ def resumed_child_base(
     """The child base of a child resumed from `recorded`, an ancestor of the branch head.
 
     When other children were implemented after `recorded`, the child base moves
-    to the latest one's verified head. The earliest one's own recorded child
-    base marks where this child's earlier child cycles ended; without it, every
-    commit before the moved child base is named as uncovered.
+    to the latest one's verified head. This child's earlier child cycles fall in
+    the gaps before each of those children's own recorded child base; the
+    uncovered range spans every gap that holds commits, and is exact only when
+    one gap does. Without every one of those recorded child bases, every commit
+    before the moved child base is named as uncovered.
     """
     later = children_implemented_after(state, child_number, siblings, recorded, head)
     if not later:
         return ChildBase(recorded, recorded)
     latest_head, latest = later[-1]
-    earliest_head, earliest = later[0]
     moved = ChildBase(latest_head, recorded, int(latest["number"]))
-    earlier_cycles_end = recorded_child_base(state, earliest)
-    if (
-        earlier_cycles_end is not None
-        and is_ancestor(state, recorded, earlier_cycles_end)
-        and is_ancestor(state, earlier_cycles_end, earliest_head)
-    ):
-        if earlier_cycles_end == recorded:
-            return moved
-        return dataclasses.replace(moved, uncovered=f"{recorded}..{earlier_cycles_end}")
+    gaps_with_commits = []
+    gap_start = recorded
+    for verified_head, details in later:
+        gap_end = recorded_child_base(state, details)
+        if (
+            gap_end is None
+            or not is_ancestor(state, gap_start, gap_end)
+            or not is_ancestor(state, gap_end, verified_head)
+        ):
+            return dataclasses.replace(
+                moved, uncovered=f"{recorded}..{latest_head}", uncovered_is_exact=False
+            )
+        if gap_end != gap_start:
+            gaps_with_commits.append((gap_start, gap_end))
+        gap_start = verified_head
+    if not gaps_with_commits:
+        return moved
     return dataclasses.replace(
-        moved, uncovered=f"{recorded}..{latest_head}", uncovered_is_exact=False
+        moved,
+        uncovered=f"{gaps_with_commits[0][0]}..{gaps_with_commits[-1][1]}",
+        uncovered_is_exact=len(gaps_with_commits) == 1,
     )
 
 

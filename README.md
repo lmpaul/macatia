@@ -143,10 +143,12 @@ to the verified head of the latest one, so the child's implementation evidence
 and review session never claim their commits (see
 [ADR 0001](docs/adr/0001-child-base-falls-back-when-another-child-lands-on-top.md)).
 The start comment, the implementation evidence, and the review prompt then name
-the commits of the child's earlier child cycles that this no longer covers,
-taken up to the child base recorded by the first child implemented on top; if
-that child has no recorded child base, they name every commit before the moved
-child base. Local gates and required CI checks are still selected from every
+the commits of the child's earlier child cycles that this no longer covers:
+those in the gaps before the child base each child implemented on top
+recorded. When the child's earlier child cycles fall in several gaps, one range
+spans them all and is said to include other children's work too; if any of
+those children has no recorded child base, they name every commit before the
+moved child base. Local gates and required CI checks are still selected from every
 path changed since the recorded child base, which the new start comment keeps
 recording. If the recorded child base is no longer on the branch (it was
 rebased or rewritten), Ralph starts from the current head and says so in the

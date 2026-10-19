@@ -886,6 +886,54 @@ class ChildBaseTests(RunLevelTestCase):
         self.assert_names_uncovered_commits(f"{base_sha}..{earlier_cycles_head}")
         self.assertEqual(self.local_gate_bases(), [base_sha])
 
+    def test_child_cycles_between_other_children_are_named_as_one_inexact_range(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        first_cycle_head = self.hand_off(loop.MODE, "a1.txt")
+        other_child_head = self.commit_file("other.txt", "Implement the other child")
+        self.add_implemented_child(
+            OTHER_CHILD, other_child_head, child_base_marker(first_cycle_head)
+        )
+        self.relabel_ready()
+        second_cycle_head = self.hand_off(loop.MODE, "a2.txt")
+        later_child_head = self.commit_file("later.txt", "Implement the later child")
+        self.add_implemented_child(
+            LATER_CHILD, later_child_head, child_base_marker(second_cycle_head)
+        )
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(later_child_head)
+        self.assert_names_uncovered_commits(f"{base_sha}..{second_cycle_head}")
+        self.assertIn("and other children's work", self.start_comment(CHILD))
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_child_cycle_after_another_child_is_named_when_the_first_left_no_commits(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        result = self.start(loop.MODE, ScriptedResult("blocked", "Needs a decision."))
+        self.assertEqual(self.github.labels(CHILD), {"human-review"}, result.stderr)
+        self.forget_diagnostics()
+        other_child_head = self.commit_file("other.txt", "Implement the other child")
+        self.add_implemented_child(OTHER_CHILD, other_child_head, child_base_marker(base_sha))
+        self.relabel_ready()
+        second_cycle_head = self.hand_off(loop.MODE, "a2.txt")
+        later_child_head = self.commit_file("later.txt", "Implement the later child")
+        self.add_implemented_child(
+            LATER_CHILD, later_child_head, child_base_marker(second_cycle_head)
+        )
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(later_child_head)
+        self.assert_names_uncovered_commits(f"{other_child_head}..{second_cycle_head}")
+        self.assertIn("from this child's earlier child cycles", self.start_comment(CHILD))
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
     def test_other_child_without_a_recorded_child_base_names_every_commit_before_the_child_base(self):
         self.github.add_issue(CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
