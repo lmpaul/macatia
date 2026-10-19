@@ -53,7 +53,7 @@ PLACEHOLDERS = {
     "author": "YOUR_GITHUB_ACCOUNT",
     "implementation": "CHOOSE_IMPLEMENTATION_MODEL",
     "review": "CHOOSE_REVIEW_MODEL",
-    "backup": "CHOOSE_BACKUP_MODEL",
+    "backup": "CHOOSE_MODEL_FOR_BACKUP",
 }
 
 CommandRunner = Callable[..., "str | None"]
@@ -232,7 +232,7 @@ def _same_profile(first: dict, second: dict) -> bool:
     return all(first[key] == second[key] for key in ("engine", "name", "reasoning_effort"))
 
 
-def _choose_backup_engine(prompter: Prompter, engine: str, installed: list[str]) -> str:
+def _engine_for_backup(prompter: Prompter, engine: str, installed: list[str]) -> str:
     """Engine of the backup or NO_BACKUP; another installed CLI comes first, since an engine failure rarely spans CLIs."""
     others = [other for other in installed if other != engine]
     options = [(other, f"{ENGINES[other]}, recommended: a different CLI") for other in others]
@@ -317,11 +317,9 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         models[role] = _ask_profile(prompter, engine, catalog(engine), role, question, effort)
     models["correction"] = dict(models["implementation"])
 
-    backup_engine = _choose_backup_engine(prompter, engine, installed)
-    while backup_engine != NO_BACKUP:
-        backup = _ask_profile(
-            prompter, backup_engine, catalog(backup_engine), "backup", "Model for the backup", "medium"
-        )
+    # The engine is asked again after a clash, so "No backup" stays reachable.
+    while (chosen := _engine_for_backup(prompter, engine, installed)) != NO_BACKUP:
+        backup = _ask_profile(prompter, chosen, catalog(chosen), "backup", "Model for the backup", "medium")
         identical = next((role for role, profile in models.items() if _same_profile(profile, backup)), None)
         if identical is None:
             models["backup"] = backup

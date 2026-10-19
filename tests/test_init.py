@@ -194,13 +194,25 @@ class InitTests(unittest.TestCase):
             "", "", "", "",  # implementation sonnet/medium, review opus/high
             "1",             # backup: claude
             "3", "2",        # sonnet/medium, identical to implementation: asked again
-            "2", "",         # opus/medium
+            "1", "2", "",    # claude, opus/medium
         ])
         self.assertIn("must differ from the implementation model profile", self.output.getvalue())
         self.assertEqual(
             (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
             ("claude", "opus", "medium"),
         )
+
+    def test_a_clashing_backup_can_still_be_dropped(self):
+        # Codex defaults to the same first model and effort for the backup as for implementation.
+        self.installed = {"codex"}
+        config = self.run_init(answers=["", "", "", "", "1", "", "", ""])
+        self.assertIn("must differ from the implementation model profile", self.output.getvalue())
+        self.assertIsNone(config.backup)
+
+    def test_no_backup_with_both_engines_writes_no_section(self):
+        config = self.run_init(answers=[""] * 5 + ["3"])
+        self.assertIsNone(config.backup)
+        self.assertNotIn("[models.backup]", (self.root / "ralph.toml").read_text())
 
     def test_missing_labels_are_offered_and_created_after_writing(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[{"name": "needs-triage"}]])
@@ -292,7 +304,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(config.backup.engine, "codex")
         self.assertTrue(check.placeholder(config.backup.name))
         self.assertIn("Values to fill in", self.output.getvalue())
-        self.assertIn("CHOOSE_BACKUP_MODEL", self.output.getvalue())
+        self.assertIn("CHOOSE_MODEL_FOR_BACKUP", self.output.getvalue())
 
     def test_quality_policy_enables_checks(self):
         (self.root / ".github/scripts").mkdir(parents=True)
