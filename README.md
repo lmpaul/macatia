@@ -54,6 +54,12 @@ catalog (`codex debug models`, with a free-text fallback); Claude Code has no
 model listing, so `init` offers its documented aliases (`fable`, `opus`,
 `sonnet`, `haiku`), which always follow the latest version. Without a terminal
 (agents, CI) it asks nothing and leaves placeholders that `ralph-kit check` reports.
+After the model profiles, `init` asks for a backup (see
+[Engine failures and the backup](#engine-failures-and-the-backup)) among the installed
+agent CLIs, plus "No backup". It recommends and preselects the other installed CLI,
+since an engine failure is rarely limited to one model, and preselects "No backup"
+when only one CLI is installed. A chosen backup gets the same model and reasoning
+effort questions, and must differ from the other profiles.
 `--config path/to/other.toml` selects another configuration. Ralph writes run
 diagnostics to `.ralph/`. Unless Git already ignores it, `init` appends `.ralph/` to the
 repository's `.gitignore` (creating the file if needed) and says so. Commit it with `ralph.toml`;

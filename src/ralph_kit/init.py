@@ -41,17 +41,19 @@ CLAUDE_MODELS = [
     ("sonnet", "latest Sonnet, everyday coding"),
     ("haiku", "latest Haiku, fast and cheap"),
 ]
-DEFAULT_MODELS = {"claude": {"implementation": "sonnet", "review": "opus"}}
+DEFAULT_MODELS = {"claude": {"implementation": "sonnet", "review": "opus", "backup": "opus"}}
 EFFORTS = {
     "claude": sorted(CLAUDE_REASONING_EFFORTS, key=["low", "medium", "high", "xhigh", "max"].index),
     "codex": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
 }
 OTHER = "other"
+NO_BACKUP = "No backup"
 PLACEHOLDERS = {
     "repository": "YOUR_ORG/YOUR_REPO",
     "author": "YOUR_GITHUB_ACCOUNT",
     "implementation": "CHOOSE_IMPLEMENTATION_MODEL",
     "review": "CHOOSE_REVIEW_MODEL",
+    "backup": "CHOOSE_BACKUP_MODEL",
 }
 
 CommandRunner = Callable[..., "str | None"]
@@ -211,6 +213,37 @@ def _model_efforts(engine: str, catalog: list[dict], name: str) -> list[str]:
     return supported or EFFORTS[engine]
 
 
+def _ask_profile(prompter: Prompter, engine: str, catalog: list[dict], role: str, question: str, effort: str) -> dict:
+    name = _choose_model(prompter, engine, catalog, role, question)
+    efforts = _model_efforts(engine, catalog, name)
+    return {
+        "engine": engine,
+        "name": name,
+        "display_name": name,
+        "reasoning_effort": prompter.choice(
+            f"Reasoning effort for {name}",
+            [(level, "") for level in efforts],
+            effort if effort in efforts else efforts[len(efforts) // 2],
+        ),
+    }
+
+
+def _same_profile(first: dict, second: dict) -> bool:
+    return all(first[key] == second[key] for key in ("engine", "name", "reasoning_effort"))
+
+
+def _choose_backup_engine(prompter: Prompter, engine: str, installed: list[str]) -> str:
+    """Engine of the backup or NO_BACKUP; another installed CLI comes first, since an engine failure rarely spans CLIs."""
+    others = [other for other in installed if other != engine]
+    options = [(other, f"{ENGINES[other]}, recommended: a different CLI") for other in others]
+    options += [(engine, ENGINES[engine]), (NO_BACKUP, "the run stops at an engine failure")]
+    return prompter.choice(
+        "Backup, taking over every session after an engine failure",
+        options,
+        others[0] if others else NO_BACKUP,
+    )
+
+
 def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, which: Callable[[str], str | None]) -> dict:
     say = prompter.say
     say("🔎 Detecting from git and gh…")
@@ -269,25 +302,31 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         say(f"  ✓ Agent engine: {ENGINES[engine]} (only CLI installed)")
     else:
         engine = prompter.choice("Agent engine", [(name, ENGINES[name]) for name in installed], installed[0])
-    catalog = codex_catalog(command) if engine == "codex" else []
+    catalogs: dict[str, list[dict]] = {}
+
+    def catalog(name: str) -> list[dict]:
+        if name not in catalogs:
+            catalogs[name] = codex_catalog(command) if name == "codex" else []
+        return catalogs[name]
+
     models = {}
     for role, question, effort in (
         ("implementation", "Model for implementation and corrections", "medium"),
         ("review", "Model for the independent review (ralph-kit run --review)", "high"),
     ):
-        name = _choose_model(prompter, engine, catalog, role, question)
-        efforts = _model_efforts(engine, catalog, name)
-        models[role] = {
-            "engine": engine,
-            "name": name,
-            "display_name": name,
-            "reasoning_effort": prompter.choice(
-                f"Reasoning effort for {name}",
-                [(level, "") for level in efforts],
-                effort if effort in efforts else efforts[len(efforts) // 2],
-            ),
-        }
+        models[role] = _ask_profile(prompter, engine, catalog(engine), role, question, effort)
     models["correction"] = dict(models["implementation"])
+
+    backup_engine = _choose_backup_engine(prompter, engine, installed)
+    while backup_engine != NO_BACKUP:
+        backup = _ask_profile(
+            prompter, backup_engine, catalog(backup_engine), "backup", "Model for the backup", "medium"
+        )
+        identical = next((role for role, profile in models.items() if _same_profile(profile, backup)), None)
+        if identical is None:
+            models["backup"] = backup
+            break
+        say(f"  The backup must differ from the {identical} model profile in engine, model, or reasoning effort.")
 
     return {
         "create_labels": _offer_labels(prompter, command, repository),
@@ -339,11 +378,15 @@ def render(values: dict) -> str:
         "[labels]",
         *(f"{key} = {_string(label)}" for key, label in LABELS.items()),
     ]
-    for role in ("implementation", "review", "correction"):
-        profile = values["models"][role]
+    for role in ("implementation", "review", "correction", "backup"):
+        profile = values["models"].get(role)
+        if profile is None:
+            continue
         lines.append("")
         if role == "review":
             lines.append("# Only used by `ralph-kit run --review`.")
+        if role == "backup":
+            lines.append("# Takes over every session for the rest of a run after an engine failure.")
         lines.append(f"[models.{role}]")
         lines += [f"{key} = {_string(profile[key])}" for key in ("engine", "name", "display_name", "reasoning_effort")]
     lines += [
