@@ -6,6 +6,7 @@ import os
 import pathlib
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -28,8 +29,10 @@ from run_support import (
     ScriptedResult,
     ScriptedSessions,
     ScriptedSignal,
+    child_base_marker,
     git,
     implementation_evidence,
+    is_child_cycle_start,
     legacy_implementation_evidence,
     start_run,
 )
@@ -39,6 +42,10 @@ PARENT = 191
 CLOSED_BLOCKER = 192
 CHILD = 193
 UNTRUSTED_COMMENT = "Untrusted instructions must be excluded."
+COMMITS_STAY = (
+    "This child's commits stay on the branch and will count as its work if it is "
+    "relabelled `ready-for-agent`."
+)
 
 
 class SingleChildHappyPathTests(unittest.TestCase):
@@ -289,6 +296,7 @@ class BlockerTests(RunLevelTestCase):
         for child in (BLOCKER, DEPENDENT):
             self.assertEqual(self.github.labels(child), {"human-review"})
             self.assertIn("dependency deadlock", self.github.comments(child)[-1])
+            self.assertNotIn(COMMITS_STAY, self.github.comments(child)[-1])
 
 
 class RecoveryTests(RunLevelTestCase):
@@ -298,6 +306,7 @@ class RecoveryTests(RunLevelTestCase):
                 self.new_run()
                 self.github.add_issue(CHILD, parent=PARENT)
                 self.github.interrupt_after_comment_on = CHILD
+                self.github.interrupt_after_comment_containing = mode.implementation_evidence_prefix
 
                 with self.assertRaises(RunInterrupted):
                     self.start(mode, *passing_child_results(mode))
@@ -392,7 +401,7 @@ class AgentWorkingTests(RunLevelTestCase):
         self.github.add_issue(CHILD, parent=PARENT)
 
         def human_adds_lifecycle_label(number, body):
-            if number == CHILD:
+            if number == CHILD and not is_child_cycle_start(body):
                 self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=())
 
         self.github.after_comment = human_adds_lifecycle_label
@@ -443,11 +452,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.assertIn(f"{names} labelled agent-working", text)
         self.assertIn("Ralph cannot tell an interrupted run from a run still active elsewhere", text)
         self.assertIn("two agents do the same work on two branches", text)
-        self.assertIn(
-            "resuming starts from the current branch head, so commits already made for "
-            "these children are not covered by their implementation evidence",
-            text,
-        )
+        self.assertNotIn("not covered by their implementation evidence", text)
 
     def assert_stopped_on_agent_working(self, result, *children):
         self.assert_stopped_before_any_session(result, "labelled agent-working")
@@ -549,6 +554,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
     def test_published_agent_working_child_is_recovered_without_a_prompt(self):
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.interrupt_after_comment_on = CHILD
+        self.github.interrupt_after_comment_containing = loop.MODE.implementation_evidence_prefix
         with self.assertRaises(RunInterrupted):
             self.start(loop.MODE, *passing_child_results(loop.MODE))
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
@@ -641,6 +647,363 @@ class ConcurrentRunTests(RunLevelTestCase):
 
         self.assert_completed(result, sessions=4)
         self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT, DEPENDENT])
+
+
+# Children implemented on the branch while CHILD waits in human review.
+OTHER_CHILD = 195
+LATER_CHILD = 196
+
+
+class ChildBaseTests(RunLevelTestCase):
+    """Each child cycle records its child base; a resumed child starts from the recorded one."""
+
+    def child_bases(self, child):
+        """The child base each trusted child cycle start comment records, in order."""
+        return [
+            json.loads(match.group(1))["child_base"]
+            for comment in self.github.comments(child)
+            if (match := re.search(
+                re.escape(loop_core.CHILD_BASE_MARKER_PREFIX) + r"(\{.*?\}) -->", comment
+            ))
+        ]
+
+    def start_comment(self, child):
+        return next(
+            comment for comment in reversed(self.github.comments(child))
+            if is_child_cycle_start(comment)
+        )
+
+    def local_gate_bases(self):
+        return [
+            json.loads((evidence / "command.json").read_text())["base_sha"]
+            for evidence in sorted((self.repository.diagnostics() / "evidence").glob("*-local-gate"))
+        ]
+
+    def forget_diagnostics(self):
+        """Drop the finished run's diagnostics, so the next run's are the only ones."""
+        shutil.rmtree(self.repository.diagnostics())
+
+    def hand_off(self, mode, path):
+        """Run one child cycle that commits `path` and hands the child to human review."""
+        result = self.start(
+            mode, ScriptedResult("blocked", "Needs a decision.", commit=True, path=path)
+        )
+        self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.forget_diagnostics()
+        return self.repository.head()
+
+    def relabel_ready(self):
+        self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=["human-review"])
+
+    def assert_evidence_starts_from(self, child_base):
+        evidence = self.github.comments(CHILD)[-1]
+        self.assertIn(f"Ralph verified implementation commits `{child_base}..", evidence)
+
+    def test_child_cycle_start_records_the_child_base_after_marking_the_child_agent_working(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        labels_at_start = []
+
+        def observe_labels_at_start(number, body):
+            if is_child_cycle_start(body):
+                labels_at_start.append(self.github.labels(number))
+
+        self.github.after_comment = observe_labels_at_start
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        base_sha = self.repository.base_sha
+        self.assertEqual(self.child_bases(CHILD), [base_sha])
+        self.assertEqual(labels_at_start, [{"agent-working"}])
+        start = self.start_comment(CHILD)
+        self.assertIn(f"child base `{base_sha}`", start)
+        self.assertNotIn("no longer on the branch", start)
+        self.assertEqual(
+            self.github.issues[CHILD]["comments"][0]["author"], {"login": TRUSTED_LOGIN}
+        )
+
+    def test_child_resumed_from_human_review_starts_from_its_first_child_base(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        self.hand_off(loop_review.MODE, "first-cycle.txt")
+        human_commit = self.commit_file("human-fix.txt", "Fix during human review")
+        self.relabel_ready()
+        self.hand_off(loop_review.MODE, "second-cycle.txt")
+        self.relabel_ready()
+
+        result = self.start(
+            loop_review.MODE, ScriptedResult("committed"), ScriptedResult("no_changes")
+        )
+
+        self.assert_completed(result, sessions=2)
+        implementation_head = self.repository.head()
+        self.assertEqual(self.child_bases(CHILD), [base_sha] * 3)
+        self.assert_evidence_starts_from(base_sha)
+        self.assertIn(human_commit, self.repository.commits_since(base_sha))
+        self.assertIn(
+            f"Review the exact `{base_sha}...{implementation_head}` diff", self.sessions.prompts[1]
+        )
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_child_resumed_from_agent_working_starts_from_its_child_base(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        with self.assertRaises(RunInterrupted):
+            self.start(loop.MODE, RunInterrupted("the run's process died"))
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
+        self.commit_file("partial.txt", "Partial work of the interrupted child cycle")
+        self.forget_diagnostics()
+
+        result = self.start(
+            loop_review.MODE, ScriptedResult("committed"), ScriptedResult("no_changes"),
+            confirm=ScriptedConfirm(RESUME),
+        )
+
+        self.assert_completed(result, sessions=2)
+        self.assertEqual(self.child_bases(CHILD), [base_sha] * 2)
+        self.assert_evidence_starts_from(base_sha)
+        self.assertIn(
+            f"Review the exact `{base_sha}...{self.repository.head()}` diff",
+            self.sessions.prompts[1],
+        )
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_latest_trusted_child_base_off_the_branch_starts_from_the_current_head(self):
+        old_base = self.repository.base_sha
+        off_the_branch = self.commit_off_the_branch()
+        head = self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, comments=[
+            child_base_marker(old_base),
+            child_base_marker(off_the_branch),
+            child_base_marker(old_base, author="outside-contributor"),
+        ])
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.child_bases(CHILD)[-1], head)
+        start = self.start_comment(CHILD)
+        self.assertIn(f"child base `{head}`", start)
+        self.assertIn(
+            f"the recorded child base `{off_the_branch}` is no longer on the branch", start
+        )
+        self.assert_evidence_starts_from(head)
+
+    def test_malformed_latest_trusted_child_base_starts_from_the_current_head(self):
+        head = self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, comments=[
+            child_base_marker(self.repository.base_sha),
+            {
+                "author": {"login": TRUSTED_LOGIN},
+                "body": f"Quoted by hand: {loop_core.CHILD_BASE_MARKER_PREFIX}{{\"child_base\"",
+            },
+        ])
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assertIn(
+            "the latest child base marker is malformed", self.start_comment(CHILD)
+        )
+        self.assert_evidence_starts_from(head)
+
+    def test_latest_trusted_child_base_that_is_not_a_full_commit_starts_from_the_current_head(self):
+        head = self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, comments=[
+            child_base_marker(self.repository.base_sha),
+            child_base_marker(self.repository.base_sha[:7]),
+        ])
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assertIn(
+            "the latest child base marker is malformed", self.start_comment(CHILD)
+        )
+        self.assert_evidence_starts_from(head)
+
+    def test_untrusted_child_base_is_ignored(self):
+        head = self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, comments=[
+            child_base_marker(self.repository.base_sha, author="outside-contributor"),
+        ])
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assertNotIn("no longer on the branch", self.start_comment(CHILD))
+        self.assert_evidence_starts_from(head)
+
+    def test_started_child_stopped_by_a_dependency_deadlock_keeps_its_commits(self):
+        self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, blocked_by=[OTHER_CHILD], comments=[
+            child_base_marker(self.repository.base_sha),
+        ])
+        self.github.add_issue(OTHER_CHILD, parent=PARENT, blocked_by=[CHILD])
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(result, "dependency deadlock")
+        self.assertIn(COMMITS_STAY, self.github.comments(CHILD)[-1])
+        self.assertNotIn(COMMITS_STAY, self.github.comments(OTHER_CHILD)[-1])
+
+    def test_child_whose_child_base_left_the_branch_is_stopped_by_a_deadlock_without_commits(self):
+        self.github.add_issue(CHILD, parent=PARENT, blocked_by=[OTHER_CHILD], comments=[
+            child_base_marker(self.commit_off_the_branch()),
+        ])
+        self.github.add_issue(OTHER_CHILD, parent=PARENT, blocked_by=[CHILD])
+
+        result = self.start(loop.MODE)
+
+        self.assert_stopped_before_any_session(result, "dependency deadlock")
+        self.assertNotIn(COMMITS_STAY, self.github.comments(CHILD)[-1])
+
+    def implement_other_child(self, mode):
+        """A run that implements OTHER_CHILD on top of the branch while CHILD is in human review."""
+        self.start(mode, *passing_child_results(mode))
+        self.assertEqual(self.github.labels(OTHER_CHILD), {"implemented"})
+        self.forget_diagnostics()
+        return self.repository.head()
+
+    def add_implemented_child(self, number, verified_head, *comments):
+        self.github.add_issue(
+            number, parent=PARENT, labels=("implemented",),
+            comments=[*comments, implementation_evidence(loop.MODE, verified_head)],
+        )
+
+    def assert_names_uncovered_commits(self, uncovered_range):
+        uncovered = f"`{uncovered_range}`"
+        self.assertIn(uncovered, self.start_comment(CHILD))
+        self.assertIn(uncovered, self.github.comments(CHILD)[-1])
+
+    def test_child_resumed_after_another_child_was_implemented_on_top_moves_its_child_base(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(OTHER_CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        self.hand_off(loop_review.MODE, "a1.txt")
+        self.relabel_ready()
+        earlier_cycles_head = self.hand_off(loop_review.MODE, "a2.txt")
+        other_child_head = self.implement_other_child(loop_review.MODE)
+        human_commit = self.commit_file("human-fix.txt", "Fix during human review")
+        self.relabel_ready()
+
+        result = self.start(
+            loop_review.MODE, ScriptedResult("committed"), ScriptedResult("no_changes")
+        )
+
+        self.assert_completed(result, sessions=2)
+        implementation_head = self.repository.head()
+        uncovered = f"{base_sha}..{earlier_cycles_head}"
+        self.assertEqual(self.child_bases(CHILD), [base_sha] * 3)
+        self.assertIn(f"child base `{other_child_head}`", self.start_comment(CHILD))
+        self.assert_evidence_starts_from(other_child_head)
+        self.assert_names_uncovered_commits(uncovered)
+        evidence = self.github.comments(CHILD)[-1]
+        self.assertNotIn(f"`{earlier_cycles_head}..", evidence)
+        self.assertIn(human_commit, self.repository.commits_since(other_child_head))
+        review = self.sessions.prompts[1]
+        self.assertIn(f"Review the exact `{other_child_head}...{implementation_head}` diff", review)
+        self.assertIn(f"`{uncovered}`", review)
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_child_base_moves_to_the_latest_child_implemented_after_the_recorded_one(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        earlier_cycles_head = self.hand_off(loop.MODE, "a1.txt")
+        other_child_head = self.commit_file("other.txt", "Implement the other child")
+        later_child_head = self.commit_file("later.txt", "Implement the later child")
+        self.add_implemented_child(
+            LATER_CHILD, later_child_head, child_base_marker(other_child_head)
+        )
+        self.add_implemented_child(
+            OTHER_CHILD, other_child_head, child_base_marker(earlier_cycles_head)
+        )
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(later_child_head)
+        self.assert_names_uncovered_commits(f"{base_sha}..{earlier_cycles_head}")
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_child_cycles_between_other_children_are_named_as_one_inexact_range(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        first_cycle_head = self.hand_off(loop.MODE, "a1.txt")
+        other_child_head = self.commit_file("other.txt", "Implement the other child")
+        self.add_implemented_child(
+            OTHER_CHILD, other_child_head, child_base_marker(first_cycle_head)
+        )
+        self.relabel_ready()
+        second_cycle_head = self.hand_off(loop.MODE, "a2.txt")
+        later_child_head = self.commit_file("later.txt", "Implement the later child")
+        self.add_implemented_child(
+            LATER_CHILD, later_child_head, child_base_marker(second_cycle_head)
+        )
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(later_child_head)
+        self.assert_names_uncovered_commits(f"{base_sha}..{second_cycle_head}")
+        self.assertIn("and other children's work", self.start_comment(CHILD))
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_child_cycle_after_another_child_is_named_when_the_first_left_no_commits(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        result = self.start(loop.MODE, ScriptedResult("blocked", "Needs a decision."))
+        self.assertEqual(self.github.labels(CHILD), {"human-review"}, result.stderr)
+        self.forget_diagnostics()
+        other_child_head = self.commit_file("other.txt", "Implement the other child")
+        self.add_implemented_child(OTHER_CHILD, other_child_head, child_base_marker(base_sha))
+        self.relabel_ready()
+        second_cycle_head = self.hand_off(loop.MODE, "a2.txt")
+        later_child_head = self.commit_file("later.txt", "Implement the later child")
+        self.add_implemented_child(
+            LATER_CHILD, later_child_head, child_base_marker(second_cycle_head)
+        )
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(later_child_head)
+        self.assert_names_uncovered_commits(f"{other_child_head}..{second_cycle_head}")
+        self.assertIn("from this child's earlier child cycles", self.start_comment(CHILD))
+        self.assertEqual(self.local_gate_bases(), [base_sha])
+
+    def test_other_child_without_a_recorded_child_base_names_every_commit_before_the_child_base(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        base_sha = self.repository.base_sha
+        self.hand_off(loop.MODE, "a1.txt")
+        other_child_head = self.commit_file("other.txt", "Implement the other child")
+        self.add_implemented_child(OTHER_CHILD, other_child_head)
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(other_child_head)
+        self.assert_names_uncovered_commits(f"{base_sha}..{other_child_head}")
+
+    def test_child_implemented_before_the_recorded_child_base_does_not_move_it(self):
+        prior = self.commit_prior_child()
+        self.add_implemented_child(OTHER_CHILD, prior)
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.hand_off(loop.MODE, "a1.txt")
+        self.relabel_ready()
+
+        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+
+        self.assert_completed(result, sessions=1)
+        self.assert_evidence_starts_from(prior)
+        self.assertNotIn("not covered", self.start_comment(CHILD))
+        self.assertNotIn("not covered", self.github.comments(CHILD)[-1])
+        self.assertEqual(self.local_gate_bases(), [prior])
 
 
 class StartupChoiceCommandLineTests(unittest.TestCase):
@@ -1232,7 +1595,7 @@ class CIEvidenceTests(VerificationTestCase):
         self.github.ci = ["success"]
 
         def advance_the_branch(number, body):
-            if number == CHILD:
+            if number == CHILD and not is_child_cycle_start(body):
                 self.github.after_comment = None
                 self.commit_file("advance.txt", "Advance after CI")
 
@@ -1411,7 +1774,7 @@ class CrashedRunTests(VerificationTestCase):
         self.assertIs(raised.exception, crash)
         self.assertIn("- final outcome: crashed", self.github.comments(PARENT)[-1])
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
-        self.assertEqual(self.github.comments(CHILD), [])
+        self.assertEqual(self.github.reports(CHILD), [])
 
 
 class InterruptedRunTests(VerificationTestCase):
@@ -1436,10 +1799,11 @@ class InterruptedRunTests(VerificationTestCase):
         """The child went to human review naming the commits nobody verified."""
         unverified = f"{base}..{head}"
         self.assertEqual(self.github.labels(CHILD), {"human-review"})
-        self.assertEqual(len(self.github.comments(CHILD)), 1)
-        handoff = self.github.comments(CHILD)[0]
+        self.assertEqual(len(self.github.reports(CHILD)), 1)
+        handoff = self.github.reports(CHILD)[0]
         self.assertTrue(handoff.startswith("Ralph stopped because the run was interrupted"))
         self.assertIn(unverified, handoff)
+        self.assertIn(COMMITS_STAY, handoff)
         summary = self.github.comments(PARENT)[-1]
         for published in (summary, result.stderr):
             self.assertIn(
@@ -1461,7 +1825,7 @@ class InterruptedRunTests(VerificationTestCase):
         self.assertEqual(self.roles(), ["implementation"])
         self.assertIsNone(self.github.pull_request())
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
-        self.assertEqual(self.github.comments(CHILD), [])
+        self.assertEqual(self.github.reports(CHILD), [])
         self.assertIn(f"- #{CHILD}: runnable.", self.github.comments(PARENT)[-1])
 
     def interrupt_while_waiting_for_ci(self, signal_number):
@@ -1493,7 +1857,7 @@ class InterruptedRunTests(VerificationTestCase):
                 self.assert_interrupted(result, exit_code, signal_number.name)
                 self.assertEqual(self.roles(), ["implementation"])
                 self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
-                self.assertEqual(self.github.comments(CHILD), [])
+                self.assertEqual(self.github.reports(CHILD), [])
                 self.assertIs(signal.getsignal(signal_number), handler)
             with self.subTest(signal_number.name, commit=True):
                 self.new_child_run()
@@ -1520,7 +1884,7 @@ class InterruptedRunTests(VerificationTestCase):
 
     def test_ctrl_c_after_the_evidence_is_published_marks_the_child_implemented(self):
         def interrupt_after_evidence(number, body):
-            if number == CHILD:
+            if number == CHILD and not is_child_cycle_start(body):
                 raise KeyboardInterrupt
 
         self.github.after_comment = interrupt_after_evidence
@@ -1529,7 +1893,7 @@ class InterruptedRunTests(VerificationTestCase):
 
         self.assertEqual(result.exit_code, 130, result.stderr)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
-        self.assertEqual(len(self.github.comments(CHILD)), 1)
+        self.assertEqual(len(self.github.reports(CHILD)), 1)
         self.assertIn("- final outcome: interrupted", self.github.comments(PARENT)[-1])
 
     def test_interruption_between_two_children_publishes_the_same_summary(self):
@@ -1567,7 +1931,7 @@ class InterruptedRunTests(VerificationTestCase):
 
     def test_second_interruption_during_the_release_leaves_the_child_agent_working(self):
         def interrupt_again(number, body):
-            if number == CHILD:
+            if number == CHILD and not is_child_cycle_start(body):
                 raise KeyboardInterrupt
 
         self.github.after_comment = interrupt_again
@@ -1685,6 +2049,7 @@ class RunBudgetTests(VerificationTestCase):
         self.assertIn(
             f"run budget of {budget} agent sessions was exhausted after {budget} sessions", handoff
         )
+        self.assertIn(COMMITS_STAY, handoff)
         self.assertIn("- final outcome: stopped safely", self.github.comments(PARENT)[-1])
         self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
         return handoff
@@ -1906,7 +2271,7 @@ class AgentSessionTestCase(VerificationTestCase):
     def assert_nothing_published(self):
         """Only the parent's terminal summary was written; the child is left agent working and the branch untouched."""
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
-        self.assertEqual(self.github.comments(CHILD), [])
+        self.assertEqual(self.github.reports(CHILD), [])
         (summary,) = self.github.comments(PARENT)
         self.assertIn("- final outcome: stopped safely", summary)
         self.assertIsNone(self.github.pull_request())
@@ -1924,6 +2289,7 @@ class AgentSessionTestCase(VerificationTestCase):
         self.assertEqual(self.github.labels(CHILD), {"human-review"})
         handoff = self.github.comments(CHILD)[-1]
         self.assertIn("This child remains open for human review.", handoff)
+        self.assertIn(COMMITS_STAY, handoff)
         for part in handoff_parts:
             self.assertIn(part, handoff)
         return handoff

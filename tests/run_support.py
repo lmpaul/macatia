@@ -249,6 +249,17 @@ def implementation_evidence(mode, implementation_head, verified_head=None):
     return {"author": {"login": TRUSTED_LOGIN}, "body": body}
 
 
+def is_child_cycle_start(body):
+    return loop_core.CHILD_BASE_MARKER_PREFIX in body
+
+
+def child_base_marker(child_base, author=TRUSTED_LOGIN):
+    """A child cycle start comment recording `child_base`, as Ralph writes it."""
+    marker = json.dumps({"child_base": child_base}, separators=(",", ":"))
+    body = f"{loop_core.CHILD_BASE_MARKER_PREFIX}{marker} -->\nRalph started a child cycle."
+    return {"author": {"login": author}, "body": body}
+
+
 def legacy_implementation_evidence(base_sha, verified_head):
     """A trusted implementation evidence comment from before evidence carried JSON."""
     return {
@@ -285,7 +296,8 @@ class FakeGitHub:
     A failed check's job reports `job_head_sha` (by default the checked head)
     and its log is `job_log_output`, or a failed download with `job_log_error`.
     Setting `interrupt_after_comment_on` to an issue number kills the run once,
-    right after its next comment on that issue is stored; `after_comment`, when
+    right after its next comment on that issue is stored (only a comment
+    containing `interrupt_after_comment_containing`, when set); `after_comment`, when
     set, is called with the issue number and body after each issue comment;
     `before_check_runs`, when set, is called with the requested head before each
     check-runs request is answered; `after_label_edit`, when set, is called with
@@ -323,6 +335,7 @@ class FakeGitHub:
         self.job_log_requests = []
         self.revision = 0
         self.interrupt_after_comment_on = None
+        self.interrupt_after_comment_containing = None
         self.after_comment = None
         self.before_check_runs = None
         self.after_label_edit = None
@@ -362,6 +375,10 @@ class FakeGitHub:
 
     def comments(self, number):
         return [comment["body"] for comment in self.issues[number]["comments"]]
+
+    def reports(self, number):
+        """The child's comments other than the child cycle start comments."""
+        return [body for body in self.comments(number) if not is_child_cycle_start(body)]
 
     def latest_comment_url(self, number):
         return self.issues[number]["comments"][-1]["url"]
@@ -404,7 +421,10 @@ class FakeGitHub:
             "createdAt": created_at,
             "url": f"https://github.test/{self.repository}/issues/{number}#issuecomment-{self.revision}",
         })
-        if number == self.interrupt_after_comment_on:
+        if number == self.interrupt_after_comment_on and (
+            self.interrupt_after_comment_containing is None
+            or self.interrupt_after_comment_containing in body
+        ):
             self.interrupt_after_comment_on = None
             raise RunInterrupted(f"interrupted after commenting on #{number}")
         if self.after_comment is not None:

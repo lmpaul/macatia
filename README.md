@@ -128,8 +128,34 @@ session for each child once its local gates pass, repeated after each issue
 correction that review causes. Once a child is selected and its issue trusted,
 Ralph replaces its `ready-for-agent` label with `agent-working` before the first
 agent session; if that label write fails, the run stops before any session. The
-child keeps `agent-working` throughout its child cycle. The loop of a standard
-run is:
+child keeps `agent-working` throughout its child cycle.
+
+Ralph then posts a trusted comment on the child naming its child base, the
+commit its implementation evidence, review session diff, and local gate
+selection start from, with a hidden machine-readable marker. Only markers from
+trusted authors count, and the latest one is authoritative. A child resumed
+after human review, or resumed from `agent-working`, keeps the recorded child
+base while it is an ancestor of the branch head, and its new comment carries it
+forward. So the commits of its earlier child cycles, and any commits a human
+made on the branch in the meantime, count as the child's work. If other
+children were implemented after the recorded child base, the child base moves
+to the verified head of the latest one, so the child's implementation evidence
+and review session never claim their commits (see
+[ADR 0001](docs/adr/0001-child-base-falls-back-when-another-child-lands-on-top.md)).
+The start comment, the implementation evidence, and the review prompt then name
+the commits of the child's earlier child cycles that this no longer covers:
+those in the gaps before the child base each child implemented on top
+recorded. When the child's earlier child cycles fall in several gaps, one range
+spans them all and is said to include other children's work too; if any of
+those children has no recorded child base, they name every commit before the
+moved child base. Local gates and required CI checks are still selected from every
+path changed since the recorded child base, which the new start comment keeps
+recording. If the recorded child base is no longer on the branch (it was
+rebased or rewritten), Ralph starts from the current head and says so in the
+comment; it does the same when the latest trusted marker is malformed. A child
+without a marker starts from the current head.
+
+The loop of a standard run is:
 
 1. Run `$implement` with the configured implementation model. The review
    requested inside that skill stays.
@@ -347,6 +373,9 @@ limit or run budget, issue or CI corrections without a new commit,
 and `blocked` or `failed` results stop the run and leave the child open with
 `human-review` as its only lifecycle label. The handoff comment includes the
 outstanding findings and, for local gate or CI failures, the last diagnostic.
+Every handoff comment for a child whose child cycle started also says that the
+child's commits stay on the branch and will count as its work if it is
+relabelled `ready-for-agent`.
 
 Ralph publishes implementation evidence and adds `implemented` only after the
 issue review and configured verification succeed for the final commit. A child
@@ -358,10 +387,10 @@ process) leaves it `agent-working`. At startup, before any agent session, a run
 first marks `implemented` every child whose implementation evidence was already
 published, without asking. If children of the parent are still `agent-working`
 after that, Ralph shows one warning naming them all: it cannot tell an
-interrupted run from a run still active elsewhere; resuming while another run is
-active makes two agents do the same work on two branches; and resuming starts
-from the current branch head, so commits already made for these children are not
-covered by their implementation evidence. One choice applies to all of them:
+interrupted run from a run still active elsewhere, and resuming while another run
+is active makes two agents do the same work on two branches. A resumed child keeps
+its recorded child base, as described above, so commits already made for it
+count as its work. One choice applies to all of them:
 
 - **Stop** (the default) ends the run as `stopped safely` before any session,
   leaving the children `agent-working`. The terminal summary lists each one as
@@ -392,7 +421,8 @@ selection.
 Ctrl-C (SIGINT), `kill` (SIGTERM), and closing the terminal (SIGHUP) all
 interrupt a run the same way. Ralph ends the agent session in flight,
 terminating its engine process, and releases the child it was working on. If the
-branch head still equals the child's base commit, nothing was committed for it:
+branch head still equals the commit its child cycle started from, nothing was
+committed for it in that child cycle:
 the child goes back to `ready-for-agent` and the next run starts it again.
 Otherwise the child goes to `human-review` with a handoff comment naming the
 unverified commit range `<base>..<head>`; inspect those commits, then close the

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import dataclasses
 import functools
 import importlib.util
 import json
@@ -79,6 +80,8 @@ class RunMode:
 DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
 MAX_STOP_REASON_LENGTH = 1600
 ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
+# Persisted in child cycle start comments, so its value must never change.
+CHILD_BASE_MARKER_PREFIX = "<!-- ralph-child-base: "
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
@@ -140,7 +143,7 @@ class DiagnosticRecorder:
         self.sessions_directory.mkdir(parents=True)
         self.sequence = 0
         self.evidence_sequence = 0
-        self.issue_bases: dict[int, str] = {}
+        self.child_bases: dict[int, str] = {}
         self.latest_sessions: dict[int, tuple[pathlib.Path, str]] = {}
         self.phases: list[dict[str, Any]] = []
         self._write_json(
@@ -335,8 +338,11 @@ class RunState:
     rerun_command: str | None = None
     initial_implemented_children: set[int] | None = None
     summary: RunSummary = field(default_factory=RunSummary)
-    # The child the run holds agent working, with its base commit, until it leaves that state.
+    # The child the run holds agent working, with the branch head its child cycle
+    # started from, until it leaves that state.
     working_child: tuple[int, str] | None = None
+    # The child base of each child this run started a child cycle for.
+    child_bases: dict[int, ChildBase] = field(default_factory=dict)
 
     @property
     def config(self) -> RalphConfig:
@@ -706,7 +712,7 @@ def release_interrupted_child(state: RunState, interruption: Interrupted) -> Non
         set_child_lifecycle(state, child_number, "ready_for_agent")
     else:
         commits = f"{base}..{head}"
-        send_child_to_human_review(
+        send_started_child_to_human_review(
             state,
             child_number,
             f"Ralph stopped because the run was interrupted ({interruption}) before it "
@@ -778,8 +784,7 @@ def left_agent_working_warning(state: RunState, children: list[dict[str, Any]]) 
         f"{child_numbers(children)} labelled {configured_label(state, 'agent_working')}. "
         "Ralph cannot tell an interrupted run from a run still active "
         "elsewhere: resuming while another run is active makes two agents do the same work "
-        "on two branches. And resuming starts from the current branch head, so commits "
-        "already made for these children are not covered by their implementation evidence."
+        "on two branches."
     )
 
 
@@ -1207,17 +1212,15 @@ def latest_update_is_trusted_marker_comment(
     )
 
 
+def is_ancestor(state: RunState, ancestor: str, descendant: str) -> bool:
+    return command(
+        state, ["git", "merge-base", "--is-ancestor", ancestor, descendant], check=False
+    ).returncode == 0
+
+
 def heads_are_on_current_branch(state: RunState, heads: Iterable[str]) -> bool:
     branch_head = current_head(state)
-    return all(
-        command(
-            state,
-            ["git", "merge-base", "--is-ancestor", head, branch_head],
-            check=False,
-        ).returncode
-        == 0
-        for head in heads
-    )
+    return all(is_ancestor(state, head, branch_head) for head in heads)
 
 
 def blocker_is_satisfied(state: RunState, blocker: dict[str, Any]) -> bool:
@@ -1245,6 +1248,203 @@ def mark_child_agent_working(state: RunState, child_number: int) -> None:
         add=configured_label(state, "agent_working"),
         remove=[configured_label(state, "ready_for_agent")],
     )
+
+
+def latest_child_base_comment(state: RunState, issue: dict[str, Any]) -> str | None:
+    """The body of the child's latest trusted comment carrying a child base marker."""
+    for comment in reversed(issue.get("comments", [])):
+        body = str(comment.get("body", ""))
+        if trusted_comment(state, comment) and CHILD_BASE_MARKER_PREFIX in body:
+            return body
+    return None
+
+
+def recorded_child_base(state: RunState, issue: dict[str, Any]) -> str | None:
+    """The child base in the child's latest trusted child cycle start comment.
+
+    None when there is none, or when that latest comment's marker is malformed.
+    """
+    body = latest_child_base_comment(state, issue)
+    if body is None:
+        return None
+    match = re.search(re.escape(CHILD_BASE_MARKER_PREFIX) + r"(\{.*?\}) -->", body)
+    if match is None:
+        return None
+    try:
+        marker = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    child_base = marker.get("child_base") if isinstance(marker, dict) else None
+    if isinstance(child_base, str) and re.fullmatch(r"[0-9a-f]{40}", child_base):
+        return child_base
+    return None
+
+
+@dataclass(frozen=True)
+class ChildBase:
+    """The child base of one child cycle, and where its local gate selection starts."""
+
+    # Implementation evidence and the review session cover every commit after it.
+    commit: str
+    # The child base the child's start comment records; local gates and required
+    # CI checks are selected from every path changed since it. It differs from
+    # `commit` only when the child base moved past other children implemented
+    # after it (ADR 0001).
+    recorded: str
+    # The latest child implemented after `recorded`, when the child base moved to its verified head.
+    moved_past: int | None = None
+    # The commits before `commit` that the implementation evidence no longer
+    # covers, as `<from>..<to>`; `uncovered_is_exact` is false when the range
+    # may also hold other children's commits.
+    uncovered: str | None = None
+    uncovered_is_exact: bool = True
+
+    def uncovered_sentence(self) -> str:
+        """A leading-space sentence naming the uncovered commits, or "" when there are none."""
+        if self.uncovered is None:
+            return ""
+        if self.uncovered_is_exact:
+            return (
+                f" Commits `{self.uncovered}` from this child's earlier child cycles fall "
+                f"before child base `{self.commit}` and are not covered by this child's "
+                "implementation evidence."
+            )
+        return (
+            f" Commits `{self.uncovered}` fall before child base `{self.commit}` and are not "
+            "covered by this child's implementation evidence; they include this child's "
+            "earlier child cycles and other children's work."
+        )
+
+
+def children_implemented_after(
+    state: RunState,
+    child_number: int,
+    siblings: Iterable[dict[str, Any]],
+    recorded: str,
+    head: str,
+) -> list[tuple[str, dict[str, Any]]]:
+    """The other children whose trusted implementation evidence names a verified head
+    after `recorded` on the branch, each with that verified head, earliest first.
+
+    The evidence decides, not the implemented label, so a relabelled child's
+    commits are still never claimed.
+    """
+    implemented = []
+    for sibling in siblings:
+        number = int(sibling["number"])
+        if number == child_number:
+            continue
+        details = issue_details(state, number)
+        heads = verified_implementation_heads(state, details)
+        if heads is None:
+            continue
+        verified_head = heads[1]
+        if (
+            verified_head == recorded
+            or not is_ancestor(state, recorded, verified_head)
+            or not is_ancestor(state, verified_head, head)
+        ):
+            continue
+        distance = int(git(state, "rev-list", "--count", f"{recorded}..{verified_head}"))
+        implemented.append((distance, verified_head, details))
+    implemented.sort(key=lambda child: child[0])
+    return [(verified_head, details) for _distance, verified_head, details in implemented]
+
+
+def resumed_child_base(
+    state: RunState,
+    child_number: int,
+    siblings: Iterable[dict[str, Any]],
+    recorded: str,
+    head: str,
+) -> ChildBase:
+    """The child base of a child resumed from `recorded`, an ancestor of the branch head.
+
+    When other children were implemented after `recorded`, the child base moves
+    to the latest one's verified head. This child's earlier child cycles fall in
+    the gaps before each of those children's own recorded child base; the
+    uncovered range spans every gap that holds commits, and is exact only when
+    one gap does. Without every one of those recorded child bases, every commit
+    before the moved child base is named as uncovered.
+    """
+    later = children_implemented_after(state, child_number, siblings, recorded, head)
+    if not later:
+        return ChildBase(recorded, recorded)
+    latest_head, latest = later[-1]
+    moved = ChildBase(latest_head, recorded, int(latest["number"]))
+    gaps_with_commits = []
+    gap_start = recorded
+    for verified_head, details in later:
+        gap_end = recorded_child_base(state, details)
+        if (
+            gap_end is None
+            or not is_ancestor(state, gap_start, gap_end)
+            or not is_ancestor(state, gap_end, verified_head)
+        ):
+            return dataclasses.replace(
+                moved, uncovered=f"{recorded}..{latest_head}", uncovered_is_exact=False
+            )
+        if gap_end != gap_start:
+            gaps_with_commits.append((gap_start, gap_end))
+        gap_start = verified_head
+    if not gaps_with_commits:
+        return moved
+    return dataclasses.replace(
+        moved,
+        uncovered=f"{gaps_with_commits[0][0]}..{gaps_with_commits[-1][1]}",
+        uncovered_is_exact=len(gaps_with_commits) == 1,
+    )
+
+
+def start_child_cycle(
+    state: RunState,
+    child_number: int,
+    issue: dict[str, Any],
+    siblings: Iterable[dict[str, Any]],
+) -> ChildBase:
+    """Mark the child agent working, record its child base on the child, and return it.
+
+    A resumed child keeps the child base its latest trusted start comment
+    records while that commit is still on the branch, so its implementation
+    evidence, review session, and local gates cover its earlier child cycles.
+    The child base moves past other children implemented after it, but the
+    start comment keeps recording the original one.
+    """
+    head = current_head(state)
+    recorded = recorded_child_base(state, issue)
+    child_base = ChildBase(head, head)
+    note = ""
+    if recorded is not None:
+        if is_ancestor(state, recorded, head):
+            child_base = resumed_child_base(state, child_number, siblings, recorded, head)
+        else:
+            note = (
+                " Ralph started from the current branch head because the recorded "
+                f"child base `{recorded}` is no longer on the branch."
+            )
+    elif latest_child_base_comment(state, issue) is not None:
+        note = (
+            " Ralph started from the current branch head because the latest child base "
+            "marker is malformed."
+        )
+    if child_base.moved_past is not None:
+        note = (
+            f"{child_base.uncovered_sentence()} The child base moved there from the recorded "
+            f"child base `{child_base.recorded}` because #{child_base.moved_past} was "
+            "implemented after it; local gates and required CI checks are still selected "
+            f"from every path changed since `{child_base.recorded}`."
+        )
+    state.working_child = (child_number, head)
+    state.child_bases[child_number] = child_base
+    mark_child_agent_working(state, child_number)
+    marker = json.dumps({"child_base": child_base.recorded}, separators=(",", ":"))
+    state.github.comment_on_issue(
+        child_number,
+        f"{CHILD_BASE_MARKER_PREFIX}{marker} -->\n"
+        f"Ralph started a child cycle from child base `{child_base.commit}`: this child's "
+        f"implementation evidence covers every commit after it.{note}",
+    )
+    return child_base
 
 
 def mark_child_implemented(state: RunState, child_number: int) -> None:
@@ -1325,11 +1525,7 @@ def verify_agent_git_effect(
     after_head = current_head(state)
     if git(state, "status", "--porcelain"):
         raise ChildWorkRejected(f"worktree is dirty after {role}")
-    if command(
-        state,
-        ["git", "merge-base", "--is-ancestor", before_head, after_head],
-        check=False,
-    ).returncode != 0:
+    if not is_ancestor(state, before_head, after_head):
         raise ChildWorkRejected(f"{role} rewrote or replaced the verified commit base")
     commits = git(state, "rev-list", "--reverse", f"{before_head}..{after_head}").splitlines()
     if result["outcome"] == "committed" and not commits:
@@ -1468,7 +1664,7 @@ def session_context(state: RunState, issue_number: int, head_sha: str) -> str:
     context = (
         f"\n\nShared context:\nIssue: https://github.com/{repository}/issues/{issue_number}\n"
         f"Parent: https://github.com/{repository}/issues/{state.summary.parent}\n"
-        f"Issue base commit: {state.diagnostics.issue_bases.get(issue_number, head_sha)}\n"
+        f"Child base commit: {state.diagnostics.child_bases.get(issue_number, head_sha)}\n"
         f"Current commit: {head_sha}\nWorking directory: {state.repository_root}\n"
         f"Verification evidence (command metadata identifies each commit): {state.diagnostics.directory / 'evidence'}\n"
     )
@@ -1497,6 +1693,19 @@ matches the supplied JSON schema.
 
 
 def review_prompt(state: RunState, child_number: int, base_sha: str, head_sha: str) -> str:
+    child_base = state.child_bases.get(child_number)
+    uncovered = ""
+    if child_base is not None and child_base.uncovered is not None:
+        commits = (
+            f"from earlier child cycles of issue #{child_number}"
+            if child_base.uncovered_is_exact
+            else f"that include earlier child cycles of issue #{child_number}"
+        )
+        uncovered = f"""
+Commits `{child_base.uncovered}` {commits} are on the branch
+but fall before that diff, because another child was implemented on top of them.
+Do not treat that work as absent.
+"""
     return f"""A previous agent implemented GitHub issue #{child_number}.
 
 Review the exact `{base_sha}...{head_sha}` diff. Read the issue with `gh`. Check
@@ -1504,7 +1713,7 @@ every acceptance criterion against the current code, including pre-existing
 partial work, and check that the change has no actionable bugs. Fix any
 actionable problem in the current worktree and commit the correction. Otherwise,
 make no change. Do not push or change GitHub issue or pull request state.
-
+{uncovered}
 Return a result that matches the supplied JSON schema.
 
 {agent_result_guidance(state)}"""
@@ -1649,12 +1858,29 @@ def send_child_to_human_review(state: RunState, child_number: int, body: str) ->
     set_child_lifecycle(state, child_number, "human_review")
 
 
+def send_started_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
+    """Hand a child whose child cycle started to human review, saying its commits stay.
+
+    A child relabelled ready-for-agent resumes from its recorded child base, so the
+    commits on the branch count as its work.
+    """
+    send_child_to_human_review(
+        state,
+        child_number,
+        f"{body}\n\nThis child's commits stay on the branch and will count as its work "
+        f"if it is relabelled `{configured_label(state, 'ready_for_agent')}`.",
+    )
+
+
 def stop_children_for_dependency_deadlock(
     state: RunState, children: Iterable[dict[str, Any]]
 ) -> None:
     for child in children:
         child_number = int(child["number"])
-        send_child_to_human_review(
+        # Only a child that would resume from its recorded child base keeps its commits.
+        recorded = recorded_child_base(state, issue_details(state, child_number))
+        resumable = recorded is not None and is_ancestor(state, recorded, current_head(state))
+        (send_started_child_to_human_review if resumable else send_child_to_human_review)(
             state,
             child_number,
             "Ralph stopped because the parent has a dependency deadlock. This child "
@@ -1939,7 +2165,10 @@ def publish_success(
     implementation_range: str,
     correction_range: str | None,
     verified_head: str,
+    uncovered_commits: str = "",
 ) -> None:
+    """Publish the child's implementation evidence; `uncovered_commits` is a leading-space
+    sentence naming commits before the child base it no longer covers, if any."""
     mode = state.mode
     implementation_head = implementation_range.rsplit("..", 1)[1]
     evidence = json.dumps(
@@ -1958,7 +2187,7 @@ def publish_success(
     body = (
         f"{mode.implementation_evidence_prefix}{evidence} -->\n"
         f"Ralph verified implementation commits `{implementation_range}` and "
-        f"{correction_evidence}. {verification_evidence(state, verified_head)}"
+        f"{correction_evidence}.{uncovered_commits} {verification_evidence(state, verified_head)}"
     )
     require_published_exact_head(state, branch, verified_head)
     state.github.comment_on_issue(child_number, body)
@@ -2115,7 +2344,9 @@ def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
         run_session=functools.partial(run_session, context.state),
         run_local_gates=functools.partial(check_local_gates, context),
         verify_ci=functools.partial(verify_with_ci, context),
-        hand_to_human_review=functools.partial(send_child_to_human_review, context.state),
+        hand_to_human_review=functools.partial(
+            send_started_child_to_human_review, context.state
+        ),
     )
 
 
@@ -2235,13 +2466,13 @@ def run_children(
 
         child_number = int(selected_child["number"])
         print(f"▶️  Starting child #{child_number}.", flush=True)
-        require_trusted_issue(state, issue_details(state, child_number))
-        base_sha = current_head(state)
-        state.working_child = (child_number, base_sha)
-        mark_child_agent_working(state, child_number)
-        state.diagnostics.issue_bases[child_number] = base_sha
+        details = issue_details(state, child_number)
+        require_trusted_issue(state, details)
+        child_base = start_child_cycle(state, child_number, details, siblings)
+        state.diagnostics.child_bases[child_number] = child_base.commit
         cycle = run_child_cycle(
-            child_number, base_sha, budget, adapters, review=state.mode.review
+            child_number, child_base.commit, budget, adapters,
+            review=state.mode.review, gate_base=child_base.recorded,
         )
         if isinstance(cycle, HandedToHumanReview):
             state.working_child = None
@@ -2249,7 +2480,7 @@ def run_children(
 
         implementation_head = cycle.implementation_head
         verified_head = cycle.verified_head
-        implementation_range = f"{base_sha}..{implementation_head}"
+        implementation_range = f"{child_base.commit}..{implementation_head}"
         correction_range = (
             f"{implementation_head}..{verified_head}"
             if implementation_head != verified_head else None
@@ -2261,6 +2492,7 @@ def run_children(
             implementation_range,
             correction_range,
             verified_head,
+            child_base.uncovered_sentence(),
         )
         state.working_child = None
         print(f"✅ Completed child #{child_number}", flush=True)
