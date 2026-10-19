@@ -2787,6 +2787,22 @@ class BackupTakeoverTests(AgentSessionTestCase):
             result.stdout,
         )
 
+    def test_failed_review_session_is_replayed_by_the_backup(self):
+        result = self.start_engine(
+            loop_review.MODE,
+            EngineResult("committed"),
+            EngineResult(writes_result=False, commit=False),
+            EngineResult("no_changes"),
+        )
+
+        self.assert_implemented(result)
+        self.assertEqual(self.engine.engines(), ["codex", "codex", "claude"])
+        self.assert_backup_call(self.engine.calls[2])
+        self.assertEqual(self.engine.calls[2].prompt, self.engine.calls[1].prompt)
+        self.assertIn(
+            f"⚠️ Codex engine failure in the review session for child #{CHILD}", result.stdout
+        )
+
     def test_switch_is_announced_and_recorded_in_the_run_diagnostics(self):
         result = self.start_engine(
             loop.MODE,
@@ -2818,7 +2834,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
             },
         })
 
-    def test_backup_engine_failure_stops_the_run_naming_both_failures(self):
+    def test_engine_failure_of_the_backup_stops_the_run_naming_both_failures(self):
         result = self.start_engine(
             loop.MODE,
             EngineResult(writes_result=False, commit=False),
@@ -2827,8 +2843,9 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
         self.assert_stopped_without_publishing(
             result,
-            "backup Claude Code engine failure: Claude Code reported an error; inspect retained "
-            "session output; after the Codex engine failure: agent did not return valid structured output",
+            "engine failure of the backup (Claude Code): Claude Code reported an error; inspect "
+            "retained session output; after the Codex engine failure: agent did not return valid "
+            "structured output",
         )
         self.assertEqual(self.engine.engines(), ["codex", "claude"])
 
@@ -2858,7 +2875,8 @@ class BackupTakeoverTests(AgentSessionTestCase):
                 EngineResult("committed"),
             ], 0),
             ("Git effect rejection", [EngineResult("committed", commit=False)], 1),
-            ("interruption", [KeyboardInterrupt()], 130),
+            ("Ctrl-C", [KeyboardInterrupt()], 130),
+            ("SIGTERM", [loop_core.Interrupted(signal.SIGTERM)], 143),
         ):
             with self.subTest(name):
                 self.new_child_run()
