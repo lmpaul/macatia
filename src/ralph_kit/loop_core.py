@@ -778,20 +778,16 @@ class BackupSwitch:
     failure: EngineFailure
     role: str
     child: int
-    # False when the run budget left no session to replay the failed one with the backup.
+    # False when the run budget left no session to replay the failed one, so no switch happened.
     took_over: bool
 
     def summary_line(self, backup: AgentProfile) -> str:
-        cause = (
-            f"after a {engine_name(self.failure.engine)} engine failure "
-            f"({self.role} session, child #{self.child})"
-        )
-        label = f"{engine_name(backup.engine)} {profile_label(backup)}"
-        if self.took_over:
-            return f"- backup: {label} took over {cause}\n"
+        failed_engine = engine_name(self.failure.engine)
+        if not self.took_over:
+            return f"- engine failure: {failed_engine} in the {self.role} session for child #{self.child}\n"
         return (
-            f"- backup: {label} did not take over {cause}: "
-            "the run budget left no session to replay it\n"
+            f"- backup: {engine_name(backup.engine)} {profile_label(backup)} took over after a "
+            f"{failed_engine} engine failure ({self.role} session, child #{self.child})\n"
         )
 
 
@@ -2338,7 +2334,9 @@ def run_session(state: RunState, request: SessionRequest) -> SessionResult:
                 f"the {engine_name(regular_failure.engine)} engine failure: {regular_failure}"
             ) from failure
         switch_to_backup(state, request, failure, start_head)
-        return run_session(state, request)
+        replay = run_session(state, request)
+        print("✅ The backup took over and runs every session for the rest of the run.", flush=True)
+        return replay
     return SessionResult(
         result["outcome"], result["summary"], result["findings"], head, commits
     )
@@ -2347,7 +2345,10 @@ def run_session(state: RunState, request: SessionRequest) -> SessionResult:
 def switch_to_backup(
     state: RunState, request: SessionRequest, failure: EngineFailure, start_head: str
 ) -> None:
-    """Drop what the failed session left, then let the backup take over if the run budget allows its replay."""
+    """Drop what the failed session left, then switch to the backup if the run budget allows its replay.
+
+    Without a session left for the replay, the run reports the engine failure alone.
+    """
     git(state, "reset", "--hard", start_head)
     # Ignored files, Ralph's diagnostics among them, stay.
     git(state, "clean", "-fd")
@@ -2362,14 +2363,14 @@ def switch_to_backup(
         budget.start(request.role)
     except RunBudgetExhausted as error:
         state.backup_switch = BackupSwitch(failure, request.role, request.child, took_over=False)
-        print(f"{announcement} The run budget leaves no session to replay it with the backup.", flush=True)
+        print(announcement, flush=True)
         error.diagnostic = str(failure)
         raise
     state.backup_switch = BackupSwitch(failure, request.role, request.child, took_over=True)
     state.diagnostics.record_backup_switch(state.backup_switch, backup)
     print(
-        f"{announcement} The backup, {engine_name(backup.engine)} ({profile_label(backup)}), "
-        "takes over every session for the rest of the run.",
+        f"{announcement} Switching to the backup, {engine_name(backup.engine)} "
+        f"({profile_label(backup)}).",
         flush=True,
     )
 

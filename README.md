@@ -328,16 +328,17 @@ drops the failed session's commits and uncommitted files, so they are never
 pushed, and replays the same session with the backup from the head the failed
 session started from. The backup then runs every later session of the run,
 whatever its role; the console announces the switch with the failed engine, its
-exit detail, and the backup, and later session lines show the backup's engine
-and profile. The run diagnostics keep the failed session and record the switch
-in `run.json`. The run summary, in the terminal and on the parent issue and the
-cumulative draft PR, gains a line such as `- backup: Claude Code Opus - High took
-over after a Codex engine failure (review session, child #12)`; it still names
-the engine failure when the backup failed too or the run budget left no session
-to replay it, and has no such line without an engine failure. The failed session counts
-toward the run budget; when it was the
-last session the budget allowed, the child goes to human review as for any
-exhausted run budget. A failed correction and its replay count as one
+exit detail, and the backup, confirms it once the replay returns a result, and
+later session lines show the backup's engine and profile. The run diagnostics
+keep the failed session and record the switch in `run.json`. The run summary, in
+the terminal and on the parent issue and the cumulative draft PR, gains a line
+such as `- backup: Claude Code Opus - High took over after a Codex engine failure
+(review session, child #12)`, kept when the backup failed too, and has no such
+line without an engine failure. The failed session counts toward the run budget;
+when it was the last session the budget allowed, no switch happens: the console
+and the run summary report the engine failure alone, such as `- engine failure:
+Codex in the review session for child #12`, and the child goes to human review
+as for any exhausted run budget. A failed correction and its replay count as one
 correction. An engine failure of the backup stops the run, naming both failures;
 there is no second backup and no switch back. The next run starts on the regular
 profiles again.

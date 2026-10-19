@@ -2859,8 +2859,11 @@ class BackupTakeoverTests(AgentSessionTestCase):
             f"⚠️ Codex engine failure in the implementation session for child #{CHILD}: "
             "implementation exited non-zero without a committed outcome "
             "(Codex exited with code 1: Error: You have hit your usage limit.). "
-            "The backup, Claude Code (Opus - High), takes over every session for the rest of the run.\n",
+            "Switching to the backup, Claude Code (Opus - High).\n",
             result.stdout,
+        )
+        self.assertIn(
+            "✅ The backup took over and runs every session for the rest of the run.\n", result.stdout
         )
         failed, replay = self.repository.session_records()
         self.assertEqual((failed["engine"], failed["returncode"]), ("codex", 1))
@@ -2892,6 +2895,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
             "structured output",
         )
         self.assertEqual(self.engine.engines(), ["codex", "claude"])
+        self.assertNotIn("✅ The backup took over", result.stdout)
         self.assert_backup_line(
             result,
             f"- backup: Claude Code Opus - High took over after a Codex engine failure "
@@ -2935,14 +2939,14 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
                 self.assertEqual(result.exit_code, expected_exit, result.stderr)
                 self.assertEqual(self.engine.engines(), ["codex"] * len(results))
-                self.assertNotIn("takes over every session", result.stdout)
+                self.assertNotIn("backup", result.stdout)
 
     def test_nonzero_exit_with_a_valid_committed_result_is_accepted_without_switching(self):
         result = self.start_engine(loop.MODE, EngineResult("committed", returncode=1))
 
         self.assert_implemented(result)
         self.assertEqual(self.engine.engines(), ["codex"])
-        self.assertNotIn("takes over every session", result.stdout)
+        self.assertNotIn("backup", result.stdout)
 
     def test_failed_session_counts_toward_the_run_budget(self):
         self.new_child_run()
@@ -2976,15 +2980,23 @@ class BackupTakeoverTests(AgentSessionTestCase):
             "implementation exited non-zero without a committed outcome",
         )
         self.assertEqual(self.engine.engines(), ["codex"])
-        self.assertNotIn("takes over every session", result.stdout)
+        self.assertNotIn("backup", result.stdout)
         self.assertEqual(self.repository.head(), self.start_head)
         self.assertTrue(self.repository.is_clean())
+        self.assertIn(
+            f"⚠️ Codex engine failure in the implementation session for child #{CHILD}: "
+            "implementation exited non-zero without a committed outcome",
+            result.stdout,
+        )
         self.assert_backup_line(
             result,
-            f"- backup: Claude Code Opus - High did not take over after a Codex engine failure "
-            f"(implementation session, child #{CHILD}): the run budget left no session to replay it",
+            f"- engine failure: Codex in the implementation session for child #{CHILD}",
             stream="stderr",
         )
+        for summary in self.published_summaries(result, stream="stderr"):
+            self.assertNotIn("backup", summary)
+        run_record = json.loads((self.repository.diagnostics() / "run.json").read_text())
+        self.assertNotIn("backup_switch", run_record)
 
     def test_failed_correction_and_its_replay_count_as_one_correction(self):
         self.new_child_run(local_gate_results=("fail", "fail", "fail", "pass"))
