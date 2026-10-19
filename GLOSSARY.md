@@ -43,6 +43,10 @@ _Avoid_: Pipeline, workflow
 The part of the loop that takes one runnable child from its implementation session to a verified head or to human review; publication of implementation evidence follows it.
 _Avoid_: Attempt, completion
 
+**Child base**:
+The branch commit a child's work starts from; its implementation evidence and review session cover every commit after it.
+_Avoid_: Issue base, starting commit
+
 **Run**:
 One execution of the loop against a parent issue, until no runnable child is left or the run stops.
 _Avoid_: Runner, execution
