@@ -113,6 +113,7 @@ SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] 
         lambda config: f"{config.repository} · {config.base_branch} · {config.remote}",
         lambda key: key in {"repository", "base_branch", "remote"},
     ),
+    "Reviewed runs by default": (lambda config: _on(config.review_by_default), lambda key: key == "review_by_default"),
 }
 
 
@@ -123,6 +124,7 @@ def _toml_values(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
         "base_branch": config.base_branch,
         "remote": config.remote,
         "trusted_authors": ", ".join(sorted(config.trusted_authors)),
+        "review_by_default": str(config.review_by_default).lower(),
         **{f"labels.{key}": value for key, value in config.labels.items()},
     }
     for role, profile in {**config.models, BACKUP_MODEL_KEY: config.backup}.items():
@@ -246,6 +248,17 @@ def _ask_model(
     return profile
 
 
+def _ask_role_profile(prompter: Prompter, config: RalphConfig, state: EditState, role: str) -> AgentProfile:
+    """The role's model profile, from its current one; without one (no review) it starts from init's defaults."""
+    current = config.models.get(role)
+    engine = _choose_engine(prompter, role, (current or config.models["implementation"]).engine, state.installed)
+    return _ask_model(
+        prompter, state, engine, current, role, f"Model for {role}",
+        effort="high" if role == "review" else "medium",
+        avoid={BACKUP_MODEL_KEY: config.backup} if config.backup else {},
+    )
+
+
 def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
     while True:
         role = prompter.choice(
@@ -255,13 +268,8 @@ def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditSta
         )
         if role == BACK:
             return config
-        current = config.models.get(role)  # None for a configuration without review: it starts from init's defaults.
-        engine = _choose_engine(prompter, role, (current or config.models["implementation"]).engine, state.installed)
-        profile = _ask_model(
-            prompter, state, engine, current, role, f"Model for {role}",
-            effort="high" if role == "review" else "medium",
-            avoid={BACKUP_MODEL_KEY: config.backup} if config.backup else {},
-        )
+        current = config.models.get(role)
+        profile = _ask_role_profile(prompter, config, state, role)
         if profile == current:
             continue
         models = {**config.models, role: profile}
@@ -336,6 +344,28 @@ def _edit_verification(prompter: Prompter, config: RalphConfig, state: EditState
             prompter.say(f"  ⚠ {names} missing: `ralph-kit check` will fail until {'they exist' if len(missing) > 1 else 'it exists'}.")
 
 
+def _edit_review_by_default(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+    enabled = config.review_by_default
+    answer = prompter.choice(
+        f"Reviewed runs by default: {_on(enabled)} — what do you want to do?",
+        [
+            ("Turn off", "runs are standard unless started with --review") if enabled
+            else ("Turn on", "every run is a reviewed run unless started with --no-review"),
+            (BACK, ""),
+        ],
+        BACK,
+    )
+    if answer == BACK:
+        return config
+    if not enabled and "review" not in config.models:
+        prompter.say("  Reviewed runs need a model profile for review.")
+        profile = _ask_role_profile(prompter, config, state, "review")
+        config = dataclasses.replace(config, models={**config.models, "review": profile})
+        prompter.say(f"  ✓ review: {_profile_summary(profile)}")
+    prompter.say(f"  Reviewed runs by default {_on(not enabled)}")  # Turning it off keeps the review profile.
+    return dataclasses.replace(config, review_by_default=not enabled)
+
+
 class GitField(NamedTuple):
     key: str
     question: str
@@ -399,6 +429,7 @@ EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = 
     "Trusted authors": _edit_trusted_authors,
     "Verification": _edit_verification,
     "Git": _edit_git,
+    "Reviewed runs by default": _edit_review_by_default,
 }
 
 
@@ -471,7 +502,7 @@ def run(
     staged = target.with_name(f".{target.name}.configure")
     staged.write_text(render(edited, root), encoding="utf-8")
     try:
-        load_config(staged, root, require_review="review" in edited.models)
+        load_config(staged, root, require_review="review" in edited.models or edited.review_by_default)
     except RalphConfigError as error:  # The renderer must always produce a loadable file.
         staged.unlink()
         raise ConfigureError(f"saved configuration is invalid, please report this bug: {error}") from error
