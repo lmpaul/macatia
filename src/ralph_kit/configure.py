@@ -20,9 +20,12 @@ from .config import (
 )
 from .init import (
     CONFIG_NAME,
+    ENGINES,
     CommandRunner,
     InitAborted,
     Prompter,
+    ask_profile,
+    codex_catalog,
     create_offered_labels,
     current_login,
     detect_repository,
@@ -58,8 +61,16 @@ class EditState:
 
     command: CommandRunner
     saved_repository: str  # The repository in the file: going back to it is no repository change.
+    installed: list[str]  # Agent CLIs found on this machine.
     # Missing labels ({role: name}) the user agreed to create on the edited repository once the file is written.
     labels_to_create: dict[str, str] = dataclasses.field(default_factory=dict)
+    catalogs: dict[str, list[dict]] = dataclasses.field(default_factory=dict)
+
+    def catalog(self, engine: str) -> list[dict]:
+        """The engine's model catalog, asked once; [] for Claude or when Codex cannot list it."""
+        if engine not in self.catalogs:
+            self.catalogs[engine] = codex_catalog(self.command) if engine == "codex" else []
+        return self.catalogs[engine]
 
 
 def _profile_summary(profile: AgentProfile) -> str:
@@ -77,6 +88,15 @@ def _models_summary(config: RalphConfig) -> str:
         else:
             parts.append(f"{role} {_profile_summary(profile)}")
     return " · ".join(parts)
+
+
+def _role_summary(config: RalphConfig, role: str) -> str:
+    profile = config.models.get(role)
+    if profile is None:
+        return "none"
+    if role == "correction" and profile == config.models.get("implementation"):
+        return "same as implementation"
+    return _profile_summary(profile)
 
 
 def _on(value: bool) -> str:
@@ -193,6 +213,55 @@ def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, state: EditSt
         prompter.say(f"  ✓ {author} added")
 
 
+def _choose_engine(prompter: Prompter, role: str, current: str, installed: list[str]) -> str:
+    """The role's engine among the installed CLIs and its current one, which may not be installed here."""
+    engines = [engine for engine in ENGINES if engine in installed or engine == current]
+    if len(engines) == 1:
+        prompter.say(f"  Engine: {current} ({ENGINES[current]}, the only one available)")
+        return current
+    return prompter.choice(
+        f"Engine for {role}",
+        [(engine, ENGINES[engine] + ("" if engine in installed else ", not installed here")) for engine in engines],
+        current,
+    )
+
+
+def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+    while True:
+        role = prompter.choice(
+            "Model profiles: which session role do you want to change?",
+            [*((role, _role_summary(config, role)) for role in MODEL_ROLES), (BACK, "")],
+            BACK,
+        )
+        if role == BACK:
+            return config
+        current = config.models.get(role)  # None for a configuration without review: it starts from init's defaults.
+        engine = _choose_engine(prompter, role, (current or config.models["implementation"]).engine, state.installed)
+        same_engine = current is not None and current.engine == engine
+        avoid = {BACKUP_MODEL_KEY: dataclasses.asdict(config.backup)} if config.backup else {}
+        values = ask_profile(
+            prompter, engine, state.catalog(engine), role, f"Model for {role}",
+            current.reasoning_effort if current else ("high" if role == "review" else "medium"),
+            avoid, current.name if same_engine else None,
+        )
+        profile = AgentProfile(**values)
+        if same_engine and profile.name == current.name:  # The same model keeps the name it is shown with.
+            profile = dataclasses.replace(profile, display_name=current.display_name)
+        if profile == current:
+            continue
+        models = {**config.models, role: profile}
+        if role == "implementation" and config.models.get("correction") == current:
+            follows = prompter.choice(
+                "Correction has the same model profile as implementation: should it follow?",
+                [("Yes", f"correction becomes {_profile_summary(profile)}"), ("No", f"correction keeps {_profile_summary(current)}")],
+                "Yes",
+            )
+            if follows == "Yes":
+                models["correction"] = profile
+        config = dataclasses.replace(config, models=models)
+        prompter.say(f"  ✓ {role}: {_profile_summary(profile)}")
+
+
 def _edit_verification(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
     while True:
         verification = config.verification
@@ -275,6 +344,7 @@ def _edit_git(prompter: Prompter, config: RalphConfig, state: EditState) -> Ralp
 
 
 EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = {
+    "Model profiles": _edit_model_profiles,
     "Trusted authors": _edit_trusted_authors,
     "Verification": _edit_verification,
     "Git": _edit_git,
@@ -326,7 +396,7 @@ def run(
         prompter.say(f"ℹ {display_path} has comments that ralph-kit does not write: saving will drop them.")
 
     edited = original
-    state = EditState(command, original.repository)
+    state = EditState(command, original.repository, [engine for engine in ENGINES if which(engine)])
     try:
         while True:
             answer = _menu(prompter, str(display_path), edited, changes(original, edited, root))

@@ -80,7 +80,15 @@ profiles, backup, trusted authors, verification, Git), each with its current val
 and `*` once changed. Pick a section to change only what it holds; nothing is
 re-detected over an existing value, and the values no section edits (label names,
 quality policy paths, display names, a correction profile distinct from
-implementation) are kept. Trusted authors lists the configured accounts, adds one
+implementation) are kept. Model profiles picks a session role (implementation, review or
+correction) and asks its engine (the installed agent CLIs plus the role's current one,
+which is the default even when its CLI is not installed here), model and reasoning effort
+as `init` does, with the current values as defaults; a model keeps its display name unless
+it changes. When implementation changes and correction was identical to it, `configure`
+asks whether correction follows (Yes by default). With a backup, efforts that would make
+the profile identical to it, and models whose every effort would, are shown unavailable
+("same as backup"); a free model name clashing with it is explained and asked again.
+Trusted authors lists the configured accounts, adds one
 (a duplicate is not added twice) or removes one, but never the last, and warns when
 the current `gh` account is not trusted, since Ralph would then ignore its own
 implementation evidence. Git changes the repository (owner/name), base branch and
@@ -97,8 +105,7 @@ saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses
 comments added by hand are dropped (`configure` says so when it opens the file). It
 needs a terminal; without one, edit the TOML directly. An invalid configuration is
 refused with the error: fix the file, or start over with `ralph-kit init --force`.
-Only the trusted authors, verification and Git sections are editable for now; the
-others show their value.
+Only the backup section is not editable yet; it shows its value.
 
 For a variant of an existing configuration, copy the file, then change the copy:
 

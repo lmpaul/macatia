@@ -24,6 +24,13 @@ from test_init import CUSTOM_CONFIGURATION, DEFAULT_CONFIGURATION  # noqa: E402
 GH_LOGIN = ("gh", "api", "user", "--jq", ".login")
 GH_REPOSITORY = ("gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef")
 GIT_REMOTES = ("git", "remote")
+CODEX_MODELS = ("codex", "debug", "models")
+CODEX_CATALOG = json.dumps({"models": [
+    {"slug": "codex-large", "description": "Smart", "visibility": "list", "priority": 2,
+     "supported_reasoning_levels": [{"effort": "medium"}, {"effort": "high"}, {"effort": "ultra"}]},
+    {"slug": "codex-mini", "description": "Mini", "visibility": "list", "priority": 5,
+     "supported_reasoning_levels": [{"effort": "low"}]},
+]})
 
 
 def labels_of(repository):
@@ -39,6 +46,7 @@ class ConfigureTests(unittest.TestCase):
         self.responses = {}
         self.command = lambda *args: self.responses.get(args)
         self.output = io.StringIO()
+        self.installed = set()  # Agent CLIs on PATH.
         self.write(DEFAULT_CONFIGURATION)
 
     def write(self, contents, name="ralph.toml"):
@@ -64,7 +72,8 @@ class ConfigureTests(unittest.TestCase):
         prompter = init.Prompter(interactive=answers is not None, read=read, output=self.output)
         options = {} if config is None else {"config": config}
         return configure.run(
-            self.root, prompter, command=lambda *args: self.command(*args), which=lambda name: None, **options
+            self.root, prompter, command=lambda *args: self.command(*args),
+            which=lambda name: f"/usr/bin/{name}" if name in self.installed else None, **options
         )
 
     def menu(self):
@@ -104,7 +113,7 @@ class ConfigureTests(unittest.TestCase):
         menu = self.menu()
         self.assertIn("? ralph.toml — what do you want to change?", self.output.getvalue())
         lines = [line.strip() for line in menu.strip().splitlines()]
-        self.assertEqual(lines[0], "1)   Model profiles  (implementation claude/sonnet medium · review claude/opus high · correction = implementation)  (unavailable: not editable yet: edit the file directly)")
+        self.assertEqual(lines[0], "1)   Model profiles  (implementation claude/sonnet medium · review claude/opus high · correction = implementation)")
         self.assertTrue(lines[1].startswith("2)   Backup  (codex/codex-large medium)"))
         self.assertTrue(lines[2].startswith("3)   Trusted authors  (octocat)"))
         self.assertEqual(lines[3], "4)   Verification  (local off · CI off)")
@@ -243,8 +252,8 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("Next step: commit b.toml, then run `ralph-kit check --config b.toml`.", self.output.getvalue())
 
     def test_unavailable_sections_are_refused_by_number(self):
-        self.run_configure(answers=["1", "7"])
-        self.assertIn("Model profiles is unavailable", self.output.getvalue())
+        self.run_configure(answers=["2", "7"])
+        self.assertIn("Backup is unavailable", self.output.getvalue())
 
     def test_git_edits_the_repository_base_branch_and_remote(self):
         # Without gh or git output: no hint and no label offer, editing still works.
@@ -381,6 +390,146 @@ class ConfigureTests(unittest.TestCase):
         self.assertNotIn("Labels missing on acme/widget", self.output.getvalue())
         self.assertEqual(created, [])
         self.assertEqual(load_config(self.root / "ralph.toml", self.root).remote, "upstream")
+
+    def models(self):
+        config = load_config(self.root / "ralph.toml", self.root, require_review=False)
+        return {
+            role: (profile.engine, profile.name, profile.display_name, profile.reasoning_effort)
+            for role, profile in config.models.items()
+        }
+
+    def test_model_profiles_changes_the_engine_model_and_effort_of_a_role(self):
+        self.installed = {"claude", "codex"}
+        self.responses[CODEX_MODELS] = CODEX_CATALOG
+        # Review: codex, first listed model, current effort kept; then Back and Save.
+        self.assertTrue(self.run_configure(answers=["1", "2", "2", "", "", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn(
+            "? Model profiles: which session role do you want to change?\n"
+            "  1) implementation  (claude/sonnet medium)\n  2) review  (claude/opus high)\n"
+            "  3) correction  (same as implementation)\n  4) Back\n",
+            output,
+        )
+        self.assertIn("? Engine for review\n  1) claude  (Claude Code)\n  2) codex  (Codex)\n", output)
+        self.assertIn("Choice [1]: ", self.prompts)  # The current engine is the default.
+        self.assertIn("  1) codex-large  (Smart)\n  2) codex-mini  (Mini)\n  3) other", output)
+        self.assertIn("  1) medium  (unavailable: same as backup)\n  2) high\n  3) ultra\n", output)
+        self.assertIn("  ✓ review: codex/codex-large high", output)
+        self.assertIn("* Model profiles  (implementation claude/sonnet medium · review codex/codex-large high", self.menu())
+        self.assertIn(
+            "Changes:\n  models.review.engine: claude → codex\n  models.review.name: opus → codex-large\n"
+            "  models.review.display_name: opus → codex-large\n",
+            output,
+        )
+        self.assertEqual(self.models()["review"], ("codex", "codex-large", "codex-large", "high"))
+        self.assertEqual(
+            self.read(),
+            DEFAULT_CONFIGURATION.replace(
+                'engine = "claude"\nname = "opus"\ndisplay_name = "opus"',
+                'engine = "codex"\nname = "codex-large"\ndisplay_name = "codex-large"',
+            ),
+        )
+
+    def test_the_current_engine_is_offered_even_when_not_installed(self):
+        self.installed = {"codex"}
+        self.run_configure(answers=["1", "1", "", "", "", "", "7"])
+        self.assertIn("? Engine for implementation\n  1) claude  (Claude Code, not installed here)\n  2) codex  (Codex)\n", self.output.getvalue())
+        # With no other CLI installed, the current engine is kept without asking.
+        self.output = io.StringIO()
+        self.installed = set()
+        self.assertFalse(self.run_configure(answers=["1", "1", "", "", "", "6"]))
+        output = self.output.getvalue()
+        self.assertNotIn("? Engine for", output)
+        self.assertIn("  Engine: claude (Claude Code, the only one available)", output)
+        self.assertIn("No changes: nothing written.", output)
+
+    def test_correction_follows_implementation_when_identical_and_on_yes(self):
+        # Implementation: fable, current effort medium kept; Enter answers Yes; Back, Save.
+        self.assertTrue(self.run_configure(answers=["1", "1", "1", "", "", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("  1) fable  (Fable, for the hardest and longest tasks)", output)
+        self.assertIn("? Correction has the same model profile as implementation: should it follow?", output)
+        self.assertIn("  3) correction  (same as implementation)", output.rsplit("Model profiles: which", 1)[1])
+        self.assertEqual(self.models()["correction"], ("claude", "fable", "fable", "medium"))
+        self.assertEqual(self.models()["correction"], self.models()["implementation"])
+        self.assertIn("models.correction.name: sonnet → fable", output)
+
+    def test_correction_keeps_its_profile_on_no(self):
+        self.assertTrue(self.run_configure(answers=["1", "1", "1", "", "2", "", "6"]))
+        self.assertEqual(self.models()["implementation"], ("claude", "fable", "fable", "medium"))
+        self.assertEqual(self.models()["correction"], ("claude", "sonnet", "sonnet", "medium"))
+        self.assertIn("· correction claude/sonnet medium", self.menu())
+
+    def test_a_distinct_correction_is_not_asked_to_follow(self):
+        self.write(CUSTOM_CONFIGURATION)
+        self.assertTrue(self.run_configure(answers=["1", "1", "4", "", "", "6"]))  # Implementation: haiku.
+        self.assertNotIn("should it follow", self.output.getvalue())
+        self.assertEqual(self.models()["implementation"], ("claude", "haiku", "haiku", "medium"))
+        self.assertEqual(self.models()["correction"], ("claude", "opus", "Opus fixer", "high"))
+
+    def test_correction_is_edited_on_its_own(self):
+        self.assertTrue(self.run_configure(answers=["1", "3", "2", "3", "", "6"]))  # Opus, high.
+        self.assertEqual(self.models()["correction"], ("claude", "opus", "opus", "high"))
+        self.assertEqual(self.models()["implementation"], ("claude", "sonnet", "sonnet", "medium"))
+        self.assertIn("· correction claude/opus high", self.menu())
+
+    def test_an_unchanged_model_keeps_its_display_name(self):
+        self.write(CUSTOM_CONFIGURATION)
+        # Implementation: sonnet kept, effort changed to high.
+        self.assertTrue(self.run_configure(answers=["1", "1", "", "3", "", "6"]))
+        self.assertEqual(self.models()["implementation"], ("claude", "sonnet", 'Sonnet "daily"', "high"))
+        self.assertIn("Changes:\n  models.implementation.reasoning_effort: medium → high\n\n", self.output.getvalue())
+
+    def test_efforts_same_as_the_backup_are_unavailable_and_refused_by_number(self):
+        self.installed = {"claude", "codex"}
+        self.responses[CODEX_MODELS] = CODEX_CATALOG
+        # Implementation: codex, codex-large, medium refused, then high; correction follows.
+        self.assertTrue(self.run_configure(answers=["1", "1", "2", "1", "1", "2", "", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("  medium is unavailable: same as backup.", output)
+        self.assertEqual(self.models()["implementation"], ("codex", "codex-large", "codex-large", "high"))
+        self.assertEqual(self.models()["correction"], self.models()["implementation"])
+
+    def test_a_model_is_unavailable_when_every_effort_is_the_backups(self):
+        self.write(DEFAULT_CONFIGURATION.replace('name = "codex-large"\ndisplay_name = "codex-large"\nreasoning_effort = "medium"',
+                                                 'name = "codex-mini"\ndisplay_name = "codex-mini"\nreasoning_effort = "low"'))
+        self.installed = {"claude", "codex"}
+        self.responses[CODEX_MODELS] = CODEX_CATALOG
+        # Review: codex, codex-mini refused, other with codex-mini (explained, asked again), then codex-large.
+        answers = ["1", "2", "2", "2", "3", "codex-mini", "1", "", "", "6"]
+        self.assertTrue(self.run_configure(answers=answers))
+        output = self.output.getvalue()
+        self.assertIn("  2) codex-mini  (Mini)  (unavailable: every reasoning effort same as backup)", output)
+        self.assertEqual(output.count("  codex-mini is unavailable: every reasoning effort same as backup."), 2)
+        self.assertEqual(self.models()["review"], ("codex", "codex-large", "codex-large", "high"))
+
+    def test_without_the_codex_catalog_the_current_model_is_the_default(self):
+        self.write(CUSTOM_CONFIGURATION)
+        # Review stays codex (not installed here, the only engine), Enter keeps gpt-5 and xhigh.
+        self.assertFalse(self.run_configure(answers=["1", "2", "", "", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("? Model for review (Codex model list unavailable)", output)
+        self.assertIn("Answer [gpt-5]: ", self.prompts)
+        self.assertIn("No changes: nothing written.", output)
+        self.assertEqual(self.read(), CUSTOM_CONFIGURATION)
+
+    def test_a_current_model_missing_from_the_catalog_stays_offered(self):
+        self.write(CUSTOM_CONFIGURATION)
+        self.responses[CODEX_MODELS] = CODEX_CATALOG
+        self.assertFalse(self.run_configure(answers=["1", "2", "", "", "", "6"]))
+        self.assertIn("  1) gpt-5  (current model)\n  2) codex-large  (Smart)\n", self.output.getvalue())
+        self.assertEqual(self.read(), CUSTOM_CONFIGURATION)
+
+    def test_a_configuration_without_review_can_add_one(self):
+        start, review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
+        self.write(start + review.split("\n\n", 1)[1])
+        self.assertTrue(self.run_configure(answers=["1", "2", "", "", "", "6"]))  # Init's defaults: opus, high.
+        self.assertIn("  2) review  (none)", self.output.getvalue())
+        self.assertEqual(self.models()["review"], ("claude", "opus", "opus", "high"))
+        self.assertEqual(self.read(), CUSTOM_CONFIGURATION.replace(
+            'engine = "codex"\nname = "gpt-5"\ndisplay_name = "GPT-5 review"\nreasoning_effort = "xhigh"',
+            'engine = "claude"\nname = "opus"\ndisplay_name = "opus"\nreasoning_effort = "high"',
+        ))
 
 
 if __name__ == "__main__":

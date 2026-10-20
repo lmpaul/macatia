@@ -47,7 +47,7 @@ CLAUDE_MODELS = [
     ("sonnet", "latest Sonnet, everyday coding"),
     ("haiku", "latest Haiku, fast and cheap"),
 ]
-DEFAULT_MODELS = {"claude": {"implementation": "sonnet", "review": "opus", "backup": "opus"}}
+DEFAULT_MODELS = {"claude": {"implementation": "sonnet", "review": "opus", "correction": "sonnet", "backup": "opus"}}
 EFFORTS = {
     "claude": sorted(CLAUDE_REASONING_EFFORTS, key=["low", "medium", "high", "xhigh", "max"].index),
     "codex": ["none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"],
@@ -59,6 +59,7 @@ PLACEHOLDERS = {
     "author": "YOUR_GITHUB_ACCOUNT",
     "implementation": "CHOOSE_IMPLEMENTATION_MODEL",
     "review": "CHOOSE_REVIEW_MODEL",
+    "correction": "CHOOSE_CORRECTION_MODEL",
     "backup": "CHOOSE_MODEL_FOR_BACKUP",
 }
 
@@ -263,7 +264,13 @@ def _model_unavailable(engine: str, catalog: list[dict], name: str, avoid: dict[
 
 
 def _choose_model(
-    prompter: Prompter, engine: str, catalog: list[dict], role: str, question: str, avoid: dict[str, dict]
+    prompter: Prompter,
+    engine: str,
+    catalog: list[dict],
+    role: str,
+    question: str,
+    avoid: dict[str, dict],
+    current: str | None = None,
 ) -> str:
     if engine == "claude":
         options = CLAUDE_MODELS
@@ -271,9 +278,15 @@ def _choose_model(
     else:
         options = [(model["name"], model["description"]) for model in catalog]
         default = options[0][0] if options else None
+    if current:  # Enter keeps the current model, listed or not.
+        if options and current not in (name for name, _ in options):
+            options = [(current, "current model"), *options]
+        default = current
     if not options:
         def ask() -> str:
-            return prompter.text(f"{question} (Codex model list unavailable)", placeholder=PLACEHOLDERS[role])
+            return prompter.text(
+                f"{question} (Codex model list unavailable)", default=current, placeholder=PLACEHOLDERS[role]
+            )
     elif not prompter.interactive:
         return PLACEHOLDERS[role]
     else:
@@ -291,7 +304,7 @@ def _choose_model(
     return name
 
 
-def _ask_profile(
+def ask_profile(
     prompter: Prompter,
     engine: str,
     catalog: list[dict],
@@ -299,10 +312,14 @@ def _ask_profile(
     question: str,
     effort: str,
     avoid: dict[str, dict] | None = None,
+    current: str | None = None,
 ) -> dict:
-    """A model profile; choices that would duplicate a model profile in avoid are shown unavailable."""
+    """A model profile; choices that would duplicate a model profile in avoid are shown unavailable.
+
+    current is the model to offer by default, when the role already has one on this engine.
+    """
     avoid = avoid or {}
-    name = _choose_model(prompter, engine, catalog, role, question, avoid)
+    name = _choose_model(prompter, engine, catalog, role, question, avoid, current)
     clashes = _effort_clashes(engine, catalog, name, avoid)
     efforts = list(clashes)
     preferred = [effort, efforts[len(efforts) // 2], *efforts]
@@ -399,13 +416,13 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         ("implementation", "Model for implementation and corrections", "medium"),
         ("review", "Model for the independent review (ralph-kit run --review)", "high"),
     ):
-        models[role] = _ask_profile(prompter, engine, catalog(engine), role, question, effort)
+        models[role] = ask_profile(prompter, engine, catalog(engine), role, question, effort)
     models["correction"] = dict(models["implementation"])
 
     if (chosen := _engine_for_backup(prompter, engine, installed)) != NO_BACKUP:
         # Correction copies implementation, so avoiding implementation avoids both.
         avoid = {role: models[role] for role in ("implementation", "review")}
-        models["backup"] = _ask_profile(prompter, chosen, catalog(chosen), "backup", "Model for the backup", "medium", avoid)
+        models["backup"] = ask_profile(prompter, chosen, catalog(chosen), "backup", "Model for the backup", "medium", avoid)
 
     return {
         "create_labels": offer_labels(prompter, command, repository),
