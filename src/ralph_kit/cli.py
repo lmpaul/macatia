@@ -17,6 +17,7 @@ commands:
       --caffeinate keeps the machine from idle-sleeping until the run ends.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
+      --review also checks the review role, as review_by_default = true does.
   init [--force] [--config PATH]
       Write a configuration (default ./ralph.toml): detect repo, branch, remote, account and checks; ask for the rest.
       --force overwrites an existing configuration at PATH, and only that file.

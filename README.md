@@ -31,6 +31,7 @@ ralph-kit init                 # writes ./ralph.toml (detects what it can, asks 
 ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
 ralph-kit configure            # change sections of ./ralph.toml from a menu
 ralph-kit check                # readiness check (offers to create missing labels)
+ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
 ralph-kit run --review 123     # reviewed run: adds an independent review session per child
@@ -264,7 +265,8 @@ reviewed run without `--review`, and says so once at startup;
 `ralph-kit run --no-review` starts a standard run instead. `--no-review` is
 also accepted when the setting is off. `--review` together with `--no-review`
 is a usage error. A run made reviewed by the setting requires `models.review`
-and gets a reviewed run's default run budget.
+and gets a reviewed run's default run budget. `ralph-kit check` then checks the review
+role too, as `check --review` does.
 
 An implementation or correction that returns `needs_correction` must still pass
 its outstanding findings to an issue correction before publication. The
