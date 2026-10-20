@@ -33,6 +33,17 @@ CODEX_CATALOG = json.dumps({"models": [
 ]})
 
 
+BACKUP_SECTION = """
+# Takes over every session for the rest of a run after an engine failure.
+[models.backup]
+engine = "codex"
+name = "codex-large"
+display_name = "codex-large"
+reasoning_effort = "medium"
+"""
+WITHOUT_BACKUP = DEFAULT_CONFIGURATION.replace(BACKUP_SECTION, "")
+
+
 def labels_of(repository):
     return ("gh", "api", "--paginate", "--slurp", f"repos/{repository}/labels")
 
@@ -250,10 +261,6 @@ class ConfigureTests(unittest.TestCase):
         self.assertTrue(load_config(self.root / "b.toml", self.root).verification.local_checks)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
         self.assertIn("Next step: commit b.toml, then run `ralph-kit check --config b.toml`.", self.output.getvalue())
-
-    def test_unavailable_sections_are_refused_by_number(self):
-        self.run_configure(answers=["2", "7"])
-        self.assertIn("Backup is unavailable", self.output.getvalue())
 
     def test_git_edits_the_repository_base_branch_and_remote(self):
         # Without gh or git output: no hint and no label offer, editing still works.
@@ -530,6 +537,93 @@ class ConfigureTests(unittest.TestCase):
             'engine = "codex"\nname = "gpt-5"\ndisplay_name = "GPT-5 review"\nreasoning_effort = "xhigh"',
             'engine = "claude"\nname = "opus"\ndisplay_name = "opus"\nreasoning_effort = "high"',
         ))
+
+    def backup(self):
+        backup = load_config(self.root / "ralph.toml", self.root).backup
+        return backup and (backup.engine, backup.name, backup.display_name, backup.reasoning_effort)
+
+    def test_without_a_backup_the_section_adds_one_on_another_installed_cli(self):
+        self.write(WITHOUT_BACKUP)
+        self.installed = {"claude", "codex"}
+        self.responses[CODEX_MODELS] = CODEX_CATALOG
+        # Add, Enter keeps codex, codex-large and medium; Back, Save.
+        self.assertTrue(self.run_configure(answers=["2", "1", "", "", "", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("  2)   Backup  (none)", output)
+        self.assertIn("? Backup: none — what do you want to do?\n  1) Add a backup\n  2) Back\n", output)
+        self.assertIn(
+            "? Engine for the backup\n  1) codex  (Codex, recommended: a different CLI)\n  2) claude  (Claude Code)\n", output
+        )
+        self.assertIn("  ✓ backup: codex/codex-large medium", output)
+        self.assertIn("? Backup: codex/codex-large medium — what do you want to do?\n  1) Change the backup\n  2) Remove the backup\n", output)
+        self.assertIn("* Backup  (codex/codex-large medium)", self.menu())
+        self.assertIn("Changes:\n  models.backup.engine: (none) → codex\n  models.backup.name: (none) → codex-large\n", output)
+        self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
+
+    def test_the_backup_changes_with_its_current_values_as_defaults(self):
+        self.installed = {"claude", "codex"}
+        self.responses[CODEX_MODELS] = CODEX_CATALOG
+        # Change, Enter keeps codex and codex-large, effort high; Back, Save.
+        self.assertTrue(self.run_configure(answers=["2", "1", "", "", "2", "", "6"]))
+        self.assertIn("  1) codex-large  (Smart)\n  2) codex-mini  (Mini)\n  3) other", self.output.getvalue())
+        self.assertIn("Changes:\n  models.backup.reasoning_effort: medium → high\n\n", self.output.getvalue())
+        self.assertEqual(self.backup(), ("codex", "codex-large", "codex-large", "high"))
+
+    def test_an_unchanged_backup_keeps_its_display_name_and_writes_nothing(self):
+        self.write(CUSTOM_CONFIGURATION)
+        self.assertFalse(self.run_configure(answers=["2", "1", "", "", "", "", "6"]))  # Engine only codex: kept.
+        output = self.output.getvalue()
+        self.assertIn("  Engine: codex (Codex, no other agent CLI installed)", output)
+        self.assertIn("Answer [gpt-5-mini]: ", self.prompts)
+        self.assertIn("No changes: nothing written.", output)
+        self.assertEqual(self.read(), CUSTOM_CONFIGURATION)
+
+    def test_removing_the_backup_drops_it_from_the_file(self):
+        self.assertTrue(self.run_configure(answers=["2", "2", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("  ✓ backup removed", output)
+        self.assertIn("? Backup: none — what do you want to do?", output)
+        self.assertIn("* Backup  (none)", self.menu())
+        self.assertIn("Changes:\n  models.backup.engine: codex → (none)\n", output)
+        self.assertIsNone(self.backup())
+        self.assertEqual(self.read(), WITHOUT_BACKUP)
+
+    def test_backup_efforts_same_as_a_session_role_are_unavailable(self):
+        self.installed = {"claude"}
+        # Change: claude (codex stays offered, not installed), opus, high refused, then Enter keeps medium.
+        self.assertTrue(self.run_configure(answers=["2", "1", "1", "2", "3", "", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("? Engine for the backup\n  1) claude  (Claude Code)\n  2) codex  (Codex, not installed here)\n", output)
+        self.assertIn("Choice [2]: ", self.prompts)  # The current engine is the default.
+        self.assertIn("  3) high  (unavailable: same as review)\n", output)
+        self.assertIn("  high is unavailable: same as review.", output)
+        self.assertEqual(self.backup(), ("claude", "opus", "opus", "medium"))
+
+    def test_a_backup_model_whose_every_effort_clashes_is_unavailable(self):
+        self.write(DEFAULT_CONFIGURATION.replace(
+            'engine = "claude"\nname = "opus"\ndisplay_name = "opus"\nreasoning_effort = "high"',
+            'engine = "codex"\nname = "codex-mini"\ndisplay_name = "codex-mini"\nreasoning_effort = "low"',
+        ))
+        self.installed = {"codex"}
+        self.responses[CODEX_MODELS] = CODEX_CATALOG
+        # Change, codex-mini refused, other with codex-mini (explained, asked again), then codex-large and medium.
+        self.assertTrue(self.run_configure(answers=["2", "1", "2", "3", "codex-mini", "1", "3", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("  2) codex-mini  (Mini)  (unavailable: every reasoning effort same as review)", output)
+        self.assertEqual(output.count("  codex-mini is unavailable: every reasoning effort same as review."), 2)
+        self.assertEqual(self.backup(), ("codex", "codex-large", "codex-large", "ultra"))
+
+    def test_a_backup_is_added_without_any_agent_cli_or_codex_catalog(self):
+        self.write(WITHOUT_BACKUP)
+        # Add, codex (every engine offered), a typed model, Enter keeps medium; Back, Save.
+        self.assertTrue(self.run_configure(answers=["2", "1", "2", "gpt-5", "", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn(
+            "? Engine for the backup\n  1) claude  (Claude Code, not installed here)\n  2) codex  (Codex, not installed here)\n",
+            output,
+        )
+        self.assertIn("? Model for the backup (Codex model list unavailable)", output)
+        self.assertEqual(self.backup(), ("codex", "gpt-5", "gpt-5", "medium"))
 
 
 if __name__ == "__main__":

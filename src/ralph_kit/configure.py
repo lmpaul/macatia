@@ -25,6 +25,7 @@ from .init import (
     InitAborted,
     Prompter,
     ask_profile,
+    backup_engines,
     codex_catalog,
     create_offered_labels,
     current_login,
@@ -32,7 +33,6 @@ from .init import (
     git_name_error,
     git_remotes,
     offer_labels,
-    option,
     remote_default_branch,
     render,
     repository_error,
@@ -43,7 +43,6 @@ from .init import (
 SAVE = "Save"
 QUIT = "Quit without saving"
 BACK = "Back"
-NOT_YET = "not editable yet: edit the file directly"
 CANCELLED = "configure cancelled, nothing written"
 
 
@@ -98,7 +97,7 @@ def _on(value: bool) -> str:
     return "on" if value else "off"
 
 
-# Each section: its one-line summary, and which changed keys mark it changed. EDITORS lists the editable ones.
+# Each section: its one-line summary, and which changed keys mark it changed; EDITORS edits each one.
 SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] = {
     "Model profiles": (_models_summary, lambda key: key.split(".")[:2] in [["models", role] for role in MODEL_ROLES]),
     "Backup": (
@@ -258,6 +257,48 @@ def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditSta
         prompter.say(f"  ✓ {role}: {_profile_summary(profile)}")
 
 
+def _ask_backup(prompter: Prompter, config: RalphConfig, state: EditState) -> AgentProfile:
+    """A backup different from every session role's model profile, from the current one when there is one."""
+    current = config.backup
+    options = backup_engines({profile.engine for profile in config.models.values()}, state.installed, current and current.engine)
+    if len(options) == 1:
+        engine = options[0][0]
+        prompter.say(f"  Engine: {engine} ({ENGINES[engine]}, no other agent CLI installed)")
+    else:
+        engine = prompter.choice("Engine for the backup", options, current.engine if current else options[0][0])
+    same_engine = current is not None and current.engine == engine
+    profile = AgentProfile(**ask_profile(
+        prompter, engine, state.catalog(engine), BACKUP_MODEL_KEY, "Model for the backup",
+        effort=current.reasoning_effort if current else "medium",
+        avoid={role: dataclasses.asdict(profile) for role, profile in config.models.items()},
+        current=current.name if same_engine else None,
+    ))
+    if same_engine and profile.name == current.name:  # The same model keeps the name it is shown with.
+        profile = dataclasses.replace(profile, display_name=current.display_name)
+    return profile
+
+
+def _edit_backup(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+    while True:
+        backup = config.backup
+        actions = [("Change the backup", ""), ("Remove the backup", "")] if backup else [("Add a backup", "")]
+        answer = prompter.choice(
+            f"Backup: {_profile_summary(backup) if backup else 'none'} — what do you want to do?",
+            [*actions, (BACK, "")],
+            BACK,
+        )
+        if answer == BACK:
+            return config
+        if answer == "Remove the backup":
+            config = dataclasses.replace(config, backup=None)
+            prompter.say("  ✓ backup removed")
+            continue
+        profile = _ask_backup(prompter, config, state)
+        if profile != backup:
+            config = dataclasses.replace(config, backup=profile)
+            prompter.say(f"  ✓ backup: {_profile_summary(profile)}")
+
+
 def _edit_verification(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
     while True:
         verification = config.verification
@@ -341,6 +382,7 @@ def _edit_git(prompter: Prompter, config: RalphConfig, state: EditState) -> Ralp
 
 EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = {
     "Model profiles": _edit_model_profiles,
+    "Backup": _edit_backup,
     "Trusted authors": _edit_trusted_authors,
     "Verification": _edit_verification,
     "Git": _edit_git,
@@ -351,7 +393,7 @@ def _menu(prompter: Prompter, title: str, config: RalphConfig, changed: dict[str
     choices = []
     for name, (summary, owns) in SECTIONS.items():
         marker = "* " if any(owns(key) for key in changed) else "  "
-        choices.append(option(f"{marker}{name}", summary(config), None if name in EDITORS else NOT_YET))
+        choices.append((f"{marker}{name}", summary(config)))
     choices += [(f"  {SAVE}", ""), (f"  {QUIT}", "")]
     return prompter.choice(f"{title} — what do you want to change?", choices, f"  {SAVE}").strip().removeprefix("* ")
 

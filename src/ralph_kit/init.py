@@ -335,15 +335,28 @@ def ask_profile(
     }
 
 
+def backup_engines(used: set[str], installed: list[str], current: str | None = None) -> list[Option]:
+    """The backup's engines: an installed CLI no session role uses comes first, since an engine failure rarely spans CLIs.
+
+    current, the backup's engine, stays offered even when its CLI is not installed here; with no CLI at all, every engine is.
+    """
+    engines = [engine for engine in ENGINES if engine in installed or engine == current] or list(ENGINES)
+    others = [engine for engine in engines if engine in installed and engine not in used]
+    options = [(engine, f"{ENGINES[engine]}, recommended: a different CLI") for engine in others]
+    return options + [
+        (engine, ENGINES[engine] + ("" if engine in installed else ", not installed here"))
+        for engine in engines
+        if engine not in others
+    ]
+
+
 def _engine_for_backup(prompter: Prompter, engine: str, installed: list[str]) -> str:
-    """Engine of the backup or NO_BACKUP; another installed CLI comes first, since an engine failure rarely spans CLIs."""
-    others = [other for other in installed if other != engine]
-    options = [(other, f"{ENGINES[other]}, recommended: a different CLI") for other in others]
-    options += [(engine, ENGINES[engine]), (NO_BACKUP, "the run stops at an engine failure")]
+    """Engine of the backup or NO_BACKUP, preselecting another installed CLI when there is one."""
+    options = backup_engines({engine}, installed)
     return prompter.choice(
         "Backup, taking over every session after an engine failure",
-        options,
-        others[0] if others else NO_BACKUP,
+        [*options, (NO_BACKUP, "the run stops at an engine failure")],
+        options[0][0] if options[0][0] != engine else NO_BACKUP,
     )
 
 
