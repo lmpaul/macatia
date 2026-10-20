@@ -77,19 +77,6 @@ def _profile_summary(profile: AgentProfile) -> str:
     return f"{profile.engine}/{profile.name} {profile.reasoning_effort}"
 
 
-def _models_summary(config: RalphConfig) -> str:
-    parts = []
-    for role in MODEL_ROLES:
-        profile = config.models.get(role)
-        if profile is None:
-            continue
-        if role == "correction" and profile == config.models.get("implementation"):
-            parts.append("correction = implementation")
-        else:
-            parts.append(f"{role} {_profile_summary(profile)}")
-    return " · ".join(parts)
-
-
 def _role_summary(config: RalphConfig, role: str) -> str:
     profile = config.models.get(role)
     if profile is None:
@@ -97,6 +84,14 @@ def _role_summary(config: RalphConfig, role: str) -> str:
     if role == "correction" and profile == config.models.get("implementation"):
         return "same as implementation"
     return _profile_summary(profile)
+
+
+def _models_summary(config: RalphConfig) -> str:
+    return " · ".join(
+        "correction = implementation" if summary == "same as implementation" else f"{role} {summary}"
+        for role in MODEL_ROLES
+        if (summary := _role_summary(config, role)) != "none"
+    )
 
 
 def _on(value: bool) -> str:
@@ -217,7 +212,7 @@ def _choose_engine(prompter: Prompter, role: str, current: str, installed: list[
     """The role's engine among the installed CLIs and its current one, which may not be installed here."""
     engines = [engine for engine in ENGINES if engine in installed or engine == current]
     if len(engines) == 1:
-        prompter.say(f"  Engine: {current} ({ENGINES[current]}, the only one available)")
+        prompter.say(f"  Engine: {current} ({ENGINES[current]}, no other agent CLI installed)")
         return current
     return prompter.choice(
         f"Engine for {role}",
@@ -241,8 +236,9 @@ def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditSta
         avoid = {BACKUP_MODEL_KEY: dataclasses.asdict(config.backup)} if config.backup else {}
         values = ask_profile(
             prompter, engine, state.catalog(engine), role, f"Model for {role}",
-            current.reasoning_effort if current else ("high" if role == "review" else "medium"),
-            avoid, current.name if same_engine else None,
+            effort=current.reasoning_effort if current else ("high" if role == "review" else "medium"),
+            avoid=avoid,
+            current=current.name if same_engine else None,
         )
         profile = AgentProfile(**values)
         if same_engine and profile.name == current.name:  # The same model keeps the name it is shown with.

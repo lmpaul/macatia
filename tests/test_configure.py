@@ -440,7 +440,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertFalse(self.run_configure(answers=["1", "1", "", "", "", "6"]))
         output = self.output.getvalue()
         self.assertNotIn("? Engine for", output)
-        self.assertIn("  Engine: claude (Claude Code, the only one available)", output)
+        self.assertIn("  Engine: claude (Claude Code, no other agent CLI installed)", output)
         self.assertIn("No changes: nothing written.", output)
 
     def test_correction_follows_implementation_when_identical_and_on_yes(self):
