@@ -90,7 +90,8 @@ repository's `.gitignore` (creating the file if needed) and says so. Commit it w
 
 `init` on an existing file points to `configure`: `ralph-kit configure [--config PATH]`
 opens an existing, valid configuration and shows a menu of its sections (model
-profiles, backup, trusted authors, verification, Git, reviewed runs by default), each with its current value
+profiles, backup, trusted authors, verification, Git, reviewed runs by default, keep the
+machine awake by default), each with its current value
 and `*` once changed. Pick a section to change only what it holds; nothing is
 re-detected over an existing value, and the values no section edits (label names,
 quality policy paths, display names, a correction profile distinct from
@@ -123,6 +124,8 @@ manifest is accepted with a warning that `ralph-kit check` fails until they exis
 Reviewed runs by default turns `review_by_default` on or off. Turning it on without a
 review profile first asks for one, as Model profiles does for review; turning it off keeps
 the review profile.
+Keep the machine awake by default turns `caffeinate_by_default` on or off; it asks
+for nothing else.
 Save lists each changed key as `key: old → new`, writes the file, validates it and
 suggests committing it, then `ralph-kit check`; Save without changes, Quit without
 saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so

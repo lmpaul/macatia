@@ -517,6 +517,8 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
         f"trusted_authors = [{', '.join(_string(author) for author in sorted(config.trusted_authors))}]",
         "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.",
         f"review_by_default = {str(config.review_by_default).lower()}",
+        "# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.",
+        f"caffeinate_by_default = {str(config.caffeinate_by_default).lower()}",
         "",
         "[labels]",
         *(f"{key} = {_string(config.labels[key])}" for key in LABELS),
