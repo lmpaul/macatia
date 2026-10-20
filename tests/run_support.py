@@ -689,7 +689,8 @@ class RunResult:
     exit_code: int
     stdout: str
     stderr: str
-    # Every wait the run asked for, in seconds; tests never actually wait.
+    # Every wait the run asked for, in seconds; tests never actually wait, and
+    # the run's clock advances by them instead.
     sleeps: list[float]
 
 
@@ -723,6 +724,7 @@ def start_run(mode, repository, github, sessions, *arguments, cwd=None, confirm=
             github=open_github,
             child_cycle=loop_core.real_child_cycle_adapters,
             sleep=sleeps.append,
+            clock=lambda: sum(sleeps),
             run_engine=sessions.run,
             confirm=confirm,
         )
@@ -731,6 +733,7 @@ def start_run(mode, repository, github, sessions, *arguments, cwd=None, confirm=
             github=open_github,
             child_cycle=child_cycle_adapters,
             sleep=sleeps.append,
+            clock=lambda: sum(sleeps),
             confirm=confirm,
         )
     stdout, stderr = io.StringIO(), io.StringIO()

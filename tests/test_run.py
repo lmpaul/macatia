@@ -1,6 +1,7 @@
 """In-memory run tests: the whole loop against a GitHub fake, scripted sessions, and real Git."""
 
 import dataclasses
+import io
 import json
 import os
 import pathlib
@@ -1717,6 +1718,69 @@ class CIEvidenceTests(VerificationTestCase):
         self.assert_implemented(result)
         self.assertEqual(result.sleeps, [45.0])
         self.assertIn("Waiting 45 seconds for GitHub Actions to start.", result.stdout)
+
+    def test_pending_ci_reports_progress_every_five_minutes_without_a_terminal(self):
+        pending = {"status": "in_progress", "conclusion": None}
+        self.new_child_run(
+            ci=({CANONICAL_CHECK: "success", DATABASE_CHECK: pending},) * 15 + ("success",),
+            check_names=(CANONICAL_CHECK, DATABASE_CHECK),
+        )
+
+        with mock.patch.dict(os.environ):
+            os.environ.pop("RALPH_CI_POLL_SECONDS", None)
+            result = self.start(loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH))
+
+        self.assert_implemented(result)
+        head = self.github.checked_heads[-1][:7]
+        progress = [line for line in result.stdout.splitlines() if "still running" in line]
+        self.assertEqual(progress, [
+            f"⏳ Canonical CI still running for {head} after {elapsed}: "
+            f"1/2 required checks done, waiting on {DATABASE_CHECK}."
+            for elapsed in ("5 min 15 s", "10 min 30 s")
+        ])
+        self.assertNotIn("\r", result.stdout)
+
+
+class TerminalStream(io.StringIO):
+    def isatty(self):
+        return True
+
+
+class CIProgressTests(unittest.TestCase):
+    def progress(self, *, columns=200):
+        self.now = 100.0
+        self.stream = TerminalStream()
+        size = os.terminal_size((columns, 24))
+        self.enterContext(mock.patch.object(loop_core.shutil, "get_terminal_size", return_value=size))
+        return loop_core.CIProgress("a1b2c3d4e5", clock=lambda: self.now, stream=self.stream)
+
+    def test_a_terminal_rewrites_one_line_in_place_and_clears_it_at_the_end(self):
+        progress = self.progress()
+
+        progress.update("0/1 required checks done, waiting on Canonical CI")
+        self.now += 270
+        progress.update("0/1 required checks done, waiting on Canonical CI")
+        progress.close()
+
+        self.assertEqual(self.stream.getvalue(), (
+            "\r\033[K⏳ Canonical CI still running for a1b2c3d after 0 s: "
+            "0/1 required checks done, waiting on Canonical CI."
+            "\r\033[K⏳ Canonical CI still running for a1b2c3d after 4 min 30 s: "
+            "0/1 required checks done, waiting on Canonical CI."
+            "\r\033[K"
+        ))
+
+    def test_a_terminal_line_never_wraps(self):
+        progress = self.progress(columns=30)
+
+        progress.update("0/1 required checks done, waiting on Canonical CI")
+
+        self.assertEqual(self.stream.getvalue(), "\r\033[K⏳ Canonical CI still running")
+
+    def test_closing_without_an_update_writes_nothing(self):
+        self.progress().close()
+
+        self.assertEqual(self.stream.getvalue(), "")
 
 
 class ConditionalCITests(VerificationTestCase):

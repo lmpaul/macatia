@@ -12,6 +12,7 @@ import os
 import pathlib
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 import sys
@@ -334,6 +335,8 @@ class RunAdapters:
     child_cycle: Callable[[ChildCycleContext], ChildCycleAdapters]
     # Waits between CI polls and infrastructure retries.
     sleep: Callable[[float], None] = time.sleep
+    # Measures the CI wait, for its deadline and progress.
+    clock: Callable[[], float] = time.monotonic
     # (repository root, engine command) -> the finished engine process, run without a check.
     run_engine: Callable[[pathlib.Path, list[str]], subprocess.CompletedProcess[str]] = (
         functools.partial(run_command, check=False)
@@ -2004,14 +2007,17 @@ def check_runs_for_head(state: RunState, head_sha: str) -> list[dict[str, Any]]:
     return runs
 
 
-def classify_ci_failure(
+def required_check_names(requirements: dict[str, str]) -> set[str]:
+    return {name for name, status in requirements.items() if status == "required"}
+
+
+def latest_required_runs(
     head_sha: str,
     check_runs: Iterable[dict[str, Any]],
     requirements: dict[str, str],
-) -> RalphError | None:
-    required_names = {
-        name for name, status in requirements.items() if status == "required"
-    }
+) -> dict[str, dict[str, Any]]:
+    """The latest current-SHA run of each required check that has one."""
+    required_names = required_check_names(requirements)
     latest_runs: dict[str, dict[str, Any]] = {}
     for run in check_runs:
         name = str(run.get("name"))
@@ -2021,6 +2027,16 @@ def classify_ci_failure(
             latest_runs[name].get("id", 0)
         ):
             latest_runs[name] = run
+    return latest_runs
+
+
+def classify_ci_failure(
+    head_sha: str,
+    check_runs: Iterable[dict[str, Any]],
+    requirements: dict[str, str],
+) -> RalphError | None:
+    required_names = required_check_names(requirements)
+    latest_runs = latest_required_runs(head_sha, check_runs, requirements)
     missing_names = required_names - latest_runs.keys()
     if missing_names:
         return InfrastructureFailure(
@@ -2141,29 +2157,96 @@ def wait_for_exact_sha_ci(
     )
     poll_seconds = ci_poll_seconds()
     timeout_seconds = float(os.environ.get("RALPH_CI_TIMEOUT_SECONDS", "1800"))
-    deadline = time.monotonic() + timeout_seconds
+    clock = state.adapters.clock
+    deadline = clock() + timeout_seconds
     latest_error = "canonical CI evidence is not available"
-    while True:
-        if current_head(state) != head_sha:
-            raise RalphError("branch advanced while waiting for canonical CI")
-        check_runs = check_runs_for_head(state, head_sha)
-        classified_failure = classify_ci_failure(head_sha, check_runs, requirements)
-        if classified_failure is not None:
-            raise classified_failure
-        try:
-            quality.validate_check_evidence(
-                head_sha,
-                check_runs,
-                requirements,
-            )
-            return
-        except RuntimeError as error:
-            latest_error = str(error)
-        if time.monotonic() >= deadline:
-            raise RalphError(
-                f"canonical CI did not become green for exact head {head_sha}: {latest_error}"
-            )
-        state.adapters.sleep(poll_seconds)
+    progress = CIProgress(head_sha, clock=clock)
+    try:
+        while True:
+            if current_head(state) != head_sha:
+                raise RalphError("branch advanced while waiting for canonical CI")
+            check_runs = check_runs_for_head(state, head_sha)
+            classified_failure = classify_ci_failure(head_sha, check_runs, requirements)
+            if classified_failure is not None:
+                raise classified_failure
+            try:
+                quality.validate_check_evidence(
+                    head_sha,
+                    check_runs,
+                    requirements,
+                )
+                return
+            except RuntimeError as error:
+                latest_error = str(error)
+            if clock() >= deadline:
+                raise RalphError(
+                    f"canonical CI did not become green for exact head {head_sha}: {latest_error}"
+                )
+            progress.update(required_ci_progress(head_sha, check_runs, requirements))
+            state.adapters.sleep(poll_seconds)
+    finally:
+        progress.close()
+
+
+CI_PROGRESS_LINE_SECONDS = 300.0
+
+
+def duration_text(seconds: float) -> str:
+    minutes, seconds = divmod(int(seconds), 60)
+    return f"{minutes} min {seconds:02d} s" if minutes else f"{seconds} s"
+
+
+def required_ci_progress(
+    head_sha: str,
+    check_runs: Iterable[dict[str, Any]],
+    requirements: dict[str, str],
+) -> str:
+    required_names = required_check_names(requirements)
+    latest_runs = latest_required_runs(head_sha, check_runs, requirements)
+    waiting = sorted(
+        name for name in required_names
+        if latest_runs.get(name, {}).get("status") != "completed"
+    )
+    done = len(required_names) - len(waiting)
+    text = f"{done}/{len(required_names)} required checks done"
+    return text + (f", waiting on {', '.join(waiting)}" if waiting else "")
+
+
+class CIProgress:
+    """Shows that canonical CI is still running, which otherwise looks like a stalled run.
+
+    A terminal gets one status line rewritten in place and cleared on close; other
+    output gets a plain line every CI_PROGRESS_LINE_SECONDS.
+    """
+
+    def __init__(self, head_sha: str, *, clock: Callable[[], float], stream=None):
+        self.head = head_sha[:7]
+        self.clock = clock
+        self.stream = sys.stdout if stream is None else stream
+        self.interactive = self.stream.isatty()
+        self.started_at = self.last_line_at = clock()
+        self.shown = False
+
+    def update(self, progress: str) -> None:
+        now = self.clock()
+        text = (
+            f"⏳ Canonical CI still running for {self.head} after "
+            f"{duration_text(now - self.started_at)}: {progress}."
+        )
+        if self.interactive:
+            # Stay within one row, so the next carriage return rewrites it; the emoji takes two columns.
+            width = shutil.get_terminal_size().columns - 2
+            self.stream.write(f"\r\033[K{text[:width]}")
+            self.shown = True
+        elif now - self.last_line_at >= CI_PROGRESS_LINE_SECONDS:
+            self.stream.write(f"{text}\n")
+            self.last_line_at = now
+        self.stream.flush()
+
+    def close(self) -> None:
+        if self.shown:
+            self.stream.write("\r\033[K")
+            self.stream.flush()
 
 
 def ci_poll_seconds() -> float:
