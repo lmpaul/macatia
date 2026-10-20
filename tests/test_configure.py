@@ -45,7 +45,7 @@ WITHOUT_BACKUP = DEFAULT_CONFIGURATION.replace(BACKUP_SECTION, "")
 _start, _review = CUSTOM_CONFIGURATION.split("# Used by reviewed runs", 1)
 WITHOUT_REVIEW = _start + _review.split("\n\n", 1)[1]
 REVIEWED_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("review_by_default = false\n", "review_by_default = true\n")
-AWAKE_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", "caffeinate_by_default = true\n")
+SLEEP_LOCK_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", "caffeinate_by_default = true\n")
 
 
 def labels_of(repository):
@@ -583,7 +583,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("No changes: nothing written.", self.output.getvalue())
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
-    def test_turning_keep_awake_by_default_on_saves_only_the_setting(self):
+    def test_turning_sleep_lock_by_default_on_saves_only_the_setting(self):
         self.assertTrue(self.run_configure(answers=["7", "1", "8"]))
         output = self.output.getvalue()
         self.assertIn(
@@ -593,11 +593,11 @@ class ConfigureTests(unittest.TestCase):
         )
         self.assertIn("* Keep the machine awake by default  (on)", self.menu())
         self.assertIn("Changes:\n  caffeinate_by_default: false → true\n\n", output)
-        self.assertEqual(self.read(), AWAKE_BY_DEFAULT)
+        self.assertEqual(self.read(), SLEEP_LOCK_BY_DEFAULT)
         self.assertTrue(load_config(self.root / "ralph.toml", self.root).caffeinate_by_default)
 
-    def test_turning_keep_awake_by_default_off_saves_only_the_setting(self):
-        self.write(AWAKE_BY_DEFAULT)
+    def test_turning_sleep_lock_by_default_off_saves_only_the_setting(self):
+        self.write(SLEEP_LOCK_BY_DEFAULT)
         self.assertTrue(self.run_configure(answers=["7", "1", "8"]))
         output = self.output.getvalue()
         self.assertIn("  7)   Keep the machine awake by default  (on)", output)
@@ -606,7 +606,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
         self.assertFalse(load_config(self.root / "ralph.toml", self.root).caffeinate_by_default)
 
-    def test_going_back_from_keep_awake_by_default_changes_nothing(self):
+    def test_going_back_from_sleep_lock_by_default_changes_nothing(self):
         self.assertFalse(self.run_configure(answers=["7", "2", "8"]))
         self.assertIn("No changes: nothing written.", self.output.getvalue())
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
