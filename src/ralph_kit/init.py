@@ -529,8 +529,9 @@ def run(
         raise InitError("run ralph-kit init from the root of a Git repository")
     target = root / config  # An absolute config replaces root.
     display_path = target.relative_to(root) if target.is_relative_to(root) else target
+    option_text = "" if target == root / CONFIG_NAME else f" --config {shlex.quote(str(display_path))}"
     if target.exists() and not force:
-        raise InitError(f"{target} already exists (use --force to overwrite it)")
+        raise InitError(f"{target} already exists: change it with `ralph-kit configure{option_text}`, or use --force to start over")
     if not target.parent.is_dir():
         raise InitError(f"{target.parent}/ does not exist")
 
@@ -554,6 +555,5 @@ def run(
     if remaining:
         prompter.say("   Values to fill in: " + ", ".join(remaining))
     committed = f"{display_path} and {GITIGNORE}" if ignored else str(display_path)
-    check_command = "ralph-kit check" if target == root / CONFIG_NAME else f"ralph-kit check --config {shlex.quote(str(display_path))}"
-    prompter.say(f"   Next step: commit {committed}, then run `{check_command}`.")
+    prompter.say(f"   Next step: commit {committed}, then run `ralph-kit check{option_text}`.")
     return target

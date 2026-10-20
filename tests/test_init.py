@@ -468,7 +468,7 @@ class InitTests(unittest.TestCase):
 
     def test_existing_config_is_kept_before_any_question(self):
         (self.root / "ralph.toml").write_text("keep")
-        with self.assertRaisesRegex(init.InitError, "already exists"):
+        with self.assertRaisesRegex(init.InitError, r"already exists: change it with `ralph-kit configure`, or use --force to start over"):
             self.run_init(answers=[])
         self.assertEqual(self.prompts, [])
         self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
@@ -488,7 +488,7 @@ class InitTests(unittest.TestCase):
     def test_force_overwrites_only_the_given_path(self):
         (self.root / "ralph.toml").write_text("keep")
         (self.root / "other.toml").write_text("old")
-        with self.assertRaisesRegex(init.InitError, "other.toml already exists"):
+        with self.assertRaisesRegex(init.InitError, r"other.toml already exists: change it with `ralph-kit configure --config other.toml`, or use --force"):
             self.run_init(answers=[], config=pathlib.Path("other.toml"))
         self.assertEqual(self.prompts, [])
         self.assertEqual((self.root / "other.toml").read_text(), "old")

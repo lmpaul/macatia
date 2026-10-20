@@ -29,6 +29,7 @@ From the repository root:
 ```sh
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
 ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
+ralph-kit configure            # change sections of ./ralph.toml from a menu
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
@@ -73,6 +74,31 @@ diagnostics to `.ralph/`. Unless Git already ignores it, `init` appends `.ralph/
 repository's `.gitignore` (creating the file if needed) and says so. Commit it with `ralph.toml`;
 `check` reports `.ralph/` when Git does not ignore it.
 
+`init` on an existing file points to `configure`: `ralph-kit configure [--config PATH]`
+opens an existing, valid configuration and shows a menu of its sections (model
+profiles, backup, trusted authors, verification, Git), each with its current value
+and `*` once changed. Pick a section to change only what it holds; nothing is
+re-detected over an existing value, and the values no section edits (label names,
+quality policy paths, display names, a correction profile distinct from
+implementation, every trusted author) are kept. Verification turns local gates and
+CI checks on or off independently; enabling one without the quality module and
+manifest is accepted with a warning that `ralph-kit check` fails until they exist.
+Save lists each changed key as `key: old → new`, writes the file, validates it and
+suggests committing it, then `ralph-kit check`; Save without changes, Quit without
+saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
+comments added by hand are dropped (`configure` says so when it opens the file). It
+needs a terminal; without one, edit the TOML directly. An invalid configuration is
+refused with the error: fix the file, or start over with `ralph-kit init --force`.
+Only the verification section is editable for now; the others show their value.
+
+For a variant of an existing configuration, copy the file, then change the copy:
+
+```sh
+cp ralph.toml review.toml
+ralph-kit configure --config review.toml
+ralph-kit check --config review.toml
+```
+
 ## Develop ralph-kit
 
 ```sh
@@ -97,7 +123,8 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   against outputs recorded from the real CLIs in `tests/fixtures/engines/`.
 - **Readiness check** (including the engine flag check): `tests/test_check.py`,
   with injected executable lookup and command runner. `tests/test_init.py`
-  covers `ralph-kit init` the same way.
+  covers `ralph-kit init` the same way, and `tests/test_configure.py` covers
+  `ralph-kit configure`.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
   and `claude`: `tests/test_live.py`, skipped unless `RALPH_LIVE=1` (see below).
 
