@@ -90,9 +90,9 @@ the profile identical to it, and models whose every effort would, are shown unav
 ("same as backup"); a free model name clashing with it is explained and asked again.
 Backup adds one when there is none, otherwise changes or removes it (removing drops
 `[models.backup]` from the file). Its engine is asked as in `init`, an installed CLI that
-no session role uses first, with the current backup engine kept available even when its
-CLI is not installed here; then its model and reasoning effort, with the current values
-as defaults. Efforts that would make the backup identical to a session role's model
+no session role uses first, with the current backup's engine kept available even when its
+CLI is not installed here (every engine is offered when no agent CLI is); then its model
+and reasoning effort, with the current values as defaults. Efforts that would make the backup identical to a session role's model
 profile, and models whose every effort would, are shown unavailable with the reason
 ("same as review"); a free model name clashing with one is explained and asked again.
 Trusted authors lists the configured accounts, adds one

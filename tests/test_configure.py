@@ -571,7 +571,8 @@ class ConfigureTests(unittest.TestCase):
 
     def test_an_unchanged_backup_keeps_its_display_name_and_writes_nothing(self):
         self.write(CUSTOM_CONFIGURATION)
-        self.assertFalse(self.run_configure(answers=["2", "1", "", "", "", "", "6"]))  # Engine only codex: kept.
+        self.installed = {"codex"}
+        self.assertFalse(self.run_configure(answers=["2", "1", "", "", "", "6"]))  # Engine only codex: kept.
         output = self.output.getvalue()
         self.assertIn("  Engine: codex (Codex, no other agent CLI installed)", output)
         self.assertIn("Answer [gpt-5-mini]: ", self.prompts)
@@ -606,7 +607,7 @@ class ConfigureTests(unittest.TestCase):
         ))
         self.installed = {"codex"}
         self.responses[CODEX_MODELS] = CODEX_CATALOG
-        # Change, codex-mini refused, other with codex-mini (explained, asked again), then codex-large and medium.
+        # Change, codex-mini refused, other with codex-mini (explained, asked again), then codex-large and ultra.
         self.assertTrue(self.run_configure(answers=["2", "1", "2", "3", "codex-mini", "1", "3", "", "6"]))
         output = self.output.getvalue()
         self.assertIn("  2) codex-mini  (Mini)  (unavailable: every reasoning effort same as review)", output)
@@ -624,6 +625,16 @@ class ConfigureTests(unittest.TestCase):
         )
         self.assertIn("? Model for the backup (Codex model list unavailable)", output)
         self.assertEqual(self.backup(), ("codex", "gpt-5", "gpt-5", "medium"))
+
+    def test_without_any_agent_cli_the_backup_can_still_change_engine(self):
+        # Change: claude offered though nothing is installed, opus, Enter keeps medium; Back, Save.
+        self.assertTrue(self.run_configure(answers=["2", "1", "1", "2", "", "", "6"]))
+        self.assertIn(
+            "? Engine for the backup\n  1) claude  (Claude Code, not installed here)\n  2) codex  (Codex, not installed here)\n",
+            self.output.getvalue(),
+        )
+        self.assertIn("Choice [2]: ", self.prompts)
+        self.assertEqual(self.backup(), ("claude", "opus", "opus", "medium"))
 
 
 if __name__ == "__main__":

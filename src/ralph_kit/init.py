@@ -340,7 +340,7 @@ def backup_engines(used: set[str], installed: list[str], current: str | None = N
 
     current, the backup's engine, stays offered even when its CLI is not installed here; with no CLI at all, every engine is.
     """
-    engines = [engine for engine in ENGINES if engine in installed or engine == current] or list(ENGINES)
+    engines = [engine for engine in ENGINES if engine in installed or engine == current] if installed else list(ENGINES)
     others = [engine for engine in engines if engine in installed and engine not in used]
     options = [(engine, f"{ENGINES[engine]}, recommended: a different CLI") for engine in others]
     return options + [

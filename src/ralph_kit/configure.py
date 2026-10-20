@@ -220,6 +220,32 @@ def _choose_engine(prompter: Prompter, role: str, current: str, installed: list[
     )
 
 
+def _ask_model(
+    prompter: Prompter,
+    state: EditState,
+    engine: str,
+    current: AgentProfile | None,
+    role: str,
+    question: str,
+    effort: str,
+    avoid: dict[str, AgentProfile],
+) -> AgentProfile:
+    """A model profile on engine that differs from every profile in avoid; effort is the default without current.
+
+    On current's engine, current's model and effort are the defaults, and keeping its model keeps its display name.
+    """
+    same_engine = current is not None and current.engine == engine
+    profile = AgentProfile(**ask_profile(
+        prompter, engine, state.catalog(engine), role, question,
+        effort=current.reasoning_effort if current else effort,
+        avoid={key: dataclasses.asdict(other) for key, other in avoid.items()},
+        current=current.name if same_engine else None,
+    ))
+    if same_engine and profile.name == current.name:  # The same model keeps the name it is shown with.
+        profile = dataclasses.replace(profile, display_name=current.display_name)
+    return profile
+
+
 def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
     while True:
         role = prompter.choice(
@@ -231,17 +257,11 @@ def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditSta
             return config
         current = config.models.get(role)  # None for a configuration without review: it starts from init's defaults.
         engine = _choose_engine(prompter, role, (current or config.models["implementation"]).engine, state.installed)
-        same_engine = current is not None and current.engine == engine
-        avoid = {BACKUP_MODEL_KEY: dataclasses.asdict(config.backup)} if config.backup else {}
-        values = ask_profile(
-            prompter, engine, state.catalog(engine), role, f"Model for {role}",
-            effort=current.reasoning_effort if current else ("high" if role == "review" else "medium"),
-            avoid=avoid,
-            current=current.name if same_engine else None,
+        profile = _ask_model(
+            prompter, state, engine, current, role, f"Model for {role}",
+            effort="high" if role == "review" else "medium",
+            avoid={BACKUP_MODEL_KEY: config.backup} if config.backup else {},
         )
-        profile = AgentProfile(**values)
-        if same_engine and profile.name == current.name:  # The same model keeps the name it is shown with.
-            profile = dataclasses.replace(profile, display_name=current.display_name)
         if profile == current:
             continue
         models = {**config.models, role: profile}
@@ -260,22 +280,15 @@ def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditSta
 def _ask_backup(prompter: Prompter, config: RalphConfig, state: EditState) -> AgentProfile:
     """A backup different from every session role's model profile, from the current one when there is one."""
     current = config.backup
-    options = backup_engines({profile.engine for profile in config.models.values()}, state.installed, current and current.engine)
+    options = backup_engines(
+        {profile.engine for profile in config.models.values()}, state.installed, current.engine if current else None
+    )
     if len(options) == 1:
         engine = options[0][0]
         prompter.say(f"  Engine: {engine} ({ENGINES[engine]}, no other agent CLI installed)")
     else:
         engine = prompter.choice("Engine for the backup", options, current.engine if current else options[0][0])
-    same_engine = current is not None and current.engine == engine
-    profile = AgentProfile(**ask_profile(
-        prompter, engine, state.catalog(engine), BACKUP_MODEL_KEY, "Model for the backup",
-        effort=current.reasoning_effort if current else "medium",
-        avoid={role: dataclasses.asdict(profile) for role, profile in config.models.items()},
-        current=current.name if same_engine else None,
-    ))
-    if same_engine and profile.name == current.name:  # The same model keeps the name it is shown with.
-        profile = dataclasses.replace(profile, display_name=current.display_name)
-    return profile
+    return _ask_model(prompter, state, engine, current, BACKUP_MODEL_KEY, "Model for the backup", "medium", config.models)
 
 
 def _edit_backup(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
