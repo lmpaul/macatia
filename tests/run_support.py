@@ -1,7 +1,7 @@
 """In-memory run support: a GitHub fake, scripted sessions, and a real Git repository.
 
 A run-level test builds a `RunRepository`, a `FakeGitHub`, and `ScriptedSessions`,
-then starts the run with `start_run`. Git stays real: the repository pushes to a
+then starts the run with `start_run` (or `start_mode_run`). Git stays real: the repository pushes to a
 local bare `origin`. Everything else a run reaches is configured per test.
 """
 
@@ -694,8 +694,15 @@ class RunResult:
     sleeps: list[float]
 
 
-def start_run(mode, repository, github, sessions, *arguments, cwd=None, confirm=None):
-    """Start one run with in-memory GitHub and sessions, from `cwd` or the repository root.
+def start_mode_run(mode, repository, github, sessions, *arguments, **options):
+    """`start_run` for the standard or reviewed run `mode`: adds `--review` for a reviewed run."""
+    review = ["--review"] if mode.review else []
+    return start_run(repository, github, sessions, *review, *arguments, **options)
+
+
+def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
+    """Start one run from its command-line `arguments`, with in-memory GitHub and sessions,
+    from `cwd` or the repository root.
 
     `confirm` answers the run's startup question, as a terminal would; None runs
     without a terminal.
@@ -743,7 +750,7 @@ def start_run(mode, repository, github, sessions, *arguments, cwd=None, confirm=
         contextlib.redirect_stderr(stderr),
     ):
         try:
-            exit_code = loop_core.run(mode, adapters, [str(argument) for argument in arguments])
+            exit_code = loop_core.run(adapters, [str(argument) for argument in arguments])
         except SystemExit as usage_error:
             exit_code = usage_error.code
     return RunResult(exit_code, stdout.getvalue(), stderr.getvalue(), sleeps)

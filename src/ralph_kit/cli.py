@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the standard or reviewed run, the readiness check, init and configure."""
+"""`ralph-kit` command line: dispatch to the run, the readiness check, init and configure."""
 
 from __future__ import annotations
 
@@ -94,21 +94,17 @@ def main(argv: list[str] | None = None) -> int:
     sys.dont_write_bytecode = True
     command, arguments = argv[0], argv[1:]
     if command == "run":
-        review = "--review" in arguments
+        from . import loop
+
         caffeinate = "--caffeinate" in arguments
-        arguments = [argument for argument in arguments if argument not in {"--review", "--caffeinate"}]
-        if review:
-            from . import loop_review as loop
-        else:
-            from . import loop
-        prog = "ralph-kit run" + (" --review" if review else "")
+        arguments = [argument for argument in arguments if argument != "--caffeinate"]
         confirm = resume_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
         if not caffeinate:
-            return loop.run(arguments, prog=prog, confirm=confirm)
+            return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
         from .keep_awake import keep_awake
 
         with keep_awake():
-            return loop.run(arguments, prog=prog, confirm=confirm)
+            return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
     if command == "check":
         from . import check
 

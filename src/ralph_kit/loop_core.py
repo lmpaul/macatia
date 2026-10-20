@@ -1,4 +1,4 @@
-"""Shared run core; `loop` (standard run) and `loop_review` (reviewed run) select its mode."""
+"""Run core: startup selects the standard or reviewed run mode, then runs the parent's children."""
 
 from __future__ import annotations
 
@@ -103,6 +103,56 @@ MAX_AGENT_SUMMARY_LENGTH = 500
 DEFAULT_CI_POLL_SECONDS = 45.0
 LONG_AGENT_SUMMARY = (
     "Agent completed the session; detailed output is retained in Ralph diagnostics."
+)
+
+
+# Standard run (`ralph-kit run`): implementation and corrections, no review session.
+STANDARD_RUN = RunMode(
+    review=False,
+    description=(
+        "Implement a parent issue with the configured agent, local gates, and exact-commit CI."
+    ),
+    diagnostics_label="run",
+    # The "experimental" marker names predate the standard run becoming the default.
+    # They are persisted in GitHub comments, so they must not change.
+    implementation_evidence_prefix="<!-- ralph-experimental-implementation-evidence: ",
+    parent_completion_marker="<!-- ralph-experimental-parent-completion -->",
+    terminal_summary_marker="<!-- ralph-experimental-terminal-summary -->",
+    evidence_head_key="verified_head",
+    follow_up_role="correction",
+    follow_up_commits="correction commits",
+    gate_correction_scope="Preserve the issue acceptance criteria while fixing this gate.",
+    unverified_warning=(
+        "ℹ️ Ralph is running without automated verification: local gates and "
+        "remote CI are explicitly disabled; human review is required before merge."
+    ),
+    # One implementation session and three correction sessions, plus one.
+    sessions_per_ready_child=5,
+)
+
+
+# Reviewed run (`ralph-kit run --review`): adds an independent review session per child.
+REVIEWED_RUN = RunMode(
+    review=True,
+    description=(
+        "Implement a parent issue by processing and independently reviewing "
+        "its runnable children."
+    ),
+    diagnostics_label="run --review",
+    implementation_evidence_prefix=ORIGINAL_EVIDENCE_PREFIX,
+    parent_completion_marker="<!-- ralph-parent-completion -->",
+    terminal_summary_marker="<!-- ralph-terminal-summary -->",
+    evidence_head_key="reviewed_head",
+    follow_up_role="review",
+    follow_up_commits="corrective review commits",
+    gate_correction_scope="Ralph separately\nreviews completeness against the entire issue.",
+    unverified_warning=(
+        "⚠️ Ralph is running without automated verification: independent "
+        "agent review is the only configured check."
+    ),
+    # One implementation session, three correction sessions, and a review session
+    # after each of them, plus one.
+    sessions_per_ready_child=9,
 )
 
 
@@ -352,16 +402,17 @@ class RunAdapters:
 class RunState:
     """Everything one run knows about itself; nothing is shared between runs.
 
-    The configuration and the GitHub adapter exist once the configuration is
-    loaded, the diagnostics once the run has started recording, and the branch
-    once the startup checks have accepted it.
+    The mode exists once the arguments are read, the configuration and the
+    GitHub adapter once the configuration is loaded, the diagnostics once the
+    run has started recording, and the branch once the startup checks have
+    accepted it.
     """
 
-    mode: RunMode
     adapters: RunAdapters
     # Ralph runs against the repository it is started from, not where it is installed.
     repository_root: pathlib.Path
     started_at: float
+    loaded_mode: RunMode | None = None
     loaded_config: RalphConfig | None = None
     loaded_github: GitHub | None = None
     diagnostics: DiagnosticRecorder | None = None
@@ -378,6 +429,12 @@ class RunState:
     # The engine failure that ended a regular profile's session with a backup
     # configured; None while no such session ended in one.
     backup_switch: BackupSwitch | None = None
+
+    @property
+    def mode(self) -> RunMode:
+        if self.loaded_mode is None:
+            raise RalphError("Ralph run mode was not initialized")
+        return self.loaded_mode
 
     @property
     def config(self) -> RalphConfig:
@@ -1002,12 +1059,13 @@ def positive_integer(value: str) -> int:
     return parsed
 
 
-def parse_arguments(
-    state: RunState, argv: list[str] | None = None, prog: str | None = None
-) -> argparse.Namespace:
+def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namespace:
+    """Read the run's arguments; `--review`, accepted in any position, is `review`."""
+    review = "--review" in argv
+    argv = [argument for argument in argv if argument != "--review"]
     parser = argparse.ArgumentParser(
-        prog=prog,
-        description=state.mode.description,
+        prog=None if prog is None else prog + (" --review" if review else ""),
+        description=(REVIEWED_RUN if review else STANDARD_RUN).description,
     )
     parser.add_argument(
         "--config",
@@ -1017,7 +1075,7 @@ def parse_arguments(
     )
     parser.add_argument("parent_issue", type=positive_integer)
     parser.add_argument("run_budget", nargs="?", type=positive_integer)
-    return parser.parse_args(argv)
+    return parser.parse_args(argv, argparse.Namespace(review=review))
 
 
 def load_quality_module(path: pathlib.Path):
@@ -2572,9 +2630,10 @@ def real_run_adapters(confirm: Callable[[str], bool] | None = None) -> RunAdapte
 def main(
     state: RunState, argv: list[str] | None = None, prog: str | None = None
 ) -> int:
-    """Start the run: read its arguments, configuration, and quality policy, then run its children."""
-    mode = state.mode
-    arguments = parse_arguments(state, argv, prog)
+    """Start the run: read its arguments, select its mode, read its configuration and quality
+    policy, then run its children."""
+    arguments = parse_arguments(sys.argv[1:] if argv is None else argv, prog)
+    mode = state.loaded_mode = REVIEWED_RUN if arguments.review else STANDARD_RUN
     # The run budget is left out: each run starts with a fresh one.
     state.rerun_command = shlex.join([
         "ralph-kit",
@@ -2722,7 +2781,6 @@ def run_children(
 
 
 def run(
-    mode: RunMode,
     adapters: RunAdapters,
     argv: list[str] | None = None,
     prog: str | None = None,
@@ -2731,12 +2789,13 @@ def run(
 ) -> int:
     """Start a run from repository_root, by default the current directory.
 
+    `--review` among argv makes it a reviewed run, otherwise a standard run;
+    usage errors name the program `prog`, followed by `--review` when given.
     The run reaches GitHub and agents through adapters. SIGINT, SIGTERM, and
     SIGHUP release the child it is working on, then end it with an interrupted
     terminal summary and the shell's exit code for the signal.
     """
     state = RunState(
-        mode=mode,
         adapters=adapters,
         repository_root=(repository_root or pathlib.Path.cwd()).resolve(),
         started_at=time.monotonic(),

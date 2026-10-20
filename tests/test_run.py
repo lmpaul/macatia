@@ -1,5 +1,6 @@
 """In-memory run tests: the whole loop against a GitHub fake, scripted sessions, and real Git."""
 
+import contextlib
 import dataclasses
 import io
 import json
@@ -17,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from ralph_kit import check, cli, loop, loop_core, loop_review
+from ralph_kit import check, cli, loop, loop_core
 from ralph_kit.commands import RalphError
 from run_support import (
     BRANCH,
@@ -35,6 +36,7 @@ from run_support import (
     implementation_evidence,
     is_child_cycle_start,
     legacy_implementation_evidence,
+    start_mode_run,
     start_run,
 )
 
@@ -114,7 +116,7 @@ class SingleChildHappyPathTests(unittest.TestCase):
     def test_standard_run_publishes_the_verified_implementation(self):
         sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
 
-        result = start_run(loop.MODE, self.repository, self.github, sessions, PARENT)
+        result = start_mode_run(loop_core.STANDARD_RUN, self.repository, self.github, sessions, PARENT)
 
         commits, evidence = self.assert_child_published(result, sessions=1, commit_count=1)
         self.assert_implementation_prompt_names_only_the_issue(sessions)
@@ -130,7 +132,8 @@ class SingleChildHappyPathTests(unittest.TestCase):
             ScriptedResult("committed", "Reviewed the exact diff and committed one correction."),
         )
 
-        result = start_run(loop_review.MODE, self.repository, self.github, sessions, PARENT, 4)
+        # `--review` is accepted in any position, here between the parent and the budget.
+        result = start_run(self.repository, self.github, sessions, PARENT, "--review", 4)
 
         commits, evidence = self.assert_child_published(result, sessions=2, commit_count=2)
         self.assert_implementation_prompt_names_only_the_issue(sessions)
@@ -142,7 +145,7 @@ class SingleChildHappyPathTests(unittest.TestCase):
 
 BLOCKER = 193
 DEPENDENT = 194
-MODES = (loop.MODE, loop_review.MODE)
+MODES = (loop_core.STANDARD_RUN, loop_core.REVIEWED_RUN)
 
 
 def passing_child_results(mode):
@@ -180,7 +183,7 @@ class RunLevelTestCase(unittest.TestCase):
         self.sessions = ScriptedSessions(self.repository, *results)
         self.sessions.before_session = self.before_session
         budget_argument = () if budget is None else (budget,)
-        return start_run(
+        return start_mode_run(
             mode, self.repository, self.github, self.sessions, PARENT, *budget_argument,
             confirm=confirm,
         )
@@ -240,7 +243,7 @@ class ChildSelectionTests(RunLevelTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT, blocked_by=[CLOSED_BLOCKER])
         self.github.add_issue(CLOSED_BLOCKER, parent=PARENT, state="closed")
 
-        result = self.start(loop_review.MODE, *passing_child_results(loop_review.MODE) * 2)
+        result = self.start(loop_core.REVIEWED_RUN, *passing_child_results(loop_core.REVIEWED_RUN) * 2)
 
         self.assert_completed(result, sessions=4)
         self.assertEqual(self.session_children(), [BLOCKER, BLOCKER, DEPENDENT, DEPENDENT])
@@ -257,7 +260,7 @@ class ChildSelectionTests(RunLevelTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT)
         self.github.add_issue(DEPENDENT, parent=PARENT)
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE) * 2)
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN) * 2)
 
         self.assert_completed(result, sessions=2)
         self.assertEqual(self.session_children(), [BLOCKER, DEPENDENT])
@@ -269,7 +272,7 @@ class ChildSelectionTests(RunLevelTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT, labels=("implemented",))
         self.github.add_issue(DEPENDENT, parent=PARENT)
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [DEPENDENT])
@@ -282,7 +285,7 @@ class BlockerTests(RunLevelTestCase):
 
     def test_implemented_blocker_satisfies_its_dependent_when_its_verified_head_is_an_ancestor(self):
         for name, evidence in (
-            ("standard run evidence", lambda head: implementation_evidence(loop.MODE, head)),
+            ("standard run evidence", lambda head: implementation_evidence(loop_core.STANDARD_RUN, head)),
             ("legacy evidence", lambda head: legacy_implementation_evidence(self.repository.base_sha, head)),
         ):
             with self.subTest(name):
@@ -290,7 +293,7 @@ class BlockerTests(RunLevelTestCase):
                 verified_head = self.commit_prior_child()
                 self.add_implemented_blocker_and_dependent(evidence(verified_head))
 
-                result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+                result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
                 self.assert_completed(result, sessions=1)
                 self.assertEqual(self.session_children(), [DEPENDENT])
@@ -298,20 +301,20 @@ class BlockerTests(RunLevelTestCase):
     def test_blocker_implemented_by_a_reviewed_run_stays_satisfied_in_a_standard_run(self):
         verified_head = self.commit_prior_child()
         self.add_implemented_blocker_and_dependent(
-            implementation_evidence(loop_review.MODE, self.repository.base_sha, verified_head)
+            implementation_evidence(loop_core.REVIEWED_RUN, self.repository.base_sha, verified_head)
         )
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [DEPENDENT])
 
     def test_implemented_blocker_without_ancestor_evidence_stops_before_any_session(self):
         self.add_implemented_blocker_and_dependent(
-            implementation_evidence(loop.MODE, self.commit_off_the_branch())
+            implementation_evidence(loop_core.STANDARD_RUN, self.commit_off_the_branch())
         )
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(
             result, f"parent issue #{PARENT} has children remaining but none is runnable"
@@ -322,7 +325,7 @@ class BlockerTests(RunLevelTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT, blocked_by=[DEPENDENT])
         self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(result, "dependency deadlock")
         for child in (BLOCKER, DEPENDENT):
@@ -354,12 +357,12 @@ class RecoveryTests(RunLevelTestCase):
     def test_requeued_child_does_not_reuse_stale_implementation_evidence(self):
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.comment_on_issue(
-            CHILD, implementation_evidence(loop.MODE, self.repository.base_sha)["body"]
+            CHILD, implementation_evidence(loop_core.STANDARD_RUN, self.repository.base_sha)["body"]
         )
         # Requeuing the child updates it after the evidence, so the evidence is stale.
         self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=())
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [CHILD])
@@ -368,10 +371,10 @@ class RecoveryTests(RunLevelTestCase):
     def test_standard_run_does_not_finish_a_child_published_by_a_reviewed_run(self):
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.comment_on_issue(
-            CHILD, implementation_evidence(loop_review.MODE, self.repository.base_sha)["body"]
+            CHILD, implementation_evidence(loop_core.REVIEWED_RUN, self.repository.base_sha)["body"]
         )
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [CHILD])
@@ -387,7 +390,7 @@ class AgentWorkingTests(RunLevelTestCase):
         self.sessions.before_session = lambda request: observed.append(
             (request.role, self.github.labels(request.child))
         )
-        result = start_run(mode, self.repository, self.github, self.sessions, PARENT)
+        result = start_mode_run(mode, self.repository, self.github, self.sessions, PARENT)
         return result, observed
 
     def test_child_is_agent_working_during_every_session_of_its_child_cycle(self):
@@ -395,7 +398,7 @@ class AgentWorkingTests(RunLevelTestCase):
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
 
         result, observed = self.start_observing_labels(
-            loop_review.MODE,
+            loop_core.REVIEWED_RUN,
             ScriptedResult("committed"),
             findings,
             ScriptedResult("committed"),
@@ -424,7 +427,7 @@ class AgentWorkingTests(RunLevelTestCase):
 
         self.github.after_comment = human_adds_lifecycle_labels
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.github.labels(CHILD), {"implemented", "documentation"})
@@ -439,7 +442,7 @@ class AgentWorkingTests(RunLevelTestCase):
         self.github.after_comment = human_adds_lifecycle_label
 
         result, observed = self.start_observing_labels(
-            loop.MODE, ScriptedResult("blocked", "Needs a product decision.")
+            loop_core.STANDARD_RUN, ScriptedResult("blocked", "Needs a product decision.")
         )
 
         self.assertEqual(result.exit_code, 1)
@@ -450,7 +453,7 @@ class AgentWorkingTests(RunLevelTestCase):
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.label_edit_error = RalphError("gh issue edit failed: HTTP 502")
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(result, "gh issue edit failed: HTTP 502")
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
@@ -508,7 +511,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.github.add_issue(DEPENDENT, parent=PARENT)
         confirm = ScriptedConfirm(STOP)
 
-        result = self.start(loop.MODE, confirm=confirm)
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
 
         self.assert_stopped_on_agent_working(result, CHILD)
         self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
@@ -524,7 +527,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
         confirm = ScriptedConfirm(RESUME)
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE), confirm=confirm)
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN), confirm=confirm)
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(len(confirm.questions), 1)
@@ -536,7 +539,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
 
         result = self.start(
-            loop_review.MODE, *worst_case_child_results(loop_review.MODE),
+            loop_core.REVIEWED_RUN, *worst_case_child_results(loop_core.REVIEWED_RUN),
             ScriptedResult("committed"), confirm=ScriptedConfirm(RESUME),
         )
 
@@ -551,7 +554,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         confirm = ScriptedConfirm(RESUME)
 
         result = self.start(
-            loop.MODE, *passing_child_results(loop.MODE) * 2, confirm=confirm
+            loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN) * 2, confirm=confirm
         )
 
         self.assert_completed(result, sessions=2)
@@ -564,14 +567,14 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
         self.github.add_issue(DEPENDENT, parent=PARENT, labels=("agent-working",))
 
-        result = self.start(loop.MODE, confirm=ScriptedConfirm(STOP))
+        result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(STOP))
 
         self.assert_stopped_on_agent_working(result, CHILD, DEPENDENT)
 
     def test_without_a_terminal_the_run_stops_with_the_warning_in_its_summary(self):
         self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
 
-        result = self.start(loop.MODE, confirm=None)
+        result = self.start(loop_core.STANDARD_RUN, confirm=None)
 
         summary = self.assert_stopped_on_agent_working(result, CHILD)
         self.assert_warning(summary, CHILD)
@@ -579,20 +582,20 @@ class LeftAgentWorkingTests(RunLevelTestCase):
     def test_ctrl_c_at_the_prompt_counts_as_stop(self):
         self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
 
-        result = self.start(loop.MODE, confirm=ScriptedConfirm(KeyboardInterrupt()))
+        result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(KeyboardInterrupt()))
 
         self.assert_stopped_on_agent_working(result, CHILD)
 
     def test_published_agent_working_child_is_recovered_without_a_prompt(self):
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.interrupt_after_comment_on = CHILD
-        self.github.interrupt_after_comment_containing = loop.MODE.implementation_evidence_prefix
+        self.github.interrupt_after_comment_containing = loop_core.STANDARD_RUN.implementation_evidence_prefix
         with self.assertRaises(RunInterrupted):
-            self.start(loop.MODE, *passing_child_results(loop.MODE))
+            self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
         confirm = ScriptedConfirm(STOP)
 
-        result = self.start(loop.MODE, confirm=confirm)
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
 
         self.assert_completed(result, sessions=0)
         self.assertEqual(confirm.questions, [])
@@ -624,7 +627,7 @@ class ConcurrentRunTests(RunLevelTestCase):
                     )
 
         self.sessions.before_session = another_run_takes_dependent
-        return start_run(mode, self.repository, self.github, self.sessions, PARENT)
+        return start_mode_run(mode, self.repository, self.github, self.sessions, PARENT)
 
     def assert_stopped_on_another_run(self, result, *, dependent_comments=0):
         self.assertEqual(result.exit_code, 1)
@@ -656,7 +659,7 @@ class ConcurrentRunTests(RunLevelTestCase):
         self.github.add_issue(DEPENDENT, parent=PARENT)
         self.github.add_issue(LATER_CHILD, parent=PARENT)
 
-        result = self.start_with_another_run(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start_with_another_run(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_stopped_on_another_run(result)
         self.assertEqual(self.github.labels(LATER_CHILD), {"ready-for-agent"})
@@ -666,7 +669,7 @@ class ConcurrentRunTests(RunLevelTestCase):
         self.github.add_issue(DEPENDENT, parent=PARENT)
 
         result = self.start_with_another_run(
-            loop.MODE, *passing_child_results(loop.MODE), published=True
+            loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN), published=True
         )
 
         self.assert_stopped_on_another_run(result, dependent_comments=1)
@@ -675,7 +678,7 @@ class ConcurrentRunTests(RunLevelTestCase):
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.add_issue(DEPENDENT, parent=PARENT)
 
-        result = self.start(loop_review.MODE, *passing_child_results(loop_review.MODE) * 2)
+        result = self.start(loop_core.REVIEWED_RUN, *passing_child_results(loop_core.REVIEWED_RUN) * 2)
 
         self.assert_completed(result, sessions=4)
         self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT, DEPENDENT])
@@ -742,7 +745,7 @@ class ChildBaseTests(RunLevelTestCase):
 
         self.github.after_comment = observe_labels_at_start
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         base_sha = self.repository.base_sha
@@ -758,14 +761,14 @@ class ChildBaseTests(RunLevelTestCase):
     def test_child_resumed_from_human_review_starts_from_its_first_child_base(self):
         self.github.add_issue(CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
-        self.hand_off(loop_review.MODE, "first-cycle.txt")
+        self.hand_off(loop_core.REVIEWED_RUN, "first-cycle.txt")
         human_commit = self.commit_file("human-fix.txt", "Fix during human review")
         self.relabel_ready()
-        self.hand_off(loop_review.MODE, "second-cycle.txt")
+        self.hand_off(loop_core.REVIEWED_RUN, "second-cycle.txt")
         self.relabel_ready()
 
         result = self.start(
-            loop_review.MODE, ScriptedResult("committed"), ScriptedResult("no_changes")
+            loop_core.REVIEWED_RUN, ScriptedResult("committed"), ScriptedResult("no_changes")
         )
 
         self.assert_completed(result, sessions=2)
@@ -782,13 +785,13 @@ class ChildBaseTests(RunLevelTestCase):
         self.github.add_issue(CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
         with self.assertRaises(RunInterrupted):
-            self.start(loop.MODE, RunInterrupted("the run's process died"))
+            self.start(loop_core.STANDARD_RUN, RunInterrupted("the run's process died"))
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
         self.commit_file("partial.txt", "Partial work of the interrupted child cycle")
         self.forget_diagnostics()
 
         result = self.start(
-            loop_review.MODE, ScriptedResult("committed"), ScriptedResult("no_changes"),
+            loop_core.REVIEWED_RUN, ScriptedResult("committed"), ScriptedResult("no_changes"),
             confirm=ScriptedConfirm(RESUME),
         )
 
@@ -811,7 +814,7 @@ class ChildBaseTests(RunLevelTestCase):
             child_base_marker(old_base, author="outside-contributor"),
         ])
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.child_bases(CHILD)[-1], head)
@@ -832,7 +835,7 @@ class ChildBaseTests(RunLevelTestCase):
             },
         ])
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertIn(
@@ -847,7 +850,7 @@ class ChildBaseTests(RunLevelTestCase):
             child_base_marker(self.repository.base_sha[:7]),
         ])
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertIn(
@@ -861,7 +864,7 @@ class ChildBaseTests(RunLevelTestCase):
             child_base_marker(self.repository.base_sha, author="outside-contributor"),
         ])
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertNotIn("no longer on the branch", self.start_comment(CHILD))
@@ -874,7 +877,7 @@ class ChildBaseTests(RunLevelTestCase):
         ])
         self.github.add_issue(OTHER_CHILD, parent=PARENT, blocked_by=[CHILD])
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(result, "dependency deadlock")
         self.assertIn(COMMITS_STAY, self.github.comments(CHILD)[-1])
@@ -886,7 +889,7 @@ class ChildBaseTests(RunLevelTestCase):
         ])
         self.github.add_issue(OTHER_CHILD, parent=PARENT, blocked_by=[CHILD])
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(result, "dependency deadlock")
         self.assertNotIn(COMMITS_STAY, self.github.comments(CHILD)[-1])
@@ -901,7 +904,7 @@ class ChildBaseTests(RunLevelTestCase):
     def add_implemented_child(self, number, verified_head, *comments):
         self.github.add_issue(
             number, parent=PARENT, labels=("implemented",),
-            comments=[*comments, implementation_evidence(loop.MODE, verified_head)],
+            comments=[*comments, implementation_evidence(loop_core.STANDARD_RUN, verified_head)],
         )
 
     def assert_names_uncovered_commits(self, uncovered_range):
@@ -913,15 +916,15 @@ class ChildBaseTests(RunLevelTestCase):
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.add_issue(OTHER_CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
-        self.hand_off(loop_review.MODE, "a1.txt")
+        self.hand_off(loop_core.REVIEWED_RUN, "a1.txt")
         self.relabel_ready()
-        earlier_cycles_head = self.hand_off(loop_review.MODE, "a2.txt")
-        other_child_head = self.implement_other_child(loop_review.MODE)
+        earlier_cycles_head = self.hand_off(loop_core.REVIEWED_RUN, "a2.txt")
+        other_child_head = self.implement_other_child(loop_core.REVIEWED_RUN)
         human_commit = self.commit_file("human-fix.txt", "Fix during human review")
         self.relabel_ready()
 
         result = self.start(
-            loop_review.MODE, ScriptedResult("committed"), ScriptedResult("no_changes")
+            loop_core.REVIEWED_RUN, ScriptedResult("committed"), ScriptedResult("no_changes")
         )
 
         self.assert_completed(result, sessions=2)
@@ -942,7 +945,7 @@ class ChildBaseTests(RunLevelTestCase):
     def test_child_base_moves_to_the_latest_child_implemented_after_the_recorded_one(self):
         self.github.add_issue(CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
-        earlier_cycles_head = self.hand_off(loop.MODE, "a1.txt")
+        earlier_cycles_head = self.hand_off(loop_core.STANDARD_RUN, "a1.txt")
         other_child_head = self.commit_file("other.txt", "Implement the other child")
         later_child_head = self.commit_file("later.txt", "Implement the later child")
         self.add_implemented_child(
@@ -953,7 +956,7 @@ class ChildBaseTests(RunLevelTestCase):
         )
         self.relabel_ready()
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assert_evidence_starts_from(later_child_head)
@@ -963,20 +966,20 @@ class ChildBaseTests(RunLevelTestCase):
     def test_child_cycles_between_other_children_are_named_as_one_inexact_range(self):
         self.github.add_issue(CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
-        first_cycle_head = self.hand_off(loop.MODE, "a1.txt")
+        first_cycle_head = self.hand_off(loop_core.STANDARD_RUN, "a1.txt")
         other_child_head = self.commit_file("other.txt", "Implement the other child")
         self.add_implemented_child(
             OTHER_CHILD, other_child_head, child_base_marker(first_cycle_head)
         )
         self.relabel_ready()
-        second_cycle_head = self.hand_off(loop.MODE, "a2.txt")
+        second_cycle_head = self.hand_off(loop_core.STANDARD_RUN, "a2.txt")
         later_child_head = self.commit_file("later.txt", "Implement the later child")
         self.add_implemented_child(
             LATER_CHILD, later_child_head, child_base_marker(second_cycle_head)
         )
         self.relabel_ready()
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assert_evidence_starts_from(later_child_head)
@@ -987,20 +990,20 @@ class ChildBaseTests(RunLevelTestCase):
     def test_child_cycle_after_another_child_is_named_when_the_first_left_no_commits(self):
         self.github.add_issue(CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
-        result = self.start(loop.MODE, ScriptedResult("blocked", "Needs a decision."))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("blocked", "Needs a decision."))
         self.assertEqual(self.github.labels(CHILD), {"human-review"}, result.stderr)
         self.forget_diagnostics()
         other_child_head = self.commit_file("other.txt", "Implement the other child")
         self.add_implemented_child(OTHER_CHILD, other_child_head, child_base_marker(base_sha))
         self.relabel_ready()
-        second_cycle_head = self.hand_off(loop.MODE, "a2.txt")
+        second_cycle_head = self.hand_off(loop_core.STANDARD_RUN, "a2.txt")
         later_child_head = self.commit_file("later.txt", "Implement the later child")
         self.add_implemented_child(
             LATER_CHILD, later_child_head, child_base_marker(second_cycle_head)
         )
         self.relabel_ready()
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assert_evidence_starts_from(later_child_head)
@@ -1011,12 +1014,12 @@ class ChildBaseTests(RunLevelTestCase):
     def test_other_child_without_a_recorded_child_base_names_every_commit_before_the_child_base(self):
         self.github.add_issue(CHILD, parent=PARENT)
         base_sha = self.repository.base_sha
-        self.hand_off(loop.MODE, "a1.txt")
+        self.hand_off(loop_core.STANDARD_RUN, "a1.txt")
         other_child_head = self.commit_file("other.txt", "Implement the other child")
         self.add_implemented_child(OTHER_CHILD, other_child_head)
         self.relabel_ready()
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assert_evidence_starts_from(other_child_head)
@@ -1026,16 +1029,45 @@ class ChildBaseTests(RunLevelTestCase):
         prior = self.commit_prior_child()
         self.add_implemented_child(OTHER_CHILD, prior)
         self.github.add_issue(CHILD, parent=PARENT)
-        self.hand_off(loop.MODE, "a1.txt")
+        self.hand_off(loop_core.STANDARD_RUN, "a1.txt")
         self.relabel_ready()
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assert_evidence_starts_from(prior)
         self.assertNotIn("not covered", self.start_comment(CHILD))
         self.assertNotIn("not covered", self.github.comments(CHILD)[-1])
         self.assertEqual(self.local_gate_bases(), [prior])
+
+
+class RunUsageCommandLineTests(unittest.TestCase):
+    """`ralph-kit run` usage errors name the program as invoked, with `--review` when given."""
+
+    def usage_error(self, *arguments):
+        stderr = io.StringIO()
+        with (
+            mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
+            contextlib.redirect_stderr(stderr),
+            self.assertRaises(SystemExit) as exit,
+        ):
+            cli.main(["run", *arguments])
+        self.assertEqual(exit.exception.code, 2)
+        return stderr.getvalue()
+
+    def test_standard_run_usage_names_ralph_kit_run(self):
+        for arguments in (("0",), ("--caffeinate", "abc")):
+            with self.subTest(arguments=arguments):
+                error = self.usage_error(*arguments)
+                self.assertTrue(error.startswith("usage: ralph-kit run [-h]"), error)
+                self.assertIn("must be a positive integer", error)
+
+    def test_reviewed_run_usage_names_ralph_kit_run_review(self):
+        for arguments in (("--review", "0"), ("5", "0", "--review", "--caffeinate")):
+            with self.subTest(arguments=arguments):
+                error = self.usage_error(*arguments)
+                self.assertTrue(error.startswith("usage: ralph-kit run --review [-h]"), error)
+                self.assertIn("must be a positive integer", error)
 
 
 class StartupChoiceCommandLineTests(unittest.TestCase):
@@ -1045,12 +1077,11 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
         with (
             mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
             mock.patch.object(sys.stdout, "isatty", return_value=stdout_tty),
-            mock.patch.object(loop, "run", return_value=0) as standard,
-            mock.patch.object(loop_review, "run", return_value=0) as reviewed,
+            mock.patch.object(loop, "run", return_value=0) as run,
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
         ):
             self.assertEqual(cli.main(["run", *(["--review"] if review else []), "5"]), 0)
-        return (reviewed if review else standard).call_args.kwargs["confirm"]
+        return run.call_args.kwargs["confirm"]
 
     def test_both_terminals_get_the_arrow_key_selector(self):
         for review in (False, True):
@@ -1081,7 +1112,7 @@ class ParentCompletionTests(RunLevelTestCase):
         self.github.add_issue(CLOSED_BLOCKER, parent=PARENT, state="closed", labels=())
         self.github.add_issue(CHILD, parent=PARENT, labels=("implemented",))
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertIn("- agent sessions: 0\n- infrastructure retries: 0\n", result.stdout)
@@ -1116,16 +1147,16 @@ class ParentCompletionTests(RunLevelTestCase):
 class RepeatedRunTests(RunLevelTestCase):
     def test_second_run_in_the_same_process_does_not_share_the_first_runs_state(self):
         self.github.add_issue(CHILD, parent=PARENT)
-        first = self.start(loop.MODE, ScriptedResult("committed"))
+        first = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
         self.assert_completed(first, sessions=1)
 
-        second = self.start(loop.MODE)
+        second = self.start(loop_core.STANDARD_RUN)
 
         self.assert_completed(second, sessions=0)
         self.assertEqual(self.sessions.requests, [])
         first_summary, second_summary = (
             comment for comment in self.github.comments(PARENT)
-            if loop.MODE.terminal_summary_marker in comment
+            if loop_core.STANDARD_RUN.terminal_summary_marker in comment
         )
         self.assertIn("- implemented children this run: 1\n", first_summary)
         self.assertIn("- agent sessions: 1\n", first_summary)
@@ -1149,7 +1180,7 @@ class RunDiagnosticsTests(RunLevelTestCase):
     def test_run_diagnostics_never_make_the_worktree_dirty(self):
         # Real session handling records each session in `.ralph/` and checks the worktree after it.
         engine = ScriptedEngine(self.repository, EngineResult(), EngineResult())
-        result = start_run(loop_review.MODE, self.repository, self.github, engine, PARENT)
+        result = start_mode_run(loop_core.REVIEWED_RUN, self.repository, self.github, engine, PARENT)
 
         self.assert_completed(result, sessions=2)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
@@ -1163,7 +1194,7 @@ class RunDiagnosticsTests(RunLevelTestCase):
             path.parent.mkdir(exist_ok=True)
             path.write_text(text, encoding="utf-8")
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_completed(result, sessions=1)
         for name, text in own.items():
@@ -1194,21 +1225,21 @@ class StartupTests(StartupRejectionTestCase):
     def test_base_branch_is_rejected_before_any_session(self):
         git(self.repository.path, "checkout", "main")
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(result, "main is not a safe Ralph branch")
 
     def test_detached_head_is_rejected_before_any_session(self):
         git(self.repository.path, "checkout", "--detach", self.repository.base_sha)
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(result, "detached HEAD is not allowed")
 
     def test_dirty_worktree_is_rejected_before_any_session(self):
         (self.repository.path / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(result, "worktree is dirty at startup")
 
@@ -1220,8 +1251,8 @@ class StartupTests(StartupRejectionTestCase):
             with self.subTest(name):
                 self.sessions = ScriptedSessions(self.repository)
 
-                result = start_run(
-                    loop.MODE, self.repository, self.github, self.sessions, PARENT, cwd=directory
+                result = start_mode_run(
+                    loop_core.STANDARD_RUN, self.repository, self.github, self.sessions, PARENT, cwd=directory
                 )
 
                 self.assert_rejected_at_startup(result, "wrong worktree")
@@ -1229,7 +1260,7 @@ class StartupTests(StartupRejectionTestCase):
     def test_wrong_repository_is_rejected_before_any_session(self):
         self.github.repository = "someone/else"
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(
             result, "wrong repository: expected lmpaul/buyr, found someone/else"
@@ -1238,7 +1269,7 @@ class StartupTests(StartupRejectionTestCase):
     def test_child_not_ready_for_an_agent_is_rejected_before_any_session(self):
         self.github.edit_issue_labels(CHILD, "needs-info", ())
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(
             result, f"parent issue #{PARENT} has children remaining but none is runnable"
@@ -1250,7 +1281,7 @@ class StartupTests(StartupRejectionTestCase):
             with self.subTest(arguments=arguments):
                 self.sessions = ScriptedSessions(self.repository)
 
-                result = start_run(loop.MODE, self.repository, self.github, self.sessions, *arguments)
+                result = start_mode_run(loop_core.STANDARD_RUN, self.repository, self.github, self.sessions, *arguments)
 
                 self.assert_rejected_at_startup(result, "must be a positive integer")
 
@@ -1263,7 +1294,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
                     self.repository = RunRepository(self)
                     self.repository.edit_configuration(f"{key} = true", f"{key} = {value}")
 
-                    result = self.start(loop.MODE)
+                    result = self.start(loop_core.STANDARD_RUN)
 
                     self.assert_rejected_at_startup(
                         result, f"configuration.verification.{key} must be a boolean"
@@ -1274,21 +1305,21 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
             "local_checks = true\nci_checks = true", 'mode = "ci"\nlocal_gates = "enabled"'
         )
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(result, "unknown keys: local_gates, mode")
 
     def test_duplicate_toml_key_is_rejected_before_any_session(self):
         self.repository.edit_configuration("ci_checks = true\n", "ci_checks = true\nci_checks = true\n")
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(result, "invalid TOML")
 
     def test_missing_agent_working_label_is_rejected_before_any_session(self):
         self.repository.edit_configuration('agent_working = "agent-working"\n', "")
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(
             result, "configuration.labels is missing keys: agent_working"
@@ -1299,14 +1330,14 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
             'agent_working = "agent-working"', 'agent_working = "implemented"'
         )
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(result, "configuration.labels values must be unique")
 
     def test_unknown_engine_is_rejected_before_any_session(self):
         self.repository = RunRepository(self, engines={"implementation": "unknown"})
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(
             result, "configuration.models.implementation.engine must be codex or claude"
@@ -1320,7 +1351,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
             'name = "claude-implementation"\ndisplay_name = "Terra"\nreasoning_effort = "minimal"',
         )
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(
             result, "configuration.models.implementation.reasoning_effort must be one of"
@@ -1334,7 +1365,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
     def test_review_profile_is_optional_for_a_standard_run(self):
         self.remove_review_profile()
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
@@ -1342,7 +1373,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
     def test_review_profile_is_required_for_a_reviewed_run(self):
         self.remove_review_profile()
 
-        result = self.start(loop_review.MODE, *passing_child_results(loop_review.MODE))
+        result = self.start(loop_core.REVIEWED_RUN, *passing_child_results(loop_core.REVIEWED_RUN))
 
         self.assert_rejected_at_startup(result, "configuration.models is missing keys: review")
 
@@ -1360,7 +1391,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
                 self.setUp()
                 self.add_backup(profile)
 
-                result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+                result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
                 self.assert_completed(result, sessions=1)
                 self.assertEqual(self.github.labels(CHILD), {"implemented"})
@@ -1388,7 +1419,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
                 self.setUp()
                 self.add_backup(profile)
 
-                result = self.start(loop.MODE)
+                result = self.start(loop_core.STANDARD_RUN)
 
                 self.assert_rejected_at_startup(result, reason)
 
@@ -1403,7 +1434,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
                 self.setUp()
                 self.add_backup(profile)
 
-                result = self.start(loop.MODE)
+                result = self.start(loop_core.STANDARD_RUN)
 
                 self.assert_rejected_at_startup(
                     result,
@@ -1418,7 +1449,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
         )
         self.add_backup('engine = "codex"\nname = "gpt-5.6-luna"\ndisplay_name = "Luna"\nreasoning_effort = "medium"')
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(
             result,
@@ -1462,7 +1493,7 @@ class ConfiguredTrustTests(RunLevelTestCase):
             ],
         )
 
-        result = self.start(loop.MODE, *passing_child_results(loop.MODE))
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(self.github.opened_for, ["acme/widget"])
@@ -1476,7 +1507,7 @@ class ConfiguredTrustTests(RunLevelTestCase):
     def test_untrusted_issue_author_is_rejected_before_any_session(self):
         self.github.add_issue(CHILD, parent=PARENT, author="outside-contributor")
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(
             result, f"issue #{CHILD} must be authored by one of: @{TRUSTED_LOGIN}"
@@ -1484,7 +1515,7 @@ class ConfiguredTrustTests(RunLevelTestCase):
 
     def test_untrusted_implementation_evidence_never_satisfies_a_blocker(self):
         verified_head = self.commit_prior_child()
-        evidence = implementation_evidence(loop.MODE, verified_head)
+        evidence = implementation_evidence(loop_core.STANDARD_RUN, verified_head)
         self.github.add_issue(
             BLOCKER,
             parent=PARENT,
@@ -1493,7 +1524,7 @@ class ConfiguredTrustTests(RunLevelTestCase):
         )
         self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(
             result, f"parent issue #{PARENT} has children remaining but none is runnable"
@@ -1583,7 +1614,7 @@ class LocalGateTests(VerificationTestCase):
     def test_local_gate_correction_receives_the_complete_redacted_output(self):
         self.new_child_run(local_gate_results=("fail", "pass"))
 
-        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedResult("committed"))
 
         self.assert_implemented(result)
         prompt = self.sessions.prompts[1]
@@ -1612,7 +1643,7 @@ class CIEvidenceTests(VerificationTestCase):
         )
 
         result = self.start(
-            loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH), ScriptedResult("committed")
+            loop_core.STANDARD_RUN, ScriptedResult("committed", path=PERSISTENCE_PATH), ScriptedResult("committed")
         )
 
         self.assert_implemented(result)
@@ -1642,7 +1673,7 @@ class CIEvidenceTests(VerificationTestCase):
     def test_expired_job_logs_leave_explicit_evidence_and_a_job_reference(self):
         self.new_child_run(ci=("failure", "success"), job_log_error="Job logs have expired")
 
-        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedResult("committed"))
 
         self.assert_implemented(result)
         prompt = self.sessions.prompts[1]
@@ -1656,7 +1687,7 @@ class CIEvidenceTests(VerificationTestCase):
     def test_empty_job_log_is_never_used_as_evidence(self):
         self.new_child_run(ci=("failure", "success"), job_log_output="")
 
-        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedResult("committed"))
 
         self.assert_implemented(result)
         self.assertIn("CI logs unavailable. The downloaded job log is empty.", self.sessions.prompts[1])
@@ -1667,7 +1698,7 @@ class CIEvidenceTests(VerificationTestCase):
     def test_job_from_another_commit_is_never_used_as_evidence(self):
         self.new_child_run(ci=("failure", "success"), job_head_sha=OTHER_COMMIT)
 
-        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedResult("committed"))
 
         self.assert_implemented(result)
         prompt = self.sessions.prompts[1]
@@ -1682,7 +1713,7 @@ class CIEvidenceTests(VerificationTestCase):
             check_annotation=annotation,
         )
 
-        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedResult("committed"))
 
         self.assert_implemented(result)
         prompt = self.sessions.prompts[1]
@@ -1694,7 +1725,7 @@ class CIEvidenceTests(VerificationTestCase):
     def test_stale_ci_evidence_never_authorizes_implemented(self):
         self.new_child_run(ci=({CANONICAL_CHECK: {"conclusion": "success", "head_sha": OTHER_COMMIT}},))
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_not_implemented(result, "infrastructure retries exhausted")
         self.assertIn(
@@ -1713,7 +1744,7 @@ class CIEvidenceTests(VerificationTestCase):
 
         self.github.after_comment = advance_the_branch
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_not_implemented(result, "branch advanced after canonical CI")
 
@@ -1726,13 +1757,13 @@ class CIEvidenceTests(VerificationTestCase):
 
         self.github.before_check_runs = advance_the_branch
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_not_implemented(result, "branch advanced while waiting for canonical CI")
         self.assertEqual(len(self.github.checked_heads), 1)
 
     def test_no_changes_still_requires_ci_before_completion(self):
-        result = self.start(loop.MODE, ScriptedResult("no_changes"), ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("no_changes"), ScriptedResult("committed"))
 
         self.assert_implemented(result)
         self.assertEqual(self.roles(), ["implementation", "CI correction"])
@@ -1744,7 +1775,7 @@ class CIEvidenceTests(VerificationTestCase):
 
         with mock.patch.dict(os.environ):
             os.environ.pop("RALPH_CI_POLL_SECONDS", None)
-            result = self.start(loop.MODE, ScriptedResult("committed"))
+            result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_implemented(result)
         self.assertEqual(result.sleeps, [45.0])
@@ -1759,7 +1790,7 @@ class CIEvidenceTests(VerificationTestCase):
 
         with mock.patch.dict(os.environ):
             os.environ.pop("RALPH_CI_POLL_SECONDS", None)
-            result = self.start(loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH))
+            result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed", path=PERSISTENCE_PATH))
 
         self.assert_implemented(result)
         head = self.github.checked_heads[-1][:7]
@@ -1819,7 +1850,7 @@ class ConditionalCITests(VerificationTestCase):
         self.new_child_run(check_names=(CANONICAL_CHECK, DATABASE_CHECK))
 
     def test_persistence_change_completes_with_a_green_database_check_for_its_head(self):
-        result = self.start(loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed", path=PERSISTENCE_PATH))
 
         self.assert_implemented(result)
         self.assertEqual(self.roles(), ["implementation"])
@@ -1833,7 +1864,7 @@ class ConditionalCITests(VerificationTestCase):
                 )
 
                 result = self.start(
-                    loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH), ScriptedResult("committed")
+                    loop_core.STANDARD_RUN, ScriptedResult("committed", path=PERSISTENCE_PATH), ScriptedResult("committed")
                 )
 
                 self.assert_implemented(result)
@@ -1855,7 +1886,7 @@ class ConditionalCITests(VerificationTestCase):
             with self.subTest(name):
                 self.new_child_run(ci=({CANONICAL_CHECK: "success", **database_check},))
 
-                result = self.start(loop.MODE, ScriptedResult("committed", path=PERSISTENCE_PATH))
+                result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed", path=PERSISTENCE_PATH))
 
                 self.assert_not_implemented(result, "infrastructure retries exhausted")
                 self.assertIn(reason, result.stderr)
@@ -1864,7 +1895,7 @@ class ConditionalCITests(VerificationTestCase):
     def test_frontend_only_change_does_not_require_the_database_check(self):
         self.github.ci = [{CANONICAL_CHECK: "success", DATABASE_CHECK: "failure"}]
 
-        result = self.start(loop.MODE, ScriptedResult("committed", path=FRONTEND_PATH))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed", path=FRONTEND_PATH))
 
         self.assert_implemented(result)
         self.assertEqual(self.roles(), ["implementation"])
@@ -1888,7 +1919,7 @@ class VerificationConfigurationTests(VerificationTestCase):
     def test_ci_runs_and_corrects_failures_with_local_gates_disabled(self):
         self.new_child_run(local_checks=False, ci=("failure", "success"))
 
-        result = self.start(loop.MODE, ScriptedResult("committed"), ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedResult("committed"))
 
         evidence = self.assert_implemented(result)
         self.assertEqual(self.roles(), ["implementation", "CI correction"])
@@ -1928,7 +1959,7 @@ class HandoffRedactionTests(VerificationTestCase):
             with self.subTest(name):
                 self.new_child_run(**run_options)
 
-                result = self.start(loop.MODE, *corrections)
+                result = self.start(loop_core.STANDARD_RUN, *corrections)
 
                 self.assert_not_implemented(result, "Stop reason: correction limit of 3 exhausted")
                 handoff = self.github.comments(CHILD)[-1]
@@ -1944,7 +1975,7 @@ class CrashedRunTests(VerificationTestCase):
         crash = ValueError("the session adapter broke")
 
         with self.assertRaises(ValueError) as raised:
-            self.start(loop.MODE, crash)
+            self.start(loop_core.STANDARD_RUN, crash)
 
         self.assertIs(raised.exception, crash)
         self.assertIn("- final outcome: crashed", self.github.comments(PARENT)[-1])
@@ -1994,7 +2025,7 @@ class InterruptedRunTests(VerificationTestCase):
             )
 
     def test_ctrl_c_before_the_first_commit_returns_the_child_to_ready_for_agent(self):
-        result = self.start(loop.MODE, KeyboardInterrupt())
+        result = self.start(loop_core.STANDARD_RUN, KeyboardInterrupt())
 
         self.assert_interrupted(result, 130, "SIGINT")
         self.assertEqual(self.roles(), ["implementation"])
@@ -2015,7 +2046,7 @@ class InterruptedRunTests(VerificationTestCase):
         base = self.repository.head()
         self.interrupt_while_waiting_for_ci(signal.SIGINT)
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_interrupted(result, 130, "SIGINT", rerun_action=False)
         self.assertEqual(self.roles(), ["implementation"])
@@ -2027,7 +2058,7 @@ class InterruptedRunTests(VerificationTestCase):
                 self.new_child_run()
                 handler = signal.getsignal(signal_number)
 
-                result = self.start(loop.MODE, ScriptedSignal(signal_number))
+                result = self.start(loop_core.STANDARD_RUN, ScriptedSignal(signal_number))
 
                 self.assert_interrupted(result, exit_code, signal_number.name)
                 self.assertEqual(self.roles(), ["implementation"])
@@ -2039,7 +2070,7 @@ class InterruptedRunTests(VerificationTestCase):
                 base = self.repository.head()
                 self.interrupt_while_waiting_for_ci(signal_number)
 
-                result = self.start(loop.MODE, ScriptedResult("committed"))
+                result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
                 self.assert_interrupted(
                     result, exit_code, signal_number.name, rerun_action=False
@@ -2052,7 +2083,7 @@ class InterruptedRunTests(VerificationTestCase):
         self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
         self.sessions.before_session = lambda request: os.kill(os.getpid(), signal.SIGHUP)
 
-        result = start_run(loop.MODE, self.repository, self.github, self.sessions, PARENT)
+        result = start_mode_run(loop_core.STANDARD_RUN, self.repository, self.github, self.sessions, PARENT)
 
         self.assert_implemented(result)
         self.assertIs(signal.getsignal(signal.SIGHUP), signal.SIG_IGN)
@@ -2064,7 +2095,7 @@ class InterruptedRunTests(VerificationTestCase):
 
         self.github.after_comment = interrupt_after_evidence
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assertEqual(result.exit_code, 130, result.stderr)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
@@ -2080,7 +2111,7 @@ class InterruptedRunTests(VerificationTestCase):
 
         self.github.after_label_edit = interrupt_once_implemented
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_interrupted(result, 130, "SIGINT")
         self.assertEqual(self.session_children(), [CHILD])
@@ -2095,7 +2126,7 @@ class InterruptedRunTests(VerificationTestCase):
 
         self.github.after_comment = interrupt_again
 
-        result = self.start(loop.MODE, KeyboardInterrupt())
+        result = self.start(loop_core.STANDARD_RUN, KeyboardInterrupt())
 
         self.assertEqual(result.exit_code, 130)
         self.assertIn("- final outcome: interrupted", self.github.comments(PARENT)[-1])
@@ -2112,7 +2143,7 @@ class InterruptedRunTests(VerificationTestCase):
         self.github.after_comment = interrupt_again
         self.interrupt_while_waiting_for_ci(signal.SIGINT)
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assertEqual(result.exit_code, 130)
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
@@ -2123,7 +2154,7 @@ class InterruptedRunTests(VerificationTestCase):
 
     def test_simulated_process_death_is_neither_caught_nor_reported(self):
         with self.assertRaises(RunInterrupted):
-            self.start(loop.MODE, RunInterrupted("killed with SIGKILL"))
+            self.start(loop_core.STANDARD_RUN, RunInterrupted("killed with SIGKILL"))
 
         self.assertEqual(self.github.comments(PARENT), [])
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
@@ -2152,7 +2183,7 @@ class InfrastructureRetryTests(VerificationTestCase):
                 self.new_child_run(ci=(conclusion,))
 
                 with mock.patch.dict(os.environ, {"RALPH_INFRA_RETRY_SECONDS": "30"}):
-                    result = self.start(loop.MODE, ScriptedResult("committed"))
+                    result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
                 self.assert_stopped_after_infrastructure_retries(
                     result, f"{CANONICAL_CHECK} concluded {conclusion}"
@@ -2165,7 +2196,7 @@ class InfrastructureRetryTests(VerificationTestCase):
             with self.subTest(failure):
                 self.new_child_run(ci=(RalphError(f"gh api failed: {failure}"),))
 
-                result = self.start(loop.MODE, ScriptedResult("committed"))
+                result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
                 self.assert_stopped_after_infrastructure_retries(result, f"gh api failed: {failure}")
 
@@ -2194,7 +2225,7 @@ class InfrastructureRetryTests(VerificationTestCase):
 
         self.github.before_check_runs = advance_the_branch
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_not_implemented(result, "branch advanced during an infrastructure retry")
         self.assertEqual(len(self.github.checked_heads), 1)
@@ -2235,9 +2266,9 @@ class RunBudgetTests(VerificationTestCase):
     def test_default_budget_of_a_reviewed_run_allows_nine_sessions_per_child_across_the_run(self):
         self.new_two_child_run()
         self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
-        worst_case = worst_case_child_results(loop_review.MODE)
+        worst_case = worst_case_child_results(loop_core.REVIEWED_RUN)
 
-        result = self.start(loop_review.MODE, *worst_case * 2, *worst_case[:2])
+        result = self.start(loop_core.REVIEWED_RUN, *worst_case * 2, *worst_case[:2])
 
         self.assert_budget_stop(
             result, READY_FOR_HUMAN_CHILD, role="issue correction", budget=18
@@ -2253,7 +2284,7 @@ class RunBudgetTests(VerificationTestCase):
         self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
 
-        result = self.start(loop.MODE, *worst_case_child_results(loop.MODE), findings)
+        result = self.start(loop_core.STANDARD_RUN, *worst_case_child_results(loop_core.STANDARD_RUN), findings)
 
         self.assert_budget_stop(
             result, READY_FOR_HUMAN_CHILD, role="issue correction", budget=5
@@ -2269,7 +2300,7 @@ class RunBudgetTests(VerificationTestCase):
         self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
 
         result = self.start(
-            loop_review.MODE, *worst_case_child_results(loop_review.MODE),
+            loop_core.REVIEWED_RUN, *worst_case_child_results(loop_core.REVIEWED_RUN),
             ScriptedResult("committed"),
         )
 
@@ -2278,9 +2309,9 @@ class RunBudgetTests(VerificationTestCase):
 
     def test_explicit_budget_replaces_the_default_across_children(self):
         self.new_two_child_run()
-        results = [*passing_child_results(loop_review.MODE), ScriptedResult("committed")]
+        results = [*passing_child_results(loop_core.REVIEWED_RUN), ScriptedResult("committed")]
 
-        result = self.start(loop_review.MODE, *results, budget=3)
+        result = self.start(loop_core.REVIEWED_RUN, *results, budget=3)
 
         self.assert_budget_stop(result, DEPENDENT, role="review", budget=3)
         self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT])
@@ -2304,7 +2335,7 @@ class StopSummaryTests(VerificationTestCase):
     def test_child_not_ready_for_an_agent_is_named_with_its_label_and_next_action(self):
         self.github.add_issue(DEPENDENT, parent=PARENT, labels=("ready-for-human",))
 
-        result = self.start(loop_review.MODE, *passing_child_results(loop_review.MODE))
+        result = self.start(loop_core.REVIEWED_RUN, *passing_child_results(loop_core.REVIEWED_RUN))
 
         self.assertEqual(result.exit_code, 1)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
@@ -2321,7 +2352,7 @@ class StopSummaryTests(VerificationTestCase):
         self.github.add_issue(CHILD, parent=PARENT, labels=("needs-info",))
         self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[CHILD])
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stop_summary(
             result,
@@ -2334,7 +2365,7 @@ class StopSummaryTests(VerificationTestCase):
         self.github.add_issue(BLOCKER, parent=PARENT, blocked_by=[DEPENDENT])
         self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
 
-        result = self.start(loop.MODE)
+        result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stop_summary(
             result,
@@ -2348,13 +2379,13 @@ class StopSummaryTests(VerificationTestCase):
     def test_child_handed_to_human_review_links_its_handoff_comment(self):
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
         for name, mode, results, reason in (
-            ("blocked", loop.MODE, [ScriptedResult("blocked", "Needs a product decision.")],
+            ("blocked", loop_core.STANDARD_RUN, [ScriptedResult("blocked", "Needs a product decision.")],
              "implementation stopped with blocked: Needs a product decision."),
-            ("failed", loop.MODE, [ScriptedResult("failed", "The toolchain crashed.")],
+            ("failed", loop_core.STANDARD_RUN, [ScriptedResult("failed", "The toolchain crashed.")],
              "implementation stopped with failed: The toolchain crashed."),
-            ("missing commit", loop.MODE, [findings, ScriptedResult("committed", commit=False)],
+            ("missing commit", loop_core.STANDARD_RUN, [findings, ScriptedResult("committed", commit=False)],
              "Issue correction did not create a new commit"),
-            ("correction limit", loop.MODE, [findings, *[dataclasses.replace(findings, commit=True)] * 3],
+            ("correction limit", loop_core.STANDARD_RUN, [findings, *[dataclasses.replace(findings, commit=True)] * 3],
              "correction limit of 3 exhausted before issue correction"),
         ):
             with self.subTest(name):
@@ -2374,7 +2405,7 @@ class StopSummaryTests(VerificationTestCase):
                 )
 
     def test_exhausted_run_budget_says_the_next_run_has_a_fresh_one(self):
-        result = self.start(loop_review.MODE, ScriptedResult("committed"), budget=1)
+        result = self.start(loop_core.REVIEWED_RUN, ScriptedResult("committed"), budget=1)
 
         self.assert_stop_summary(
             result,
@@ -2389,7 +2420,7 @@ class StopSummaryTests(VerificationTestCase):
     def test_exhausted_infrastructure_retries_give_their_reason_and_next_action(self):
         self.new_child_run(ci=("cancelled",))
 
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_stop_summary(
             result,
@@ -2403,7 +2434,7 @@ class StopSummaryTests(VerificationTestCase):
 
     def test_crash_names_the_exception_and_points_to_the_run_diagnostics(self):
         with self.assertRaises(ValueError):
-            self.start(loop.MODE, ValueError("the adapter broke with token=hunter2"))
+            self.start(loop_core.STANDARD_RUN, ValueError("the adapter broke with token=hunter2"))
 
         directory = self.repository.diagnostics().relative_to(self.repository.path)
         summary = self.github.comments(PARENT)[-1]
@@ -2413,7 +2444,7 @@ class StopSummaryTests(VerificationTestCase):
         self.assertNotIn("hunter2", summary)
 
     def test_secrets_in_the_stop_reason_are_redacted(self):
-        result = self.start(loop.MODE, RalphError("gh failed: token=hunter2 Bearer abc.def"))
+        result = self.start(loop_core.STANDARD_RUN, RalphError("gh failed: token=hunter2 Bearer abc.def"))
 
         self.assert_stop_summary(
             result,
@@ -2430,8 +2461,8 @@ class StopSummaryTests(VerificationTestCase):
         git(self.repository.path, "commit", "-m", "Move the Ralph configuration")
         self.sessions = ScriptedSessions(self.repository, ScriptedResult("blocked", "Stuck."))
 
-        result = start_run(
-            loop_review.MODE, self.repository, self.github, self.sessions,
+        result = start_mode_run(
+            loop_core.REVIEWED_RUN, self.repository, self.github, self.sessions,
             "--config", "config/ralph.toml", PARENT, 7,
         )
 
@@ -2440,7 +2471,7 @@ class StopSummaryTests(VerificationTestCase):
         )
 
     def test_completed_run_summary_has_no_stop_details(self):
-        result = self.start(loop.MODE, ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_implemented(result)
         self.assertTrue(self.github.comments(PARENT)[-1].endswith("- final outcome: completed"))
@@ -2453,7 +2484,7 @@ class AgentSessionTestCase(VerificationTestCase):
     def start_engine(self, mode, *results, budget=None, confirm=None):
         self.engine = ScriptedEngine(self.repository, *results)
         budget_argument = () if budget is None else (budget,)
-        return start_run(
+        return start_mode_run(
             mode, self.repository, self.github, self.engine, PARENT, *budget_argument,
             confirm=confirm,
         )
@@ -2524,14 +2555,14 @@ class OutcomeContractTests(AgentSessionTestCase):
             with self.subTest(name):
                 self.new_child_run(**run_options)
 
-                result = self.start_engine(loop.MODE, *results)
+                result = self.start_engine(loop_core.STANDARD_RUN, *results)
 
                 self.assert_stopped_without_publishing(result, reason)
                 self.assertEqual(len(self.engine.calls), len(results))
 
     def test_no_changes_is_published_after_a_clean_independent_review(self):
         result = self.start_engine(
-            loop_review.MODE, EngineResult("no_changes"), EngineResult("no_changes")
+            loop_core.REVIEWED_RUN, EngineResult("no_changes"), EngineResult("no_changes")
         )
 
         evidence = self.assert_implemented(result)
@@ -2541,7 +2572,7 @@ class OutcomeContractTests(AgentSessionTestCase):
         self.assertIn(f"`{self.repository.base_sha}`", evidence)
 
     def test_failed_session_with_a_commit_is_a_terminal_stop(self):
-        result = self.start_engine(loop.MODE, EngineResult("failed", "The build tool crashed.", commit=True))
+        result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("failed", "The build tool crashed.", commit=True))
 
         self.assert_handed_to_human_review(
             result,
@@ -2552,7 +2583,7 @@ class OutcomeContractTests(AgentSessionTestCase):
         self.assertIsNone(self.github.pull_request())
 
     def test_claimed_commit_without_a_git_commit_hands_the_child_to_human_review(self):
-        result = self.start_engine(loop.MODE, EngineResult("committed", commit=False))
+        result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("committed", commit=False))
 
         self.assert_handed_to_human_review(
             result,
@@ -2565,7 +2596,7 @@ class OutcomeContractTests(AgentSessionTestCase):
             self.repository.pushed_head()
 
     def test_dirty_agent_output_cannot_be_published_and_keeps_its_evidence(self):
-        result = self.start_engine(loop.MODE, EngineResult("committed", dirty=True))
+        result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("committed", dirty=True))
 
         self.assert_handed_to_human_review(result, "worktree is dirty after implementation")
         self.assertIsNone(self.github.pull_request())
@@ -2588,7 +2619,7 @@ class InvalidOutputTests(AgentSessionTestCase):
             with self.subTest(name):
                 self.new_child_run(engines={"implementation": engine})
 
-                result = self.start_engine(loop_review.MODE, session)
+                result = self.start_engine(loop_core.REVIEWED_RUN, session)
 
                 self.assert_stopped_without_publishing(result, reason)
                 self.assertEqual(self.engine.engines(), [engine])
@@ -2602,7 +2633,7 @@ class InvalidOutputTests(AgentSessionTestCase):
 
 class NonZeroExitTests(AgentSessionTestCase):
     def test_nonzero_exit_with_a_valid_committed_result_is_still_verified(self):
-        result = self.start_engine(loop.MODE, EngineResult("committed", returncode=1))
+        result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("committed", returncode=1))
 
         self.assert_implemented(result)
         (record,) = self.repository.session_records()
@@ -2621,7 +2652,7 @@ class NonZeroExitTests(AgentSessionTestCase):
             with self.subTest(session.outcome):
                 self.new_child_run()
 
-                result = self.start_engine(loop.MODE, dataclasses.replace(session, returncode=1))
+                result = self.start_engine(loop_core.STANDARD_RUN, dataclasses.replace(session, returncode=1))
 
                 self.assert_stopped_without_publishing(
                     result, "implementation exited non-zero without a committed outcome"
@@ -2632,7 +2663,7 @@ class NonZeroExitTests(AgentSessionTestCase):
         self.new_child_run(engines={"implementation": "claude"})
 
         result = self.start_engine(
-            loop_review.MODE,
+            loop_core.REVIEWED_RUN,
             EngineResult(
                 returncode=1,
                 commit=False,
@@ -2658,7 +2689,7 @@ class HumanReviewEvidenceTests(AgentSessionTestCase):
             with self.subTest(role):
                 self.new_child_run(**run_options)
 
-                result = self.start_engine(loop.MODE, *results)
+                result = self.start_engine(loop_core.STANDARD_RUN, *results)
 
                 self.assert_handed_to_human_review(
                     result,
@@ -2672,7 +2703,7 @@ class HumanReviewEvidenceTests(AgentSessionTestCase):
         finding = f"First requirement.\n{details}\nLast requirement. token=fixture-secret"
 
         result = self.start_engine(
-            loop.MODE,
+            loop_core.STANDARD_RUN,
             EngineResult("needs_correction", findings=(finding,), commit=True),
             EngineResult("no_changes"),
         )
@@ -2698,7 +2729,7 @@ class SessionSummaryTests(AgentSessionTestCase):
                 self.new_child_run()
 
                 result = self.start_engine(
-                    loop_review.MODE, EngineResult("committed", summary), EngineResult("no_changes")
+                    loop_core.REVIEWED_RUN, EngineResult("committed", summary), EngineResult("no_changes")
                 )
 
                 self.assert_implemented(result)
@@ -2710,7 +2741,7 @@ class SessionSummaryTests(AgentSessionTestCase):
         self.new_child_run(local_gate_results=("fail", "pass"), ci=("failure", "success"))
 
         result = self.start_engine(
-            loop.MODE,
+            loop_core.STANDARD_RUN,
             EngineResult("committed", "Implemented the journey."),
             EngineResult("committed", "Repaired the failing local gate."),
             EngineResult("committed", "Repaired the failing CI check."),
@@ -2736,7 +2767,7 @@ class EngineSelectionTests(AgentSessionTestCase):
                 self.new_child_run(local_gate_results=("fail", "pass"), engines=engines)
 
                 result = self.start_engine(
-                    loop_review.MODE,
+                    loop_core.REVIEWED_RUN,
                     EngineResult("committed"),
                     EngineResult("committed"),
                     EngineResult("no_changes"),
@@ -2755,7 +2786,7 @@ class EngineSelectionTests(AgentSessionTestCase):
     def test_sessions_are_announced_with_their_engine_and_profile(self):
         self.new_child_run(local_gate_results=("fail", "pass"), engines={"implementation": "claude"})
 
-        result = self.start_engine(loop.MODE, EngineResult("committed"), EngineResult("committed"))
+        result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("committed"), EngineResult("committed"))
 
         self.assert_implemented(result)
         self.assertIn(
@@ -2783,7 +2814,7 @@ class EngineSelectionTests(AgentSessionTestCase):
     def test_configuration_without_an_engine_still_uses_codex(self):
         self.new_child_run(engines=dict.fromkeys(("implementation", "review", "correction")))
 
-        result = self.start_engine(loop_review.MODE, EngineResult("committed"), EngineResult("no_changes"))
+        result = self.start_engine(loop_core.REVIEWED_RUN, EngineResult("committed"), EngineResult("no_changes"))
 
         self.assert_implemented(result)
         self.assertEqual(self.engine.engines(), ["codex", "codex"])
@@ -2843,7 +2874,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
             with self.subTest(name):
                 self.new_child_run(engines=engines)
 
-                result = self.start_engine(loop.MODE, failure, EngineResult("committed"))
+                result = self.start_engine(loop_core.STANDARD_RUN, failure, EngineResult("committed"))
 
                 self.assert_implemented(result)
                 failed, replay = self.engine.calls
@@ -2855,7 +2886,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
     def test_replay_starts_from_the_head_the_failed_session_started_from(self):
         result = self.start_engine(
-            loop.MODE,
+            loop_core.STANDARD_RUN,
             EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
             EngineResult("committed"),
         )
@@ -2877,7 +2908,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         finding = ("Handle empty carts.",)
 
         result = self.start_engine(
-            loop_review.MODE,
+            loop_core.REVIEWED_RUN,
             EngineResult(writes_result=False, commit=False),
             EngineResult("committed"),
             EngineResult("committed"),
@@ -2914,7 +2945,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
     def test_failed_review_session_is_replayed_by_the_backup(self):
         result = self.start_engine(
-            loop_review.MODE,
+            loop_core.REVIEWED_RUN,
             EngineResult("committed"),
             EngineResult(writes_result=False, commit=False),
             EngineResult("no_changes"),
@@ -2930,7 +2961,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
     def test_run_summary_reports_the_backup_takeover(self):
         result = self.start_engine(
-            loop_review.MODE,
+            loop_core.REVIEWED_RUN,
             EngineResult("committed"),
             EngineResult(writes_result=False, commit=False),
             EngineResult("no_changes"),
@@ -2949,7 +2980,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
             with self.subTest(backup=backup):
                 self.new_child_run(backup=backup)
 
-                result = self.start_engine(loop.MODE, EngineResult("committed"))
+                result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("committed"))
 
                 self.assert_implemented(result)
                 for summary in self.published_summaries(result):
@@ -2958,7 +2989,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
     def test_switch_is_announced_and_recorded_in_the_run_diagnostics(self):
         result = self.start_engine(
-            loop.MODE,
+            loop_core.STANDARD_RUN,
             EngineResult("blocked", "Usage limit.", returncode=1, stderr=FAILED_ENGINE_STDERR),
             EngineResult("committed"),
         )
@@ -2992,7 +3023,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
     def test_engine_failure_of_the_backup_stops_the_run_naming_both_failures(self):
         result = self.start_engine(
-            loop.MODE,
+            loop_core.STANDARD_RUN,
             EngineResult(writes_result=False, commit=False),
             EngineResult(is_error=True, commit=False),
         )
@@ -3014,14 +3045,14 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
     def test_new_run_resuming_an_agent_working_child_starts_on_the_regular_profiles(self):
         self.start_engine(
-            loop.MODE,
+            loop_core.STANDARD_RUN,
             EngineResult(writes_result=False, commit=False),
             EngineResult(writes_result=False, commit=False),
         )
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
 
         result = self.start_engine(
-            loop.MODE, EngineResult("committed"), confirm=lambda question: True
+            loop_core.STANDARD_RUN, EngineResult("committed"), confirm=lambda question: True
         )
 
         self.assert_implemented(result)
@@ -3044,14 +3075,14 @@ class BackupTakeoverTests(AgentSessionTestCase):
             with self.subTest(name):
                 self.new_child_run()
 
-                result = self.start_engine(loop.MODE, *results)
+                result = self.start_engine(loop_core.STANDARD_RUN, *results)
 
                 self.assertEqual(result.exit_code, expected_exit, result.stderr)
                 self.assertEqual(self.engine.engines(), ["codex"] * len(results))
                 self.assertNotIn("backup", result.stdout)
 
     def test_nonzero_exit_with_a_valid_committed_result_is_accepted_without_switching(self):
-        result = self.start_engine(loop.MODE, EngineResult("committed", returncode=1))
+        result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("committed", returncode=1))
 
         self.assert_implemented(result)
         self.assertEqual(self.engine.engines(), ["codex"])
@@ -3061,7 +3092,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.new_child_run()
 
         result = self.start_engine(
-            loop_review.MODE,
+            loop_core.REVIEWED_RUN,
             EngineResult(writes_result=False, commit=False),
             EngineResult("committed"),
             budget=2,
@@ -3076,7 +3107,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
     def test_engine_failure_on_the_last_budgeted_session_exhausts_the_run_budget_instead_of_replaying(self):
         result = self.start_engine(
-            loop.MODE,
+            loop_core.STANDARD_RUN,
             EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
             budget=1,
         )
@@ -3111,7 +3142,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.new_child_run(local_gate_results=("fail", "fail", "fail", "pass"))
 
         result = self.start_engine(
-            loop.MODE,
+            loop_core.STANDARD_RUN,
             EngineResult("committed"),
             EngineResult(writes_result=False, commit=False),
             EngineResult("committed"),
