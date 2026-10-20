@@ -258,8 +258,10 @@ def _choose_model(
             name = prompter.choice(question, choices, default)
             return prompter.text("Model name", placeholder=PLACEHOLDERS[role]) if name == OTHER else name
     # A free model name cannot be marked unavailable in advance.
-    while reason := _model_unavailable(engine, catalog, name := ask(), avoid):
+    name = ask()
+    while reason := _model_unavailable(engine, catalog, name, avoid):
         prompter.say(f"  {name} is unavailable: {reason}.")
+        name = ask()
     return name
 
 

@@ -208,7 +208,7 @@ class InitTests(unittest.TestCase):
             (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
             ("claude", "sonnet", "high"),
         )
-        # The backup engine is asked once.
+        # The backup's engine is asked once.
         self.assertEqual(output.count("? Backup"), 1)
 
     def test_a_model_is_unavailable_when_every_effort_clashes(self):
