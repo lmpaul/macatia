@@ -1069,7 +1069,6 @@ class RunUsageCommandLineTests(unittest.TestCase):
                 self.assertTrue(error.startswith("usage: ralph-kit run --review [-h]"), error)
                 self.assertIn("must be a positive integer", error)
 
-
     def test_standard_run_usage_names_ralph_kit_run_no_review(self):
         error = self.usage_error("0", "--no-review")
         self.assertTrue(error.startswith("usage: ralph-kit run --no-review [-h]"), error)
@@ -1485,9 +1484,8 @@ def set_review_by_default(repository, value="true"):
 class ReviewByDefaultTests(StartupRejectionTestCase):
     """`review_by_default` picks the run kind when neither `--review` nor `--no-review` is given."""
 
-    def start_with(self, *flags_and_results):
-        flags = [item for item in flags_and_results if isinstance(item, str)]
-        results = [item for item in flags_and_results if not isinstance(item, str)]
+    def start_with(self, flags, *results):
+        """Start a run with the command-line `flags` before the parent."""
         self.sessions = ScriptedSessions(self.repository, *results)
         return start_run(self.repository, self.github, self.sessions, *flags, PARENT)
 
@@ -1509,7 +1507,7 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
     def test_setting_makes_a_run_without_flags_a_reviewed_run_and_says_so(self):
         set_review_by_default(self.repository)
 
-        result = self.start_with(*passing_child_results(loop_core.REVIEWED_RUN))
+        result = self.start_with((), *passing_child_results(loop_core.REVIEWED_RUN))
 
         self.assert_reviewed_run_completed(result)
         self.assertEqual(result.stdout.count(REVIEW_BY_DEFAULT_NOTICE), 1)
@@ -1519,7 +1517,7 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
     def test_setting_with_review_flag_runs_a_reviewed_run_without_the_notice(self):
         set_review_by_default(self.repository)
 
-        result = self.start_with("--review", *passing_child_results(loop_core.REVIEWED_RUN))
+        result = self.start_with(("--review",), *passing_child_results(loop_core.REVIEWED_RUN))
 
         self.assert_reviewed_run_completed(result)
         self.assertNotIn("review_by_default", result.stdout + result.stderr)
@@ -1528,7 +1526,7 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
         set_review_by_default(self.repository)
         self.remove_review_profile()
 
-        result = self.start_with("--no-review", *passing_child_results(loop_core.STANDARD_RUN))
+        result = self.start_with(("--no-review",), *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assert_standard_run_completed(result)
         self.assertNotIn("review_by_default", result.stdout + result.stderr)
@@ -1541,7 +1539,7 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
                     if value is not None:
                         set_review_by_default(self.repository, value)
 
-                    result = self.start_with(*flags, *passing_child_results(loop_core.STANDARD_RUN))
+                    result = self.start_with(flags, *passing_child_results(loop_core.STANDARD_RUN))
 
                     self.assert_standard_run_completed(result)
                     self.assertNotIn("review_by_default", result.stdout + result.stderr)
@@ -1567,7 +1565,7 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
         set_review_by_default(self.repository)
         self.remove_review_profile()
 
-        result = self.start_with(*passing_child_results(loop_core.REVIEWED_RUN))
+        result = self.start_with((), *passing_child_results(loop_core.REVIEWED_RUN))
 
         self.assert_rejected_at_startup(result, "configuration.models is missing keys: review")
         self.assertNotIn("review_by_default", result.stdout)
@@ -1579,7 +1577,7 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
                     self.setUp()
                     set_review_by_default(self.repository, value)
 
-                    result = self.start_with(*flags)
+                    result = self.start_with(flags)
 
                     self.assert_rejected_at_startup(
                         result, "configuration.review_by_default must be a boolean"
