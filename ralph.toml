@@ -4,6 +4,8 @@ repository = "lmpaul/ralph-kit"
 base_branch = "main"
 remote = "origin"
 trusted_authors = ["lmpaul"]
+# true makes every run a reviewed run; ralph-kit run --no-review overrides it.
+review_by_default = false
 
 [labels]
 needs_triage = "needs-triage"
