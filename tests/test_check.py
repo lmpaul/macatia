@@ -342,6 +342,67 @@ class ReadinessTests(unittest.TestCase):
             cli.main(["check", "--no-review"])
         self.assertEqual(raised.exception.code, 2)
 
+    def set_caffeinate_by_default(self, value):
+        self.config.write_text(f"caffeinate_by_default = {value}\n" + self.config.read_text())
+
+    def sleep_lock_row(self, output):
+        return [line for line in output.splitlines() if "Sleep lock" in line]
+
+    def test_caffeinate_by_default_warns_when_the_sleep_lock_helper_is_missing(self):
+        self.set_caffeinate_by_default("true")
+        with mock.patch.object(sys, "platform", "linux"):
+            code, output = self.run_check(missing="systemd-inhibit")
+        self.assertEqual(code, 0, output)
+        self.assertIn("systemd-inhibit not found", output)
+        self.assertIn("the machine may sleep", output)
+        self.assertIn("1 warning", output)
+        self.assertIn("No blockers", output)
+
+    def test_caffeinate_by_default_warns_on_a_platform_without_a_sleep_lock(self):
+        self.set_caffeinate_by_default("true")
+        with mock.patch.object(sys, "platform", "freebsd14"):
+            code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertIn("not supported on freebsd14", output)
+        self.assertIn("1 warning", output)
+
+    def test_caffeinate_by_default_with_the_helper_available_shows_the_sleep_lock_ok(self):
+        self.set_caffeinate_by_default("true")
+        with mock.patch.object(sys, "platform", "darwin"):
+            code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        row = self.sleep_lock_row(output)
+        self.assertEqual(len(row), 1, output)
+        self.assertIn("✓", row[0])
+        self.assertIn("caffeinate", row[0])
+        self.assertNotIn("warning", output)
+
+    def test_no_sleep_lock_row_without_caffeinate_by_default(self):
+        for setting in (None, "false"):
+            with self.subTest(setting=setting):
+                self.setUp()
+                if setting is not None:
+                    self.set_caffeinate_by_default(setting)
+                with mock.patch.object(sys, "platform", "freebsd14"):
+                    code, output = self.run_check()
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.sleep_lock_row(output), [])
+
+    def test_sleep_lock_warning_does_not_hide_blockers(self):
+        self.set_caffeinate_by_default("true")
+        self.dirty = " M file.py"
+        with mock.patch.object(sys, "platform", "freebsd14"):
+            code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("1 blocker", output)
+        self.assertIn("1 warning", output)
+
+    def test_check_has_no_sleep_lock_flag(self):
+        for flag in ("--caffeinate", "--no-caffeinate"):
+            with self.subTest(flag=flag), contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+                cli.main(["check", flag])
+            self.assertEqual(raised.exception.code, 2)
+
     def add_backup(self, engine, name):
         text = self.config.read_text().replace("\n[verification]", f'\n[models.backup]\nengine = "{engine}"\nname = "{name}"\ndisplay_name = "Backup"\nreasoning_effort = "medium"\n\n[verification]')
         self.config.write_text(text)

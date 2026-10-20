@@ -52,6 +52,8 @@ lock without `--caffeinate`, and says so once at startup;
 also accepted when the setting is off, and `--caffeinate` holds the sleep lock
 whatever the setting, without the notice. `--caffeinate` together with
 `--no-caffeinate` is a usage error.
+With the setting on, `ralph-kit check` also reports whether this machine can
+provide the sleep lock, as a warning only: a run continues without one.
 
 Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean, dedicated branch (never the base branch).
 
