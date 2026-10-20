@@ -165,6 +165,59 @@ class ConfigureTests(unittest.TestCase):
         self.run_configure(answers=["7"])
         self.assertNotIn("comments", self.output.getvalue())
 
+    def test_trusted_authors_lists_them_and_adds_one_without_duplicates(self):
+        self.write(CUSTOM_CONFIGURATION)
+        # Add zoe, then alice again, then Back and Save.
+        self.assertTrue(self.run_configure(answers=["3", "1", "zoe smith", "zoe", "1", "alice", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("? Trusted authors: alice, bob, octocat — what do you want to do?", output)
+        self.assertIn("  ✓ zoe added", output)
+        self.assertIn("  a GitHub account name, without spaces", output)
+        self.assertIn("  alice is already a trusted author", output)
+        self.assertIn("* Trusted authors  (alice, bob, octocat, zoe)", self.menu())
+        self.assertIn("Changes:\n  trusted_authors: alice, bob, octocat → alice, bob, octocat, zoe\n", output)
+        self.assertEqual(
+            self.read(),
+            CUSTOM_CONFIGURATION.replace('["alice", "bob", "octocat"]', '["alice", "bob", "octocat", "zoe"]'),
+        )
+
+    def test_trusted_authors_removes_one(self):
+        self.write(CUSTOM_CONFIGURATION)
+        # Remove bob (second of alice, bob, octocat), then Back and Save.
+        self.assertTrue(self.run_configure(answers=["3", "2", "2", "", "6"]))
+        self.assertIn("  ✓ bob removed", self.output.getvalue())
+        self.assertEqual(load_config(self.root / "ralph.toml", self.root).trusted_authors, {"alice", "octocat"})
+        self.assertEqual(self.read(), CUSTOM_CONFIGURATION.replace('["alice", "bob", "octocat"]', '["alice", "octocat"]'))
+
+    def test_removing_the_last_trusted_author_is_refused(self):
+        self.assertFalse(self.run_configure(answers=["3", "2", "", "6"]))
+        output = self.output.getvalue()
+        self.assertIn("  ✗ octocat is the last trusted author: add another one before removing it.", output)
+        self.assertIn("No changes: nothing written.", output)
+        self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
+
+    def test_a_gh_login_that_is_not_trusted_is_warned_about(self):
+        warning = "⚠ The current gh account, hubot, is not a trusted author: Ralph would ignore its own implementation evidence."
+        self.responses[("gh", "api", "user", "--jq", ".login")] = "hubot"
+        self.run_configure(answers=["3", "1", "hubot", "", "7"])
+        output = self.output.getvalue()
+        self.assertEqual(output.count(warning), 1)  # Not after hubot was added.
+        self.assertLess(output.index(warning), output.index("? Trusted authors: octocat —"))
+
+    def test_removing_the_gh_login_warns(self):
+        self.write(CUSTOM_CONFIGURATION)
+        self.responses[("gh", "api", "user", "--jq", ".login")] = "octocat"
+        self.run_configure(answers=["3", "2", "3", "", "7"])
+        self.assertIn("  ✓ octocat removed\n⚠ The current gh account, octocat, is not a trusted author", self.output.getvalue())
+
+    def test_no_warning_when_the_gh_login_is_trusted_or_gh_is_missing(self):
+        for login in ("octocat", None):
+            with self.subTest(login=login):
+                self.output = io.StringIO()
+                self.responses[("gh", "api", "user", "--jq", ".login")] = login
+                self.run_configure(answers=["3", "", "7"])
+                self.assertNotIn("⚠", self.output.getvalue())
+
     def test_config_option_edits_another_configuration(self):
         self.write(DEFAULT_CONFIGURATION, name="b.toml")
         self.run_configure(answers=["4", "1", "", "6"], config=pathlib.Path("b.toml"))

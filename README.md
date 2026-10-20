@@ -80,7 +80,10 @@ profiles, backup, trusted authors, verification, Git), each with its current val
 and `*` once changed. Pick a section to change only what it holds; nothing is
 re-detected over an existing value, and the values no section edits (label names,
 quality policy paths, display names, a correction profile distinct from
-implementation, every trusted author) are kept. Verification turns local gates and
+implementation) are kept. Trusted authors lists the configured accounts, adds one
+(a duplicate is not added twice) or removes one, but never the last, and warns when
+the current `gh` account is not trusted, since Ralph would then ignore its own
+implementation evidence. Verification turns local gates and
 CI checks on or off independently; enabling one without the quality module and
 manifest is accepted with a warning that `ralph-kit check` fails until they exist.
 Save lists each changed key as `key: old → new`, writes the file, validates it and
@@ -89,7 +92,8 @@ saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses
 comments added by hand are dropped (`configure` says so when it opens the file). It
 needs a terminal; without one, edit the TOML directly. An invalid configuration is
 refused with the error: fix the file, or start over with `ralph-kit init --force`.
-Only the verification section is editable for now; the others show their value.
+Only the trusted authors and verification sections are editable for now; the others
+show their value.
 
 For a variant of an existing configuration, copy the file, then change the copy:
 

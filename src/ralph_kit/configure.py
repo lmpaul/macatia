@@ -17,7 +17,15 @@ from .config import (
     RalphConfigError,
     load_config,
 )
-from .init import CONFIG_NAME, CommandRunner, InitAborted, Prompter, option, render
+from .init import (
+    CONFIG_NAME,
+    CommandRunner,
+    InitAborted,
+    Prompter,
+    option,
+    render,
+    run_command,
+)
 
 
 SAVE = "Save"
@@ -125,7 +133,46 @@ def _comments(contents: str) -> list[str]:
     return found
 
 
-def _edit_verification(prompter: Prompter, config: RalphConfig) -> RalphConfig:
+def _author_error(value: str) -> str | None:
+    return "a GitHub account name, without spaces" if any(character.isspace() for character in value) else None
+
+
+def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, command: CommandRunner) -> RalphConfig:
+    login = command("gh", "api", "user", "--jq", ".login")  # None without gh: no warning.
+    warned = False
+    while True:
+        authors = config.trusted_authors
+        if not login or login in authors:
+            warned = False
+        elif not warned:  # Once, then again only if it becomes untrusted after being trusted.
+            prompter.say(f"⚠ The current gh account, {login}, is not a trusted author: Ralph would ignore its own implementation evidence.")
+            warned = True
+        answer = prompter.choice(
+            f"Trusted authors: {', '.join(sorted(authors))} — what do you want to do?",
+            [("Add an author", ""), ("Remove an author", ""), (BACK, "")],
+            BACK,
+        )
+        if answer == BACK:
+            return config
+        if answer == "Remove an author":
+            if len(authors) == 1:
+                prompter.say(f"  ✗ {next(iter(authors))} is the last trusted author: add another one before removing it.")
+                continue
+            keep = "Keep them all"  # Not a GitHub account name: those have no spaces.
+            author = prompter.choice("Which author do you want to remove?", [*((name, "") for name in sorted(authors)), (keep, "")], keep)
+            if author != keep:
+                config = dataclasses.replace(config, trusted_authors=authors - {author})
+                prompter.say(f"  ✓ {author} removed")
+            continue
+        author = prompter.text("GitHub account to trust", validate=_author_error)
+        if author in authors:
+            prompter.say(f"  {author} is already a trusted author")
+            continue
+        config = dataclasses.replace(config, trusted_authors=authors | {author})
+        prompter.say(f"  ✓ {author} added")
+
+
+def _edit_verification(prompter: Prompter, config: RalphConfig, command: CommandRunner) -> RalphConfig:
     while True:
         verification = config.verification
         answer = prompter.choice(
@@ -149,7 +196,10 @@ def _edit_verification(prompter: Prompter, config: RalphConfig) -> RalphConfig:
             prompter.say(f"  ⚠ {names} missing: `ralph-kit check` will fail until {'they exist' if len(missing) > 1 else 'it exists'}.")
 
 
-EDITORS: dict[str, Callable[[Prompter, RalphConfig], RalphConfig]] = {"Verification": _edit_verification}
+EDITORS: dict[str, Callable[[Prompter, RalphConfig, CommandRunner], RalphConfig]] = {
+    "Trusted authors": _edit_trusted_authors,
+    "Verification": _edit_verification,
+}
 
 
 def _menu(prompter: Prompter, title: str, config: RalphConfig, changed: dict[str, tuple[str | None, str | None]]) -> str:
@@ -177,6 +227,7 @@ def run(
 
     command and which supply detection hints inside a section; nothing detected overwrites a value.
     """
+    command = command or (lambda *args: run_command(*args, cwd=root))
     target = root / config  # An absolute config replaces root.
     display_path = target.relative_to(root) if target.is_relative_to(root) else target
     option_text = "" if target == root / CONFIG_NAME else f" --config {shlex.quote(str(display_path))}"
@@ -204,7 +255,7 @@ def run(
                 return False
             if answer == SAVE:
                 break
-            edited = EDITORS[answer](prompter, edited)
+            edited = EDITORS[answer](prompter, edited, command)
     except InitAborted:
         raise ConfigureAborted(CANCELLED) from None
 
