@@ -13,8 +13,7 @@ from unittest import mock
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import cli, keep_awake, loop_core
-from ralph_kit.commands import RalphError
+from ralph_kit import cli, keep_awake, loop
 
 
 class HelperCommandTests(unittest.TestCase):
@@ -61,13 +60,11 @@ class KeepAwakeTests(unittest.TestCase):
 
 
 class CaffeinateFlagTests(unittest.TestCase):
-    """`ralph-kit run` hands its arguments to the run entry point, kept awake with `--caffeinate`.
-
-    The run stops once startup has selected its mode, recording that mode and
-    whether the machine was kept awake.
-    """
+    """`ralph-kit run` hands its arguments, review flags included, to the run entry point,
+    kept awake with `--caffeinate`."""
 
     def run_cli(self, *arguments):
+        """The arguments the run entry point received, and whether the machine was kept awake."""
         awake = []
         started = []
 
@@ -77,34 +74,37 @@ class CaffeinateFlagTests(unittest.TestCase):
             yield
             awake.clear()
 
-        def stop_after_mode_selection(state):
-            started.append((state.mode, bool(awake)))
-            raise RalphError("stopped by the test")
+        def run(argv, prog, confirm):
+            started.append((argv, prog, bool(awake)))
+            return 0
 
         with (
             mock.patch.object(keep_awake, "keep_awake", fake_keep_awake),
-            mock.patch.object(loop_core, "require_repository_root", stop_after_mode_selection),
+            mock.patch.object(loop, "run", run),
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
-            contextlib.redirect_stderr(io.StringIO()),
         ):
-            self.assertEqual(cli.main(["run", *arguments]), 1)
+            self.assertEqual(cli.main(["run", *arguments]), 0)
         self.assertEqual(len(started), 1)
-        return started[0]
+        argv, prog, kept_awake = started[0]
+        self.assertEqual(prog, "ralph-kit run")
+        return argv, kept_awake
 
-    def test_flag_wraps_a_standard_run_in_any_position(self):
-        for arguments in (["--caffeinate", "5"], ["5", "--caffeinate"]):
+    def test_flag_wraps_the_run_in_any_position(self):
+        for arguments, passed in (
+            (["--caffeinate", "5"], ["5"]),
+            (["5", "--caffeinate"], ["5"]),
+            (["--review", "--caffeinate", "5"], ["--review", "5"]),
+            (["5", "--caffeinate", "--review"], ["5", "--review"]),
+            (["--no-review", "5", "--caffeinate"], ["--no-review", "5"]),
+            (["--caffeinate", "5", "--no-review"], ["5", "--no-review"]),
+        ):
             with self.subTest(arguments=arguments):
-                self.assertEqual(self.run_cli(*arguments), (loop_core.STANDARD_RUN, True))
-
-    def test_flag_wraps_a_reviewed_run_in_any_position(self):
-        for arguments in (["--review", "--caffeinate", "5"], ["5", "--caffeinate", "--review"]):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(self.run_cli(*arguments), (loop_core.REVIEWED_RUN, True))
+                self.assertEqual(self.run_cli(*arguments), (passed, True))
 
     def test_without_flag_the_machine_may_sleep(self):
-        for arguments, mode in ((["5"], loop_core.STANDARD_RUN), (["--review", "5"], loop_core.REVIEWED_RUN)):
+        for arguments in (["5"], ["--review", "5"], ["5", "--no-review"]):
             with self.subTest(arguments=arguments):
-                self.assertEqual(self.run_cli(*arguments), (mode, False))
+                self.assertEqual(self.run_cli(*arguments), (arguments, False))
 
 
 if __name__ == "__main__":

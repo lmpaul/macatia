@@ -10,9 +10,10 @@ import sys
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review] [--caffeinate] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
+  run [--review | --no-review] [--caffeinate] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
       Standard run: implement the children of PARENT_ISSUE, with at most RUN_BUDGET agent sessions.
       --review starts a reviewed run, which adds an independent review session per child.
+      --no-review starts a standard run, even when review_by_default = true in the configuration.
       --caffeinate keeps the machine from idle-sleeping until the run ends.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).

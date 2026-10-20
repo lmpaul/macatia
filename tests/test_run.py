@@ -1042,7 +1042,7 @@ class ChildBaseTests(RunLevelTestCase):
 
 
 class RunUsageCommandLineTests(unittest.TestCase):
-    """`ralph-kit run` usage errors name the program as invoked, with `--review` when given."""
+    """`ralph-kit run` usage errors name the program as invoked, with the review flags given."""
 
     def usage_error(self, *arguments):
         stderr = io.StringIO()
@@ -1068,6 +1068,18 @@ class RunUsageCommandLineTests(unittest.TestCase):
                 error = self.usage_error(*arguments)
                 self.assertTrue(error.startswith("usage: ralph-kit run --review [-h]"), error)
                 self.assertIn("must be a positive integer", error)
+
+
+    def test_standard_run_usage_names_ralph_kit_run_no_review(self):
+        error = self.usage_error("0", "--no-review")
+        self.assertTrue(error.startswith("usage: ralph-kit run --no-review [-h]"), error)
+        self.assertIn("must be a positive integer", error)
+
+    def test_review_and_no_review_together_are_a_usage_error(self):
+        for arguments in (("--review", "--no-review", "5"), ("5", "--no-review", "--caffeinate", "--review")):
+            with self.subTest(arguments=arguments):
+                error = self.usage_error(*arguments)
+                self.assertIn("argument --no-review: not allowed with argument --review", error)
 
 
 class StartupChoiceCommandLineTests(unittest.TestCase):
@@ -1456,6 +1468,122 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
             "configuration.models.backup must differ from configuration.models.correction "
             "in engine, model, or reasoning effort",
         )
+
+
+REVIEW_BY_DEFAULT_NOTICE = (
+    "ℹ️ review_by_default is on in ralph.toml: this is a reviewed run, with a review "
+    "session per child. Use --no-review for a standard run."
+)
+
+
+def set_review_by_default(repository, value="true"):
+    repository.edit_configuration(
+        'trusted_authors = ["lmpaul"]\n', f'trusted_authors = ["lmpaul"]\nreview_by_default = {value}\n'
+    )
+
+
+class ReviewByDefaultTests(StartupRejectionTestCase):
+    """`review_by_default` picks the run kind when neither `--review` nor `--no-review` is given."""
+
+    def start_with(self, *flags_and_results):
+        flags = [item for item in flags_and_results if isinstance(item, str)]
+        results = [item for item in flags_and_results if not isinstance(item, str)]
+        self.sessions = ScriptedSessions(self.repository, *results)
+        return start_run(self.repository, self.github, self.sessions, *flags, PARENT)
+
+    def assert_reviewed_run_completed(self, result):
+        self.assert_completed(result, sessions=2)
+        self.assertIn("<!-- ralph-implementation-evidence: ", self.github.comments(CHILD)[-1])
+        self.assertIn("<!-- ralph-parent-completion -->", self.github.comments(PARENT)[-2])
+
+    def assert_standard_run_completed(self, result):
+        self.assert_completed(result, sessions=1)
+        self.assertIn("ralph-experimental-implementation-evidence", self.github.comments(CHILD)[-1])
+        self.assertIn("<!-- ralph-experimental-parent-completion -->", self.github.comments(PARENT)[-2])
+
+    def remove_review_profile(self):
+        configuration = (self.repository.path / "ralph.toml").read_text(encoding="utf-8")
+        review_profile = re.search(r"\[models\.review\]\n.*?\n\n", configuration, flags=re.S).group(0)
+        self.repository.edit_configuration(review_profile, "")
+
+    def test_setting_makes_a_run_without_flags_a_reviewed_run_and_says_so(self):
+        set_review_by_default(self.repository)
+
+        result = self.start_with(*passing_child_results(loop_core.REVIEWED_RUN))
+
+        self.assert_reviewed_run_completed(result)
+        self.assertEqual(result.stdout.count(REVIEW_BY_DEFAULT_NOTICE), 1)
+        self.assertLess(result.stdout.index(REVIEW_BY_DEFAULT_NOTICE), result.stdout.index("▶️"))
+        self.assertIn("Review the exact", self.sessions.prompts[1])
+
+    def test_setting_with_review_flag_runs_a_reviewed_run_without_the_notice(self):
+        set_review_by_default(self.repository)
+
+        result = self.start_with("--review", *passing_child_results(loop_core.REVIEWED_RUN))
+
+        self.assert_reviewed_run_completed(result)
+        self.assertNotIn("review_by_default", result.stdout + result.stderr)
+
+    def test_no_review_flag_overrides_the_setting_without_needing_a_review_profile(self):
+        set_review_by_default(self.repository)
+        self.remove_review_profile()
+
+        result = self.start_with("--no-review", *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_standard_run_completed(result)
+        self.assertNotIn("review_by_default", result.stdout + result.stderr)
+
+    def test_without_the_setting_no_review_flag_starts_a_standard_run(self):
+        for value in (None, "false"):
+            for flags in ((), ("--no-review",)):
+                with self.subTest(value=value, flags=flags):
+                    self.setUp()
+                    if value is not None:
+                        set_review_by_default(self.repository, value)
+
+                    result = self.start_with(*flags, *passing_child_results(loop_core.STANDARD_RUN))
+
+                    self.assert_standard_run_completed(result)
+                    self.assertNotIn("review_by_default", result.stdout + result.stderr)
+
+    def test_review_and_no_review_together_are_a_usage_error(self):
+        for flags in (("--review", "--no-review"), ("--no-review", "--review")):
+            for setting in ("true", "false"):
+                with self.subTest(flags=flags, setting=setting):
+                    self.setUp()
+                    set_review_by_default(self.repository, setting)
+                    self.sessions = ScriptedSessions(self.repository)
+
+                    result = start_run(
+                        self.repository, self.github, self.sessions, flags[0], PARENT, flags[1]
+                    )
+
+                    self.assertEqual(result.exit_code, 2)
+                    self.assert_rejected_at_startup(
+                        result, "argument --no-review: not allowed with argument --review"
+                    )
+
+    def test_run_made_reviewed_by_the_setting_requires_the_review_profile(self):
+        set_review_by_default(self.repository)
+        self.remove_review_profile()
+
+        result = self.start_with(*passing_child_results(loop_core.REVIEWED_RUN))
+
+        self.assert_rejected_at_startup(result, "configuration.models is missing keys: review")
+        self.assertNotIn("review_by_default", result.stdout)
+
+    def test_setting_that_is_not_a_toml_boolean_is_rejected_at_startup(self):
+        for value in ('"true"', "1", "[]"):
+            for flags in ((), ("--review",), ("--no-review",)):
+                with self.subTest(value=value, flags=flags):
+                    self.setUp()
+                    set_review_by_default(self.repository, value)
+
+                    result = self.start_with(*flags)
+
+                    self.assert_rejected_at_startup(
+                        result, "configuration.review_by_default must be a boolean"
+                    )
 
 
 class ConfiguredTrustTests(RunLevelTestCase):
@@ -2279,6 +2407,21 @@ class RunBudgetTests(VerificationTestCase):
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
         self.assertEqual(self.github.labels(DEPENDENT), {"implemented"})
         self.assertTrue(self.github.pull_request().is_draft)
+
+    def test_default_budget_of_a_run_reviewed_by_the_setting_allows_nine_sessions_per_child(self):
+        set_review_by_default(self.repository)
+        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
+        self.sessions = ScriptedSessions(
+            self.repository, *worst_case_child_results(loop_core.REVIEWED_RUN), ScriptedResult("committed")
+        )
+        self.sessions.before_session = self.before_session
+
+        # No `--review`: the setting makes the run reviewed.
+        result = start_run(self.repository, self.github, self.sessions, PARENT)
+
+        self.assert_budget_stop(result, READY_FOR_HUMAN_CHILD, role="review", budget=9)
+        self.assertEqual(self.session_children(), [CHILD] * 8 + [READY_FOR_HUMAN_CHILD])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
     def test_default_budget_of_a_standard_run_allows_five_sessions_per_child_across_the_run(self):
         self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)

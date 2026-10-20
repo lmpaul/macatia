@@ -82,6 +82,8 @@ class RalphConfig:
     verification: VerificationConfig
     # Not one of `models`, which holds a profile per session role.
     backup: AgentProfile | None = None
+    # Makes a run without --review or --no-review a reviewed run.
+    review_by_default: bool = False
 
     @property
     def triage_labels(self) -> frozenset[str]:
@@ -185,6 +187,7 @@ def load_config(
             "models",
             "verification",
         },
+        {"review_by_default"},
     )
     if values["version"] != 1:
         raise RalphConfigError("configuration.version must be 1")
@@ -208,6 +211,10 @@ def load_config(
     )
     if len(trusted_authors) != len(authors):
         raise RalphConfigError("configuration.trusted_authors must not contain duplicates")
+
+    review_by_default = values.get("review_by_default", False)
+    if not isinstance(review_by_default, bool):
+        raise RalphConfigError("configuration.review_by_default must be a boolean")
 
     label_values = _mapping(values["labels"], "configuration.labels", LABEL_KEYS)
     labels = {
@@ -263,6 +270,7 @@ def load_config(
         labels=labels,
         models=models,
         backup=backup,
+        review_by_default=review_by_default,
         verification=VerificationConfig(
             local_checks=verification_values["local_checks"],
             ci_checks=verification_values["ci_checks"],

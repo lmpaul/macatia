@@ -34,6 +34,7 @@ ralph-kit check                # readiness check (offers to create missing label
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
 ralph-kit run --review 123     # reviewed run: adds an independent review session per child
+ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ```
 
@@ -258,6 +259,13 @@ implementation evidence reports only the verification that was enabled.
 The applicable gates still use the shared manifest's `before_agent_review`
 selection flag, even though no separate review follows them.
 
+With `review_by_default = true` in `ralph.toml`, `ralph-kit run` starts a
+reviewed run without `--review`, and says so once at startup;
+`ralph-kit run --no-review` starts a standard run instead. `--no-review` is
+also accepted when the setting is off. `--review` together with `--no-review`
+is a usage error. A run made reviewed by the setting requires `models.review`
+and gets a reviewed run's default run budget.
+
 An implementation or correction that returns `needs_correction` must still pass
 its outstanding findings to an issue correction before publication. The
 correction limit and the run budget remain in force. CI corrections must create
@@ -309,6 +317,9 @@ implementation evidence from either kind of run when its commits are on the bran
 - `trusted_authors` is the non-empty allowlist of trusted authors for parent
   issues and children. Include the GitHub account Ralph runs as so a restarted
   run can trust its own implementation evidence.
+- `review_by_default` is optional (`false` when missing). `true` makes every
+  run a reviewed run, which requires `models.review`; `ralph-kit run
+  --no-review` overrides it for one run.
 - `labels` maps Ralph's eight label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, and the lifecycle labels `ready_for_agent`,

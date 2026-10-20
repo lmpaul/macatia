@@ -156,6 +156,12 @@ REVIEWED_RUN = RunMode(
 )
 
 
+REVIEW_BY_DEFAULT_NOTICE = (
+    "ℹ️ review_by_default is on in ralph.toml: this is a reviewed run, with a review "
+    "session per child. Use --no-review for a standard run."
+)
+
+
 def agent_result_guidance(state: RunState) -> str:
     return AGENT_RESULT_GUIDANCE.format(follow_up_role=state.mode.follow_up_role)
 
@@ -402,10 +408,9 @@ class RunAdapters:
 class RunState:
     """Everything one run knows about itself; nothing is shared between runs.
 
-    The mode exists once the arguments are read, the configuration and the
-    GitHub adapter once the configuration is loaded, the diagnostics once the
-    run has started recording, and the branch once the startup checks have
-    accepted it.
+    The configuration, the mode, and the GitHub adapter exist once the
+    configuration is loaded, the diagnostics once the run has started
+    recording, and the branch once the startup checks have accepted it.
     """
 
     adapters: RunAdapters
@@ -1060,13 +1065,13 @@ def positive_integer(value: str) -> int:
 
 
 def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namespace:
-    """Read the run's arguments; `--review`, accepted in any position, makes `mode` the reviewed run."""
-    review = "--review" in argv
-    argv = [argument for argument in argv if argument != "--review"]
-    mode = REVIEWED_RUN if review else STANDARD_RUN
+    """Read the run's arguments; `--review` and `--no-review`, accepted in any position, are
+    `review` and `no_review`, and together a usage error."""
+    flags = [flag for flag in ("--review", "--no-review") if flag in argv]
+    argv = [argument for argument in argv if argument not in flags]
     parser = argparse.ArgumentParser(
-        prog=None if prog is None else prog + (" --review" if review else ""),
-        description=mode.description,
+        prog=None if prog is None else " ".join([prog, *flags]),
+        description=(REVIEWED_RUN if "--review" in flags else STANDARD_RUN).description,
     )
     parser.add_argument(
         "--config",
@@ -1076,7 +1081,11 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
     )
     parser.add_argument("parent_issue", type=positive_integer)
     parser.add_argument("run_budget", nargs="?", type=positive_integer)
-    return parser.parse_args(argv, argparse.Namespace(mode=mode))
+    if len(flags) == 2:
+        parser.error("argument --no-review: not allowed with argument --review")
+    return parser.parse_args(
+        argv, argparse.Namespace(review="--review" in flags, no_review="--no-review" in flags)
+    )
 
 
 def load_quality_module(path: pathlib.Path):
@@ -2631,14 +2640,15 @@ def real_run_adapters(confirm: Callable[[str], bool] | None = None) -> RunAdapte
 def main(
     state: RunState, argv: list[str] | None = None, prog: str | None = None
 ) -> int:
-    """Start the run: read its arguments and mode, configuration, and quality policy, then run its children."""
+    """Start the run: read its arguments and configuration, select its mode, read its quality
+    policy, then run its children."""
     arguments = parse_arguments(sys.argv[1:] if argv is None else argv, prog)
-    mode = state.loaded_mode = arguments.mode
     # The run budget is left out: each run starts with a fresh one.
     state.rerun_command = shlex.join([
         "ralph-kit",
         "run",
-        *(["--review"] if mode.review else []),
+        *(["--review"] if arguments.review else []),
+        *(["--no-review"] if arguments.no_review else []),
         *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
         str(arguments.parent_issue),
     ])
@@ -2648,10 +2658,23 @@ def main(
         config_path = state.repository_root / config_path
     try:
         configuration = load_config(
-            config_path.resolve(), state.repository_root, require_review=mode.review
+            config_path.resolve(), state.repository_root, require_review=arguments.review
         )
+        # The setting lives in the configuration it changes the requirements of.
+        reviewed_by_setting = configuration.review_by_default and not (
+            arguments.review or arguments.no_review
+        )
+        if reviewed_by_setting:
+            configuration = load_config(
+                config_path.resolve(), state.repository_root, require_review=True
+            )
     except RalphConfigError as error:
         raise RalphError(str(error)) from error
+    mode = state.loaded_mode = (
+        REVIEWED_RUN if arguments.review or reviewed_by_setting else STANDARD_RUN
+    )
+    if reviewed_by_setting:
+        print(REVIEW_BY_DEFAULT_NOTICE, flush=True)
     state.loaded_config = configuration
     state.loaded_github = state.adapters.github(
         state.repository_root, configuration.repository
@@ -2789,8 +2812,9 @@ def run(
 ) -> int:
     """Start a run from repository_root, by default the current directory.
 
-    `--review` among argv makes it a reviewed run, otherwise a standard run;
-    usage errors name the program `prog`, followed by `--review` when given.
+    `--review` among argv makes it a reviewed run, `--no-review` a standard run;
+    without either, the configuration's `review_by_default` decides. Usage
+    errors name the program `prog`, followed by the review flags given.
     The run reaches GitHub and agents through adapters. SIGINT, SIGTERM, and
     SIGHUP release the child it is working on, then end it with an interrupted
     terminal summary and the shell's exit code for the signal.
