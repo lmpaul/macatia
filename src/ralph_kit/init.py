@@ -173,11 +173,11 @@ class Prompter:
             self.say(f"  {error}")
 
 
-def _repository_error(value: str) -> str | None:
+def repository_error(value: str) -> str | None:
     return None if re.fullmatch(r"[^/\s]+/[^/\s]+", value) else "expected format: owner/name"
 
 
-def _git_name_error(value: str) -> str | None:
+def git_name_error(value: str) -> str | None:
     if value.startswith("-") or any(character.isspace() for character in value):
         return "invalid Git name (no spaces, must not start with -)"
     return None
@@ -192,7 +192,8 @@ def current_login(command: CommandRunner) -> str | None:
     return command("gh", "api", "user", "--jq", ".login")
 
 
-def _detect_repository(command: CommandRunner) -> tuple[str | None, str | None]:
+def detect_repository(command: CommandRunner) -> tuple[str | None, str | None]:
+    """The gh repository of the working directory and its default branch; None for what gh cannot tell."""
     output = command("gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef")
     if not output:
         return None, None
@@ -202,6 +203,17 @@ def _detect_repository(command: CommandRunner) -> tuple[str | None, str | None]:
         return None, None
     branch = (details.get("defaultBranchRef") or {}).get("name") or None
     return details.get("nameWithOwner") or None, branch
+
+
+def remote_default_branch(command: CommandRunner, remote: str) -> str | None:
+    """The branch the remote's HEAD points to, as last fetched; None when Git does not know it."""
+    head = command("git", "symbolic-ref", "--quiet", "--short", f"refs/remotes/{remote}/HEAD")
+    return head.split("/", 1)[1] if head and "/" in head else None
+
+
+def git_remotes(command: CommandRunner) -> list[str]:
+    """The repository's Git remotes; [] without git output."""
+    return (command("git", "remote") or "").split()
 
 
 def codex_catalog(command: CommandRunner) -> list[dict]:
@@ -322,25 +334,24 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
     say = prompter.say
     say("🔎 Detecting from git and gh…")
 
-    repository, base_branch = _detect_repository(command)
+    repository, base_branch = detect_repository(command)
     if repository:
         say(f"  ✓ GitHub repository: {repository}")
     else:
         repository = prompter.text(
             "GitHub repository (owner/name); gh could not detect it",
             placeholder=PLACEHOLDERS["repository"],
-            validate=_repository_error,
+            validate=repository_error,
         )
 
     if not base_branch:
-        remote_head = command("git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")
-        base_branch = remote_head.split("/", 1)[1] if remote_head and "/" in remote_head else None
+        base_branch = remote_default_branch(command, "origin")
     if base_branch:
         say(f"  ✓ Base branch: {base_branch}")
     else:
-        base_branch = prompter.text("Base branch (Ralph never commits to it)", default="main", validate=_git_name_error)
+        base_branch = prompter.text("Base branch (Ralph never commits to it)", default="main", validate=git_name_error)
 
-    remotes = (command("git", "remote") or "").split()
+    remotes = git_remotes(command)
     if len(remotes) == 1:
         remote = remotes[0]
         say(f"  ✓ Remote: {remote}")
@@ -351,7 +362,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
             "origin" if "origin" in remotes else remotes[0],
         )
     else:
-        remote = prompter.text("Remote Ralph pushes to (no Git remote found)", default="origin", validate=_git_name_error)
+        remote = prompter.text("Remote Ralph pushes to (no Git remote found)", default="origin", validate=git_name_error)
 
     login = current_login(command)
     if login:
@@ -397,7 +408,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         models["backup"] = _ask_profile(prompter, chosen, catalog(chosen), "backup", "Model for the backup", "medium", avoid)
 
     return {
-        "create_labels": _offer_labels(prompter, command, repository),
+        "create_labels": offer_labels(prompter, command, repository),
         "repository": repository,
         "base_branch": base_branch,
         "remote": remote,
@@ -408,16 +419,18 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
     }
 
 
-def _offer_labels(prompter: Prompter, command: CommandRunner, repository: str) -> dict[str, str]:
-    """Missing labels the user agreed to create once the configuration is written."""
+def offer_labels(
+    prompter: Prompter, command: CommandRunner, repository: str, labels: dict[str, str] = LABELS
+) -> dict[str, str]:
+    """Missing labels ({role: name}) the user agreed to create once the configuration is written."""
     if repository == PLACEHOLDERS["repository"]:
         return {}
     try:
-        missing = missing_labels(command, repository, LABELS.values())
+        missing = missing_labels(command, repository, labels.values())
     except (TypeError, KeyError, ValueError):  # gh unavailable or unexpected output: ralph-kit check reports it.
         return {}
     if not missing:
-        prompter.say(f"  ✓ Labels: all {len(LABELS)} present")
+        prompter.say(f"  ✓ Labels: all {len(labels)} present")
         return {}
     prompter.say(f"  ℹ Labels missing on {repository}: {', '.join(missing)}")
     if not prompter.interactive:
@@ -427,7 +440,15 @@ def _offer_labels(prompter: Prompter, command: CommandRunner, repository: str) -
         [("Yes", "create them now with gh"), ("Later", "ralph-kit check will offer again")],
         "Yes",
     )
-    return {role: name for role, name in LABELS.items() if name in missing} if answer == "Yes" else {}
+    # In the file's order: a loaded configuration's labels come in no particular order.
+    return {role: labels[role] for role in LABELS if labels[role] in missing} if answer == "Yes" else {}
+
+
+def create_offered_labels(prompter: Prompter, command: CommandRunner, repository: str, labels: dict[str, str]) -> None:
+    """Create the labels offer_labels returned, once the configuration is written, reporting each one."""
+    failed = create_labels(command, repository, labels)
+    for name in labels.values():
+        prompter.say(f"   ✗ Label {name} not created" if name in failed else f"   ✓ Label {name} created")
 
 
 def _string(value: str) -> str:
@@ -556,9 +577,7 @@ def run(
     if ignored:
         prompter.say(f"   Added {DIAGNOSTICS_DIRECTORY}/ to {GITIGNORE}: Ralph writes run diagnostics there.")
     if values["create_labels"]:
-        failed = create_labels(command, values["repository"], values["create_labels"])
-        for name in values["create_labels"].values():
-            prompter.say(f"   ✗ Label {name} not created" if name in failed else f"   ✓ Label {name} created")
+        create_offered_labels(prompter, command, values["repository"], values["create_labels"])
     remaining = [value for value in PLACEHOLDERS.values() if value in contents]
     if remaining:
         prompter.say("   Values to fill in: " + ", ".join(remaining))

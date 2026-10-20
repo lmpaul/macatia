@@ -83,7 +83,12 @@ quality policy paths, display names, a correction profile distinct from
 implementation) are kept. Trusted authors lists the configured accounts, adds one
 (a duplicate is not added twice) or removes one, but never the last, and warns when
 the current `gh` account is not trusted, since Ralph would then ignore its own
-implementation evidence. Verification turns local gates and
+implementation evidence. Git changes the repository (owner/name), base branch and
+remote, each asked with its current value as the default and the detected one (gh
+repository, default branch, Git remotes) shown when it differs; without `gh` or `git`
+output, editing still works. After a repository change, the labels missing there are
+offered for creation (Yes / Later), as `init` does, and created once the file is
+written. Verification turns local gates and
 CI checks on or off independently; enabling one without the quality module and
 manifest is accepted with a warning that `ralph-kit check` fails until they exist.
 Save lists each changed key as `key: old → new`, writes the file, validates it and
@@ -92,8 +97,8 @@ saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses
 comments added by hand are dropped (`configure` says so when it opens the file). It
 needs a terminal; without one, edit the TOML directly. An invalid configuration is
 refused with the error: fix the file, or start over with `ralph-kit init --force`.
-Only the trusted authors and verification sections are editable for now; the others
-show their value.
+Only the trusted authors, verification and Git sections are editable for now; the
+others show their value.
 
 For a variant of an existing configuration, copy the file, then change the copy:
 

@@ -7,6 +7,7 @@ import pathlib
 import shlex
 import shutil
 from collections.abc import Callable
+from typing import NamedTuple
 
 from .config import (
     BACKUP_MODEL_KEY,
@@ -22,9 +23,16 @@ from .init import (
     CommandRunner,
     InitAborted,
     Prompter,
+    create_offered_labels,
     current_login,
+    detect_repository,
+    git_name_error,
+    git_remotes,
+    offer_labels,
     option,
+    remote_default_branch,
     render,
+    repository_error,
     run_command,
 )
 
@@ -42,6 +50,16 @@ class ConfigureError(RuntimeError):
 
 class ConfigureAborted(RuntimeError):
     """The user interrupted configure; nothing was written."""
+
+
+@dataclasses.dataclass
+class EditState:
+    """What the sections share besides the edited configuration."""
+
+    command: CommandRunner
+    saved_repository: str  # The repository in the file: going back to it is no repository change.
+    # Missing labels ({role: name}) the user agreed to create on the edited repository once the file is written.
+    labels_to_create: dict[str, str] = dataclasses.field(default_factory=dict)
 
 
 def _profile_summary(profile: AgentProfile) -> str:
@@ -138,8 +156,8 @@ def _author_error(value: str) -> str | None:
     return "a GitHub account name, without spaces" if any(character.isspace() for character in value) else None
 
 
-def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, command: CommandRunner) -> RalphConfig:
-    login = current_login(command)  # None without gh: no warning.
+def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+    login = current_login(state.command)  # None without gh: no warning.
     warned = False
     while True:
         authors = config.trusted_authors
@@ -175,7 +193,7 @@ def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, command: Comm
         prompter.say(f"  ✓ {author} added")
 
 
-def _edit_verification(prompter: Prompter, config: RalphConfig, command: CommandRunner) -> RalphConfig:
+def _edit_verification(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
     while True:
         verification = config.verification
         answer = prompter.choice(
@@ -199,9 +217,67 @@ def _edit_verification(prompter: Prompter, config: RalphConfig, command: Command
             prompter.say(f"  ⚠ {names} missing: `ralph-kit check` will fail until {'they exist' if len(missing) > 1 else 'it exists'}.")
 
 
-EDITORS: dict[str, Callable[[Prompter, RalphConfig, CommandRunner], RalphConfig]] = {
+class GitField(NamedTuple):
+    key: str
+    question: str
+    error: Callable[[str], str | None]
+    hint: str | None  # What detection found, when it differs from the current value.
+
+
+def _detected_hint(current: str, detected: str | None) -> str | None:
+    return f"detected {detected}" if detected and detected != current else None
+
+
+def _with_hint(text: str, hint: str | None) -> str:
+    return f"{text}; {hint}" if hint else text
+
+
+def _edit_git(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+    command = state.command
+    detected_repository, detected_branch = detect_repository(command)
+    remotes = git_remotes(command)
+    while True:
+        # gh's default branch belongs to the working directory's repository, which the configuration may not name.
+        if detected_branch and detected_repository == config.repository:
+            branch = detected_branch
+        else:
+            branch = remote_default_branch(command, config.remote)
+        fields = {
+            "Repository": GitField(
+                "repository", "GitHub repository (owner/name)", repository_error,
+                _detected_hint(config.repository, detected_repository),
+            ),
+            "Base branch": GitField(
+                "base_branch", "Base branch (Ralph never commits to it)", git_name_error,
+                _detected_hint(config.base_branch, branch),
+            ),
+            "Remote": GitField(
+                "remote", "Remote Ralph pushes to", git_name_error,
+                f"Git remotes: {', '.join(remotes)}" if remotes and remotes != [config.remote] else None,
+            ),
+        }
+        answer = prompter.choice(
+            "Git: which value do you want to change?",
+            [*((name, _with_hint(getattr(config, field.key), field.hint)) for name, field in fields.items()), (BACK, "")],
+            BACK,
+        )
+        if answer == BACK:
+            return config
+        field = fields[answer]
+        current = getattr(config, field.key)
+        value = prompter.text(_with_hint(field.question, field.hint), default=current, validate=field.error)
+        if value == current:
+            continue
+        config = dataclasses.replace(config, **{field.key: value})
+        if field.key == "repository":  # Replaces any offer made for a repository chosen before.
+            changed = value != state.saved_repository
+            state.labels_to_create = offer_labels(prompter, command, value, config.labels) if changed else {}
+
+
+EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = {
     "Trusted authors": _edit_trusted_authors,
     "Verification": _edit_verification,
+    "Git": _edit_git,
 }
 
 
@@ -250,6 +326,7 @@ def run(
         prompter.say(f"ℹ {display_path} has comments that ralph-kit does not write: saving will drop them.")
 
     edited = original
+    state = EditState(command, original.repository)
     try:
         while True:
             answer = _menu(prompter, str(display_path), edited, changes(original, edited, root))
@@ -258,7 +335,7 @@ def run(
                 return False
             if answer == SAVE:
                 break
-            edited = EDITORS[answer](prompter, edited, command)
+            edited = EDITORS[answer](prompter, edited, state)
     except InitAborted:
         raise ConfigureAborted(CANCELLED) from None
 
@@ -279,5 +356,7 @@ def run(
         raise ConfigureError(f"saved configuration is invalid, please report this bug: {error}") from error
     staged.replace(target)
     prompter.say(f"\n✅ Wrote {target}.")
+    if state.labels_to_create:
+        create_offered_labels(prompter, command, edited.repository, state.labels_to_create)
     prompter.say(f"   Next step: commit {display_path}, then run `ralph-kit check{option_text}`.")
     return True

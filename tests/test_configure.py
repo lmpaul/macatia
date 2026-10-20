@@ -2,6 +2,7 @@
 
 import io
 import itertools
+import json
 import pathlib
 import subprocess
 import sys
@@ -21,6 +22,12 @@ from test_init import CUSTOM_CONFIGURATION, DEFAULT_CONFIGURATION  # noqa: E402
 
 
 GH_LOGIN = ("gh", "api", "user", "--jq", ".login")
+GH_REPOSITORY = ("gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef")
+GIT_REMOTES = ("git", "remote")
+
+
+def labels_of(repository):
+    return ("gh", "api", "--paginate", "--slurp", f"repos/{repository}/labels")
 
 
 class ConfigureTests(unittest.TestCase):
@@ -30,6 +37,7 @@ class ConfigureTests(unittest.TestCase):
         self.root = pathlib.Path(directory.name).resolve()
         subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
         self.responses = {}
+        self.command = lambda *args: self.responses.get(args)
         self.output = io.StringIO()
         self.write(DEFAULT_CONFIGURATION)
 
@@ -56,7 +64,7 @@ class ConfigureTests(unittest.TestCase):
         prompter = init.Prompter(interactive=answers is not None, read=read, output=self.output)
         options = {} if config is None else {"config": config}
         return configure.run(
-            self.root, prompter, command=lambda *args: self.responses.get(args), which=lambda name: None, **options
+            self.root, prompter, command=lambda *args: self.command(*args), which=lambda name: None, **options
         )
 
     def menu(self):
@@ -100,7 +108,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertTrue(lines[1].startswith("2)   Backup  (codex/codex-large medium)"))
         self.assertTrue(lines[2].startswith("3)   Trusted authors  (octocat)"))
         self.assertEqual(lines[3], "4)   Verification  (local off · CI off)")
-        self.assertTrue(lines[4].startswith("5)   Git  (acme/widget · trunk · origin)"))
+        self.assertEqual(lines[4], "5)   Git  (acme/widget · trunk · origin)")
         self.assertEqual(lines[5:], ["6)   Save", "7)   Quit without saving"])
 
     def test_quit_without_saving_writes_nothing(self):
@@ -237,6 +245,142 @@ class ConfigureTests(unittest.TestCase):
     def test_unavailable_sections_are_refused_by_number(self):
         self.run_configure(answers=["1", "7"])
         self.assertIn("Model profiles is unavailable", self.output.getvalue())
+
+    def test_git_edits_the_repository_base_branch_and_remote(self):
+        # Without gh or git output: no hint and no label offer, editing still works.
+        answers = ["5", "1", "acme", "acme/gadget", "2", "-x", "develop", "3", "my fork", "upstream", "", "6"]
+        self.assertTrue(self.run_configure(answers=answers))
+        output = self.output.getvalue()
+        self.assertIn("? GitHub repository (owner/name)\n", output)
+        self.assertIn("Answer [acme/widget]: ", self.prompts)
+        self.assertIn("  expected format: owner/name", output)
+        self.assertEqual(output.count("  invalid Git name (no spaces, must not start with -)"), 2)
+        self.assertNotIn("detected", output)
+        self.assertNotIn("Labels", output)
+        self.assertIn("* Git  (acme/gadget · develop · upstream)", self.menu())
+        self.assertIn(
+            "Changes:\n  repository: acme/widget → acme/gadget\n  base_branch: trunk → develop\n  remote: origin → upstream\n",
+            output,
+        )
+        config = load_config(self.root / "ralph.toml", self.root)
+        self.assertEqual((config.repository, config.base_branch, config.remote), ("acme/gadget", "develop", "upstream"))
+        self.assertEqual(
+            self.read(),
+            DEFAULT_CONFIGURATION.replace('"acme/widget"', '"acme/gadget"')
+            .replace('"trunk"', '"develop"')
+            .replace('remote = "origin"', 'remote = "upstream"'),
+        )
+
+    def test_git_keeps_the_current_value_on_enter(self):
+        self.write(CUSTOM_CONFIGURATION)
+        self.responses[GH_REPOSITORY] = json.dumps({"nameWithOwner": "acme/widget", "defaultBranchRef": {"name": "main"}})
+        self.responses[GIT_REMOTES] = "origin\nupstream"
+        self.assertFalse(self.run_configure(answers=["5", "1", "", "2", "", "3", "", "", "6"]))
+        self.assertEqual(
+            [prompt for prompt in self.prompts if prompt.startswith("Answer")],
+            ["Answer [acme/gadget]: ", "Answer [develop]: ", "Answer [upstream]: "],
+        )
+        self.assertIn("No changes: nothing written.", self.output.getvalue())
+        self.assertEqual(self.read(), CUSTOM_CONFIGURATION)
+
+    def test_git_shows_the_detected_value_when_it_differs(self):
+        self.responses[GH_REPOSITORY] = json.dumps({"nameWithOwner": "acme/gadget", "defaultBranchRef": {"name": "main"}})
+        self.responses[("git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")] = "origin/develop"
+        self.responses[GIT_REMOTES] = "origin\nupstream"
+        self.run_configure(answers=["5", "1", "", "2", "", "3", "", "", "7"])
+        output = self.output.getvalue()
+        self.assertIn("  1) Repository  (acme/widget; detected acme/gadget)\n", output)
+        self.assertIn("? GitHub repository (owner/name); detected acme/gadget\n", output)
+        # The gh default branch belongs to another repository: the remote's HEAD is used instead.
+        self.assertIn("  2) Base branch  (trunk; detected develop)\n", output)
+        self.assertIn("? Base branch (Ralph never commits to it); detected develop\n", output)
+        self.assertIn("  3) Remote  (origin; Git remotes: origin, upstream)\n", output)
+        self.assertIn("? Remote Ralph pushes to; Git remotes: origin, upstream\n", output)
+        self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
+
+    def test_git_hides_detected_values_that_match(self):
+        self.responses[GH_REPOSITORY] = json.dumps({"nameWithOwner": "acme/widget", "defaultBranchRef": {"name": "trunk"}})
+        self.responses[GIT_REMOTES] = "origin"
+        self.run_configure(answers=["5", "", "7"])
+        output = self.output.getvalue()
+        self.assertIn("  1) Repository  (acme/widget)\n  2) Base branch  (trunk)\n  3) Remote  (origin)\n", output)
+
+    def test_a_repository_change_offers_its_missing_labels_and_creates_them_after_writing(self):
+        self.write(CUSTOM_CONFIGURATION)  # Custom label names are the ones looked for.
+        self.responses[labels_of("acme/other")] = json.dumps([[{"name": "triage: new"}, {"name": "agent: ready"}]])
+        created = []
+
+        def command(*args):
+            if args[:3] == ("gh", "label", "create"):
+                self.assertIn('repository = "acme/other"', self.read())
+                self.assertEqual(args[4:6], ("--repo", "acme/other"))
+                created.append(args[3])
+                return None if args[3] == "done" else ""
+            return self.responses.get(args)
+
+        self.command = command
+        self.assertTrue(self.run_configure(answers=["5", "1", "acme/other", "", "", "6"]))  # Enter keeps "Yes".
+        output = self.output.getvalue()
+        self.assertIn("  ℹ Labels missing on acme/other: agent: working, done, human: ready, human: review, triage: info, won't fix", output)
+        self.assertIn("? Create the 6 missing labels?", output)
+        self.assertEqual(created, ["triage: info", "human: ready", "won't fix", "agent: working", "human: review", "done"])
+        self.assertIn("   ✓ Label won't fix created\n", output)
+        self.assertIn("   ✗ Label done not created\n", output)
+        self.assertLess(output.index("✅ Wrote"), output.index("✓ Label"))
+
+    def test_labels_kept_for_later_or_present_are_not_created(self):
+        created = []
+
+        def command(*args):
+            if args[:3] == ("gh", "label", "create"):
+                created.append(args[3])
+            return self.responses.get(args)
+
+        self.command = command
+        self.responses[labels_of("acme/other")] = json.dumps([[]])
+        self.responses[labels_of("acme/full")] = json.dumps([[{"name": name} for name in init.LABELS.values()]])
+        self.run_configure(answers=["5", "1", "acme/other", "2", "", "6"])
+        self.assertIn("? Create the 8 missing labels?", self.output.getvalue())
+        self.run_configure(answers=["5", "1", "acme/full", "", "6"])
+        self.assertIn("  ✓ Labels: all 8 present", self.output.getvalue())
+        self.assertEqual(created, [])
+
+    def test_labels_offered_for_a_replaced_repository_or_without_saving_are_not_created(self):
+        created = []
+
+        def command(*args):
+            if args[:3] == ("gh", "label", "create"):
+                created.append(args[3:6])
+                return ""
+            return self.responses.get(args)
+
+        self.command = command
+        self.responses[labels_of("acme/other")] = json.dumps([[]])
+        self.run_configure(answers=["5", "1", "acme/other", "", "", "7"])  # Yes, then Quit.
+        self.assertEqual(created, [])
+        # Yes for acme/other, then acme/full has them all: only the last repository counts.
+        self.responses[labels_of("acme/full")] = json.dumps([[{"name": name} for name in init.LABELS.values()]])
+        self.run_configure(answers=["5", "1", "acme/other", "", "1", "acme/full", "", "6"])
+        self.assertEqual(created, [])
+        self.assertEqual(load_config(self.root / "ralph.toml", self.root).repository, "acme/full")
+
+    def test_going_back_to_the_saved_repository_offers_no_labels(self):
+        created = []
+
+        def command(*args):
+            if args[:3] == ("gh", "label", "create"):
+                created.append(args[3:6])
+                return ""
+            return self.responses.get(args)
+
+        self.command = command
+        self.responses[labels_of("acme/other")] = json.dumps([[]])
+        self.responses[labels_of("acme/widget")] = json.dumps([[]])
+        # Yes for acme/other, back to acme/widget, then a remote change so Save writes.
+        self.run_configure(answers=["5", "1", "acme/other", "", "1", "acme/widget", "3", "upstream", "", "6"])
+        self.assertNotIn("Labels missing on acme/widget", self.output.getvalue())
+        self.assertEqual(created, [])
+        self.assertEqual(load_config(self.root / "ralph.toml", self.root).remote, "upstream")
 
 
 if __name__ == "__main__":
