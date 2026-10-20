@@ -29,6 +29,19 @@ class HelperCommandTests(unittest.TestCase):
         self.assertIsNone(keep_awake.helper_command("freebsd14", 42))
 
 
+class AvailabilityTests(unittest.TestCase):
+    def test_installed_helper_is_available(self):
+        with mock.patch.object(keep_awake.shutil, "which", return_value="/usr/bin/systemd-inhibit"):
+            self.assertEqual(keep_awake.availability("linux"), ("systemd-inhibit", None))
+
+    def test_missing_helper_is_named(self):
+        with mock.patch.object(keep_awake.shutil, "which", return_value=None):
+            self.assertEqual(keep_awake.availability("darwin"), ("caffeinate", "caffeinate not found"))
+
+    def test_unsupported_platform_has_no_helper(self):
+        self.assertEqual(keep_awake.availability("freebsd14"), ("", "not supported on freebsd14"))
+
+
 class KeepAwakeTests(unittest.TestCase):
     def test_unsupported_platform_warns_and_runs_the_block(self):
         stderr = io.StringIO()
