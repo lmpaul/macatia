@@ -28,7 +28,7 @@ From the repository root:
 
 ```sh
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
-ralph-kit init --config other.toml # writes another configuration next to it
+ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions

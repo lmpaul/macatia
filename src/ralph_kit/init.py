@@ -1,4 +1,4 @@
-"""`ralph-kit init`: detect what can be read locally, ask for the rest, write ralph.toml."""
+"""`ralph-kit init`: detect what can be read locally, ask for the rest, write the configuration."""
 
 from __future__ import annotations
 
@@ -396,7 +396,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
 
 
 def _offer_labels(prompter: Prompter, command: CommandRunner, repository: str) -> dict[str, str]:
-    """Missing labels the user agreed to create once ralph.toml is written."""
+    """Missing labels the user agreed to create once the configuration is written."""
     if repository == PLACEHOLDERS["repository"]:
         return {}
     try:
@@ -497,7 +497,7 @@ def run(
     if toplevel is None or pathlib.Path(toplevel).resolve() != root:
         raise InitError("run ralph-kit init from the root of a Git repository")
     target = root / config  # An absolute config replaces root.
-    shown = target.relative_to(root) if target.is_relative_to(root) else target
+    display_path = target.relative_to(root) if target.is_relative_to(root) else target
     if target.exists() and not force:
         raise InitError(f"{target} already exists (use --force to overwrite it)")
     if not target.parent.is_dir():
@@ -522,7 +522,7 @@ def run(
     remaining = [value for value in PLACEHOLDERS.values() if value in contents]
     if remaining:
         prompter.say("   Values to fill in: " + ", ".join(remaining))
-    committed = f"{shown} and {GITIGNORE}" if ignored else str(shown)
-    check_command = "ralph-kit check" if target == root / CONFIG_NAME else f"ralph-kit check --config {shlex.quote(str(shown))}"
+    committed = f"{display_path} and {GITIGNORE}" if ignored else str(display_path)
+    check_command = "ralph-kit check" if target == root / CONFIG_NAME else f"ralph-kit check --config {shlex.quote(str(display_path))}"
     prompter.say(f"   Next step: commit {committed}, then run `{check_command}`.")
     return target

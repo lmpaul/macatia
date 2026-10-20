@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import sys
 
@@ -26,28 +27,14 @@ def init(argv: list[str]) -> int:
     from . import init as setup
     from .check import arrow_select
 
-    force = False
-    config = pathlib.Path(setup.CONFIG_NAME)
-    unknown = []
-    arguments = iter(argv)
-    for argument in arguments:
-        if argument == "--force":
-            force = True
-        elif argument == "--config" or argument.startswith("--config="):
-            value = argument.partition("=")[2] if "=" in argument else next(arguments, "")
-            if not value:
-                print("ralph-kit init: --config needs a PATH", file=sys.stderr)
-                return 2
-            config = pathlib.Path(value)
-        else:
-            unknown.append(argument)
-    if unknown:
-        print(f"ralph-kit init: unknown arguments: {' '.join(unknown)}", file=sys.stderr)
-        return 2
+    parser = argparse.ArgumentParser(prog="ralph-kit init", description="Write a configuration; ask for what cannot be detected.")
+    parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path(setup.CONFIG_NAME), metavar="PATH")
+    parser.add_argument("--force", action="store_true", help="overwrite an existing configuration at --config, and only that file")
+    args = parser.parse_args(argv)  # Exits with status 2 on unknown arguments.
     interactive = sys.stdin.isatty()
     prompter = setup.Prompter(interactive=interactive, select=arrow_select if interactive and sys.stdout.isatty() else None)
     try:
-        setup.run(pathlib.Path.cwd().resolve(), prompter, force=force, config=config)
+        setup.run(pathlib.Path.cwd().resolve(), prompter, force=args.force, config=args.config)
     except setup.InitAborted as error:
         print(f"\n{error}", file=sys.stderr)
         return 130
