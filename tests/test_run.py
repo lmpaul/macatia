@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from ralph_kit import check, cli, loop, loop_core
+from ralph_kit import check, cli, keep_awake, loop, loop_core
 from ralph_kit.commands import RalphError
 from run_support import (
     BRANCH,
@@ -1047,6 +1047,8 @@ class RunUsageCommandLineTests(unittest.TestCase):
     def usage_error(self, *arguments):
         stderr = io.StringIO()
         with (
+            # The sleep lock may warn first where it cannot be taken, as on CI runners.
+            mock.patch.object(keep_awake, "keep_awake", contextlib.nullcontext),
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
             contextlib.redirect_stderr(stderr),
             self.assertRaises(SystemExit) as exit,
