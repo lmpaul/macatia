@@ -95,9 +95,9 @@ class RunRepository:
             )
         self.base_sha = template.base_sha
 
-    def edit_configuration(self, old, new):
-        """Replace text in `ralph.toml` and commit it, keeping the worktree clean."""
-        path = self.path / "ralph.toml"
+    def edit_configuration(self, old, new, path="ralph.toml"):
+        """Replace text in the configuration at `path` and commit it, keeping the worktree clean."""
+        path = self.path / path
         configuration = path.read_text(encoding="utf-8")
         assert old in configuration, old
         path.write_text(configuration.replace(old, new), encoding="utf-8")

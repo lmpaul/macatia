@@ -1584,6 +1584,20 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
                     )
 
 
+CAFFEINATE_BY_DEFAULT_NOTICE = (
+    "ℹ️ caffeinate_by_default is on in ralph.toml: this run holds a sleep lock until it "
+    "ends. Use --no-caffeinate to let the machine sleep."
+)
+
+
+def set_caffeinate_by_default(repository, value="true", path="ralph.toml"):
+    repository.edit_configuration(
+        'trusted_authors = ["lmpaul"]\n',
+        f'trusted_authors = ["lmpaul"]\ncaffeinate_by_default = {value}\n',
+        path,
+    )
+
+
 class SleepLockTests(StartupRejectionTestCase):
     """`--caffeinate` holds a sleep lock from run startup, once the configuration is loaded,
     until the run ends."""
@@ -1638,6 +1652,102 @@ class SleepLockTests(StartupRejectionTestCase):
 
                 self.assert_rejected_at_startup(result, reason)
                 self.assertEqual(result.sleep_lock.taken, 0)
+
+    def test_setting_holds_the_sleep_lock_without_flags_and_says_so(self):
+        set_caffeinate_by_default(self.repository)
+        results = passing_child_results(loop_core.STANDARD_RUN)
+
+        result = self.start_with(PARENT, results=results)
+
+        self.assert_completed(result, sessions=len(results))
+        self.assertEqual(result.sleep_lock.taken, 1)
+        self.assertEqual(result.sleep_lock.held_during_sessions, [True] * len(results))
+        self.assertEqual(result.stdout.count(CAFFEINATE_BY_DEFAULT_NOTICE), 1)
+        self.assertLess(result.stdout.index(CAFFEINATE_BY_DEFAULT_NOTICE), result.stdout.index("▶️"))
+
+    def test_setting_with_the_caffeinate_flag_holds_the_sleep_lock_without_the_notice(self):
+        set_caffeinate_by_default(self.repository)
+        results = passing_child_results(loop_core.STANDARD_RUN)
+
+        result = self.start_with("--caffeinate", PARENT, results=results)
+
+        self.assert_completed(result, sessions=len(results))
+        self.assertEqual(result.sleep_lock.taken, 1)
+        self.assertNotIn("caffeinate_by_default", result.stdout + result.stderr)
+
+    def test_no_caffeinate_flag_overrides_the_setting_and_is_accepted_without_it(self):
+        for value in ("true", "false", None):
+            for arguments in (("--no-caffeinate", PARENT), (PARENT, "--no-caffeinate"),
+                              ("--review", PARENT, "--no-caffeinate")):
+                with self.subTest(value=value, arguments=arguments):
+                    self.setUp()
+                    if value is not None:
+                        set_caffeinate_by_default(self.repository, value)
+                    mode = loop_core.REVIEWED_RUN if "--review" in arguments else loop_core.STANDARD_RUN
+                    results = passing_child_results(mode)
+
+                    result = self.start_with(*arguments, results=results)
+
+                    self.assert_completed(result, sessions=len(results))
+                    self.assertEqual(result.sleep_lock.taken, 0)
+                    self.assertNotIn("caffeinate_by_default", result.stdout + result.stderr)
+
+    def test_setting_off_without_flags_takes_no_sleep_lock(self):
+        set_caffeinate_by_default(self.repository, "false")
+        results = passing_child_results(loop_core.STANDARD_RUN)
+
+        result = self.start_with(PARENT, results=results)
+
+        self.assert_completed(result, sessions=len(results))
+        self.assertEqual(result.sleep_lock.taken, 0)
+        self.assertNotIn("caffeinate_by_default", result.stdout + result.stderr)
+
+    def test_caffeinate_and_no_caffeinate_together_are_a_usage_error(self):
+        for arguments in (
+            ("--caffeinate", "--no-caffeinate", PARENT),
+            ("--no-caffeinate", PARENT, "--caffeinate"),
+            (PARENT, "--caffeinate", "--review", "--no-caffeinate"),
+        ):
+            for setting in ("true", "false"):
+                with self.subTest(arguments=arguments, setting=setting):
+                    self.setUp()
+                    set_caffeinate_by_default(self.repository, setting)
+
+                    result = self.start_with(*arguments, results=())
+
+                    self.assertEqual(result.exit_code, 2)
+                    self.assert_rejected_at_startup(
+                        result, "argument --no-caffeinate: not allowed with argument --caffeinate"
+                    )
+                    self.assertEqual(result.sleep_lock.taken, 0)
+
+    def test_setting_that_is_not_a_toml_boolean_stops_without_taking_the_sleep_lock(self):
+        for value in ('"true"', "1", "[]"):
+            for flags in ((), ("--caffeinate",), ("--no-caffeinate",)):
+                with self.subTest(value=value, flags=flags):
+                    self.setUp()
+                    set_caffeinate_by_default(self.repository, value)
+
+                    result = self.start_with(*flags, PARENT, results=())
+
+                    self.assert_rejected_at_startup(
+                        result, "configuration.caffeinate_by_default must be a boolean"
+                    )
+                    self.assertEqual(result.sleep_lock.taken, 0)
+                    self.assertNotIn(CAFFEINATE_BY_DEFAULT_NOTICE, result.stdout)
+
+    def test_setting_in_the_configuration_given_by_config_holds_the_sleep_lock(self):
+        (self.repository.path / "config").mkdir()
+        git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
+        git(self.repository.path, "commit", "-m", "Move the Ralph configuration")
+        set_caffeinate_by_default(self.repository, path="config/ralph.toml")
+        results = passing_child_results(loop_core.STANDARD_RUN)
+
+        result = self.start_with("--config", "config/ralph.toml", PARENT, results=results)
+
+        self.assert_completed(result, sessions=len(results))
+        self.assertEqual(result.sleep_lock.taken, 1)
+        self.assertEqual(result.stdout.count(CAFFEINATE_BY_DEFAULT_NOTICE), 1)
 
     def test_sleep_lock_is_held_through_the_startup_checks(self):
         (self.repository.path / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
@@ -2694,6 +2804,22 @@ class StopSummaryTests(VerificationTestCase):
         self.assert_stop_summary(
             result, f"run `ralph-kit run --no-review --caffeinate {PARENT}` again."
         )
+
+    def test_rerun_command_keeps_the_no_caffeinate_flag(self):
+        set_caffeinate_by_default(self.repository)
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("blocked", "Stuck."))
+
+        result = start_run(self.repository, self.github, self.sessions, "--no-caffeinate", PARENT)
+
+        self.assert_stop_summary(result, f"run `ralph-kit run --no-caffeinate {PARENT}` again.")
+
+    def test_rerun_command_omits_the_sleep_lock_flags_when_the_setting_decided(self):
+        set_caffeinate_by_default(self.repository)
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("blocked", "Stuck."))
+
+        result = start_run(self.repository, self.github, self.sessions, PARENT)
+
+        self.assert_stop_summary(result, f"run `ralph-kit run {PARENT}` again.")
 
     def test_completed_run_summary_has_no_stop_details(self):
         result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))

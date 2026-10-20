@@ -1,4 +1,4 @@
-"""`ralph-kit run --caffeinate`: the sleep lock helper, and the CLI passing the flag to the run."""
+"""The sleep lock helper, and the CLI passing `--caffeinate` and `--no-caffeinate` to the run."""
 
 import contextlib
 import io
@@ -36,7 +36,7 @@ class KeepAwakeTests(unittest.TestCase):
         with contextlib.redirect_stderr(stderr), keep_awake.keep_awake("freebsd14"):
             ran = True
         self.assertTrue(ran)
-        self.assertIn("--caffeinate ignored: not supported on freebsd14", stderr.getvalue())
+        self.assertIn("No sleep lock: not supported on freebsd14", stderr.getvalue())
 
     def test_missing_helper_warns_and_runs_the_block(self):
         stderr = io.StringIO()
@@ -46,7 +46,7 @@ class KeepAwakeTests(unittest.TestCase):
             keep_awake.keep_awake("linux"),
         ):
             pass
-        self.assertIn("--caffeinate ignored: systemd-inhibit not found", stderr.getvalue())
+        self.assertIn("No sleep lock: systemd-inhibit not found", stderr.getvalue())
 
     @unittest.skipUnless(sys.platform == "darwin" and shutil.which("caffeinate"), "needs macOS caffeinate")
     def test_macos_holds_the_assertion_only_during_the_block(self):
@@ -60,10 +60,22 @@ class KeepAwakeTests(unittest.TestCase):
 
 
 class CaffeinateFlagTests(unittest.TestCase):
-    """`ralph-kit run` leaves `--caffeinate` to the run, which takes the sleep lock at startup."""
+    """`ralph-kit run` leaves `--caffeinate` and `--no-caffeinate` to the run, which decides on
+    the sleep lock at startup."""
 
-    def test_cli_passes_the_flag_through_to_the_run_unchanged(self):
-        arguments = ["--review", "5", "--caffeinate"]
+    def test_cli_passes_the_flags_through_to_the_run_unchanged(self):
+        for arguments in (["--review", "5", "--caffeinate"], ["--no-caffeinate", "5"]):
+            with self.subTest(arguments=arguments):
+                self.assert_passed_through(arguments)
+
+    def test_usage_lists_both_flags(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(cli.main(["--help"]), 0)
+        self.assertIn("[--caffeinate | --no-caffeinate]", stdout.getvalue())
+        self.assertIn("--no-caffeinate lets the machine sleep", stdout.getvalue())
+
+    def assert_passed_through(self, arguments):
         with (
             mock.patch.object(loop, "run", return_value=0) as run,
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),

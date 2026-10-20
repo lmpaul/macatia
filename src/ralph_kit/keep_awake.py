@@ -1,4 +1,5 @@
-"""`ralph-kit run --caffeinate`: keep the machine from idle-sleeping while the run lasts."""
+"""The sleep lock: keep the machine from idle-sleeping while a run lasts, for `--caffeinate`
+or `caffeinate_by_default`."""
 
 from __future__ import annotations
 
@@ -36,7 +37,8 @@ def helper_command(platform: str, pid: int) -> list[str] | None:
 
 
 def warn(reason: str) -> None:
-    print(f"⚠️ --caffeinate ignored: {reason}; the machine may sleep during the run.", file=sys.stderr)
+    # Neutral wording: the flag or the setting may have asked for the sleep lock.
+    print(f"⚠️ No sleep lock: {reason}; the machine may sleep during the run.", file=sys.stderr)
 
 
 @contextlib.contextmanager
