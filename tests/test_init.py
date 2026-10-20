@@ -24,6 +24,8 @@ repository = "acme/widget"
 base_branch = "trunk"
 remote = "origin"
 trusted_authors = ["octocat"]
+# true makes every run a reviewed run; ralph-kit run --no-review overrides it.
+review_by_default = false
 
 [labels]
 needs_triage = "needs-triage"
@@ -41,7 +43,7 @@ name = "sonnet"
 display_name = "sonnet"
 reasoning_effort = "medium"
 
-# Only used by `ralph-kit run --review`.
+# Used by reviewed runs: ralph-kit run --review, or every run when review_by_default = true.
 [models.review]
 engine = "claude"
 name = "opus"
@@ -76,6 +78,8 @@ repository = "acme/gadget"
 base_branch = "develop"
 remote = "upstream"
 trusted_authors = ["alice", "bob", "octocat"]
+# true makes every run a reviewed run; ralph-kit run --no-review overrides it.
+review_by_default = false
 
 [labels]
 needs_triage = "triage: new"
@@ -93,7 +97,7 @@ name = "sonnet"
 display_name = "Sonnet \\"daily\\""
 reasoning_effort = "medium"
 
-# Only used by `ralph-kit run --review`.
+# Used by reviewed runs: ralph-kit run --review, or every run when review_by_default = true.
 [models.review]
 engine = "codex"
 name = "gpt-5"
@@ -195,6 +199,13 @@ class InitTests(unittest.TestCase):
         self.assertEqual(config.models["review"].reasoning_effort, "high")
         self.assertEqual(config.models["correction"], config.models["implementation"])
         self.assertFalse(config.verification.local_checks or config.verification.ci_checks)
+        self.assertFalse(config.review_by_default)
+
+    def test_review_model_question_is_for_every_reviewed_run(self):
+        self.run_init(answers=[""] * 8)
+        output = self.output.getvalue()
+        self.assertIn("? Model for the independent review (reviewed runs)", output)
+        self.assertNotIn("run --review", output)
 
     def test_undetected_values_are_asked_and_validated(self):
         del self.responses[("gh", "repo", "view", "--json", "nameWithOwner,defaultBranchRef")]
@@ -596,7 +607,7 @@ class RenderTests(unittest.TestCase):
         self.assertEqual(init.render(self.load(rendered), self.root), rendered)
 
     def test_a_configuration_without_review_is_rendered_without_it(self):
-        start, review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
+        start, review = CUSTOM_CONFIGURATION.split("# Used by reviewed runs", 1)
         contents = start + review.split("\n\n", 1)[1]
         self.assertEqual(init.render(self.load(contents, require_review=False), self.root), contents)
 

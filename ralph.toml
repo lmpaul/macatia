@@ -21,7 +21,7 @@ name = "opus"
 display_name = "opus"
 reasoning_effort = "medium"
 
-# Only used by `ralph-kit run --review`.
+# Used by reviewed runs: ralph-kit run --review, or every run when review_by_default = true.
 [models.review]
 engine = "claude"
 name = "opus"

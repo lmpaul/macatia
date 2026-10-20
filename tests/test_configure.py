@@ -42,12 +42,9 @@ display_name = "codex-large"
 reasoning_effort = "medium"
 """
 WITHOUT_BACKUP = DEFAULT_CONFIGURATION.replace(BACKUP_SECTION, "")
-_start, _review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
+_start, _review = CUSTOM_CONFIGURATION.split("# Used by reviewed runs", 1)
 WITHOUT_REVIEW = _start + _review.split("\n\n", 1)[1]
-REVIEWED_BY_DEFAULT = DEFAULT_CONFIGURATION.replace(
-    '\n\n[labels]',
-    "\n# true makes every run a reviewed run; ralph-kit run --no-review overrides it.\nreview_by_default = true\n\n[labels]",
-)
+REVIEWED_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("review_by_default = false\n", "review_by_default = true\n")
 
 
 def labels_of(repository):

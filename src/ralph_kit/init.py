@@ -427,7 +427,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
     models = {}
     for role, question, effort in (
         ("implementation", "Model for implementation and corrections", "medium"),
-        ("review", "Model for the independent review (ralph-kit run --review)", "high"),
+        ("review", "Model for the independent review (reviewed runs)", "high"),
     ):
         models[role] = ask_profile(prompter, engine, catalog(engine), role, question, effort)
     models["correction"] = dict(models["implementation"])
@@ -515,13 +515,8 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
         f"remote = {_string(config.remote)}",
         # A set has no order of its own; sorting keeps the file stable from one save to the next.
         f"trusted_authors = [{', '.join(_string(author) for author in sorted(config.trusted_authors))}]",
-    ]
-    if config.review_by_default:  # Missing means off.
-        lines += [
-            "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.",
-            "review_by_default = true",
-        ]
-    lines += [
+        "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.",
+        f"review_by_default = {str(config.review_by_default).lower()}",
         "",
         "[labels]",
         *(f"{key} = {_string(config.labels[key])}" for key in LABELS),
@@ -533,7 +528,7 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
             continue
         lines.append("")
         if role == "review":
-            lines.append("# Only used by `ralph-kit run --review`.")
+            lines.append("# Used by reviewed runs: ralph-kit run --review, or every run when review_by_default = true.")
         if role == BACKUP_MODEL_KEY:
             lines.append("# Takes over every session for the rest of a run after an engine failure.")
         lines.append(f"[models.{role}]")
