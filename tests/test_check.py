@@ -126,10 +126,10 @@ class ReadinessTests(unittest.TestCase):
         # Only the explicit read-only allowlist, plus label creation, is accepted by the fixture.
         return responses[args]
 
-    def run_check(self, missing=None, confirm=None):
+    def run_check(self, missing=None, confirm=None, with_review=False):
         output = io.StringIO()
         with mock.patch.object(pathlib.Path, "cwd", return_value=self.root), mock.patch.object(self.checker.shutil, "which", side_effect=lambda name: None if name == missing else f"/tools/{name}"), contextlib.redirect_stdout(output):
-            code = self.checker.run(self.root, self.config, confirm=confirm, command=self.command)
+            code = self.checker.run(self.root, self.config, with_review=with_review, confirm=confirm, command=self.command)
         return code, output.getvalue()
 
     def flags(self, local, ci):
@@ -280,6 +280,67 @@ class ReadinessTests(unittest.TestCase):
                 code, output = self.run_check()
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.help_requests(), expected)
+
+    def use_review_profile(self, engine, name="opus"):
+        # Claude engines also need the implement skill linked under .claude/skills.
+        text = self.config.read_text().replace(
+            '[models.review]\nengine = "codex"\nname = "gpt-5.6-sol"',
+            f'[models.review]\nengine = "{engine}"\nname = "{name}"',
+        )
+        self.config.write_text(text)
+        (self.root / ".claude/skills").mkdir(parents=True, exist_ok=True)
+        (self.root / ".claude/skills/implement").symlink_to("../../.agents/skills/implement")
+
+    def set_review_by_default(self, value):
+        self.config.write_text(f"review_by_default = {value}\n" + self.config.read_text())
+
+    def test_review_role_is_checked_with_review_or_review_by_default(self):
+        for setting, with_review, checked in (
+            (None, False, False),
+            ("false", False, False),
+            ("true", False, True),
+            (None, True, True),
+            ("false", True, True),
+            ("true", True, True),
+        ):
+            with self.subTest(setting=setting, with_review=with_review):
+                self.setUp()
+                self.use_review_profile("claude")
+                if setting is not None:
+                    self.set_review_by_default(setting)
+                code, output = self.run_check(with_review=with_review)
+                self.assertEqual(code, 0, output)
+                expected = [("claude", "--help"), ("codex", "exec", "--help")] if checked else [("codex", "exec", "--help")]
+                self.assertEqual(self.help_requests(), expected)
+
+    def test_review_by_default_checks_the_review_model_profile(self):
+        self.use_review_profile("codex", "CHOOSE_MODEL")
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.commands = []
+        self.set_review_by_default("true")
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("still have placeholders", output)
+        self.assertEqual(self.commands, [])
+
+    def test_review_by_default_without_review_profile_is_reported(self):
+        text = self.config.read_text()
+        start = text.index("[models.review]")
+        self.config.write_text(text[:start] + text[text.index("[models.correction]"):])
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.commands = []
+        self.set_review_by_default("true")
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("configuration.models is missing keys: review", output)
+        self.assertEqual(self.commands, [])
+
+    def test_check_has_no_no_review_flag(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
+            cli.main(["check", "--no-review"])
+        self.assertEqual(raised.exception.code, 2)
 
     def add_backup(self, engine, name):
         text = self.config.read_text().replace("\n[verification]", f'\n[models.backup]\nengine = "{engine}"\nname = "{name}"\ndisplay_name = "Backup"\nreasoning_effort = "medium"\n\n[verification]')

@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the standard or reviewed run, the readiness check, init and configure."""
+"""`ralph-kit` command line: dispatch to the run, the readiness check, init and configure."""
 
 from __future__ import annotations
 
@@ -10,12 +10,14 @@ import sys
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review] [--caffeinate] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
+  run [--review | --no-review] [--caffeinate] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
       Standard run: implement the children of PARENT_ISSUE, with at most RUN_BUDGET agent sessions.
       --review starts a reviewed run, which adds an independent review session per child.
+      --no-review starts a standard run, even when review_by_default = true in the configuration.
       --caffeinate keeps the machine from idle-sleeping until the run ends.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
+      --review also checks the review role, as review_by_default = true does.
   init [--force] [--config PATH]
       Write a configuration (default ./ralph.toml): detect repo, branch, remote, account and checks; ask for the rest.
       --force overwrites an existing configuration at PATH, and only that file.
@@ -94,21 +96,17 @@ def main(argv: list[str] | None = None) -> int:
     sys.dont_write_bytecode = True
     command, arguments = argv[0], argv[1:]
     if command == "run":
-        review = "--review" in arguments
+        from . import loop
+
         caffeinate = "--caffeinate" in arguments
-        arguments = [argument for argument in arguments if argument not in {"--review", "--caffeinate"}]
-        if review:
-            from . import loop_review as loop
-        else:
-            from . import loop
-        prog = "ralph-kit run" + (" --review" if review else "")
+        arguments = [argument for argument in arguments if argument != "--caffeinate"]
         confirm = resume_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
         if not caffeinate:
-            return loop.run(arguments, prog=prog, confirm=confirm)
+            return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
         from .keep_awake import keep_awake
 
         with keep_awake():
-            return loop.run(arguments, prog=prog, confirm=confirm)
+            return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
     if command == "check":
         from . import check
 

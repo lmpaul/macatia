@@ -13,7 +13,7 @@ from unittest import mock
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import cli, keep_awake, loop, loop_review
+from ralph_kit import cli, keep_awake, loop
 
 
 class HelperCommandTests(unittest.TestCase):
@@ -60,41 +60,51 @@ class KeepAwakeTests(unittest.TestCase):
 
 
 class CaffeinateFlagTests(unittest.TestCase):
+    """`ralph-kit run` hands its arguments, review flags included, to the run entry point,
+    kept awake with `--caffeinate`."""
+
     def run_cli(self, *arguments):
-        entered = []
+        """The arguments the run entry point received, and whether the machine was kept awake."""
+        awake = []
+        started = []
 
         @contextlib.contextmanager
         def fake_keep_awake():
-            entered.append(True)
+            awake.append(True)
             yield
+            awake.clear()
+
+        def run(argv, prog, confirm):
+            started.append((argv, prog, bool(awake)))
+            return 0
 
         with (
             mock.patch.object(keep_awake, "keep_awake", fake_keep_awake),
-            mock.patch.object(loop, "run", return_value=0) as standard,
-            mock.patch.object(loop_review, "run", return_value=0) as reviewed,
+            mock.patch.object(loop, "run", run),
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
         ):
             self.assertEqual(cli.main(["run", *arguments]), 0)
-        return bool(entered), standard, reviewed
+        self.assertEqual(len(started), 1)
+        argv, prog, kept_awake = started[0]
+        self.assertEqual(prog, "ralph-kit run")
+        return argv, kept_awake
 
-    def test_flag_wraps_a_standard_run_in_any_position(self):
-        for arguments in (["--caffeinate", "5"], ["5", "--caffeinate"]):
+    def test_flag_wraps_the_run_in_any_position(self):
+        for arguments, passed in (
+            (["--caffeinate", "5"], ["5"]),
+            (["5", "--caffeinate"], ["5"]),
+            (["--review", "--caffeinate", "5"], ["--review", "5"]),
+            (["5", "--caffeinate", "--review"], ["5", "--review"]),
+            (["--no-review", "5", "--caffeinate"], ["--no-review", "5"]),
+            (["--caffeinate", "5", "--no-review"], ["5", "--no-review"]),
+        ):
             with self.subTest(arguments=arguments):
-                entered, standard, reviewed = self.run_cli(*arguments)
-                self.assertTrue(entered)
-                standard.assert_called_once_with(["5"], prog="ralph-kit run", confirm=mock.ANY)
-                reviewed.assert_not_called()
-
-    def test_flag_combines_with_review(self):
-        entered, standard, reviewed = self.run_cli("--review", "--caffeinate", "5")
-        self.assertTrue(entered)
-        reviewed.assert_called_once_with(["5"], prog="ralph-kit run --review", confirm=mock.ANY)
-        standard.assert_not_called()
+                self.assertEqual(self.run_cli(*arguments), (passed, True))
 
     def test_without_flag_the_machine_may_sleep(self):
-        entered, standard, _ = self.run_cli("5")
-        self.assertFalse(entered)
-        standard.assert_called_once_with(["5"], prog="ralph-kit run", confirm=mock.ANY)
+        for arguments in (["5"], ["--review", "5"], ["5", "--no-review"]):
+            with self.subTest(arguments=arguments):
+                self.assertEqual(self.run_cli(*arguments), (arguments, False))
 
 
 if __name__ == "__main__":

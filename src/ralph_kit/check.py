@@ -342,6 +342,10 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
     report.section("Configuration")
     try:
         config = load_config(config_path, root, require_review=with_review)
+        # The setting lives in the configuration whose models.review it makes required.
+        if config.review_by_default and not with_review:
+            with_review = True
+            config = load_config(config_path, root, require_review=True)
         roles = ("implementation", "correction", "review") if with_review else ("implementation", "correction")
         profiles = [config.models[role] for role in roles] + ([config.backup] if config.backup else [])
         require(not placeholder([config.repository, config.trusted_authors, [profile.name for profile in profiles]]), "repository, authors or models still have placeholders")
@@ -496,7 +500,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
 def main(argv=None, prog=None):
     parser = argparse.ArgumentParser(prog=prog, description=__doc__)
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path("ralph.toml"))
-    parser.add_argument("--review", "--with-review", dest="with_review", action="store_true", help="also check the independent review role")
+    parser.add_argument("--review", "--with-review", dest="with_review", action="store_true", help="also check the independent review role (implied by review_by_default = true)")
     args = parser.parse_args(argv)
     root = pathlib.Path.cwd().resolve()
     path = args.config if args.config.is_absolute() else root / args.config

@@ -31,9 +31,11 @@ ralph-kit init                 # writes ./ralph.toml (detects what it can, asks 
 ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
 ralph-kit configure            # change sections of ./ralph.toml from a menu
 ralph-kit check                # readiness check (offers to create missing labels)
+ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
 ralph-kit run --review 123     # reviewed run: adds an independent review session per child
+ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ```
 
@@ -76,7 +78,7 @@ repository's `.gitignore` (creating the file if needed) and says so. Commit it w
 
 `init` on an existing file points to `configure`: `ralph-kit configure [--config PATH]`
 opens an existing, valid configuration and shows a menu of its sections (model
-profiles, backup, trusted authors, verification, Git), each with its current value
+profiles, backup, trusted authors, verification, Git, reviewed runs by default), each with its current value
 and `*` once changed. Pick a section to change only what it holds; nothing is
 re-detected over an existing value, and the values no section edits (label names,
 quality policy paths, display names, a correction profile distinct from
@@ -106,6 +108,9 @@ offered for creation (Yes / Later), as `init` does, and created once the file is
 written. Verification turns local gates and
 CI checks on or off independently; enabling one without the quality module and
 manifest is accepted with a warning that `ralph-kit check` fails until they exist.
+Reviewed runs by default turns `review_by_default` on or off. Turning it on without a
+review profile first asks for one, as Model profiles does for review; turning it off keeps
+the review profile.
 Save lists each changed key as `key: old → new`, writes the file, validates it and
 suggests committing it, then `ralph-kit check`; Save without changes, Quit without
 saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
@@ -258,6 +263,14 @@ implementation evidence reports only the verification that was enabled.
 The applicable gates still use the shared manifest's `before_agent_review`
 selection flag, even though no separate review follows them.
 
+With `review_by_default = true` in `ralph.toml`, `ralph-kit run` starts a
+reviewed run without `--review`, and says so once at startup;
+`ralph-kit run --no-review` starts a standard run instead. `--no-review` is
+also accepted when the setting is off. `--review` together with `--no-review`
+is a usage error. A run made reviewed by the setting requires `models.review`
+and gets a reviewed run's default run budget. With the setting on,
+`ralph-kit check` also checks the review role, as `check --review` does.
+
 An implementation or correction that returns `needs_correction` must still pass
 its outstanding findings to an issue correction before publication. The
 correction limit and the run budget remain in force. CI corrections must create
@@ -309,6 +322,9 @@ implementation evidence from either kind of run when its commits are on the bran
 - `trusted_authors` is the non-empty allowlist of trusted authors for parent
   issues and children. Include the GitHub account Ralph runs as so a restarted
   run can trust its own implementation evidence.
+- `review_by_default` is optional (`false` when missing). `true` makes every
+  run a reviewed run, which requires `models.review`; `ralph-kit run
+  --no-review` overrides it for one run.
 - `labels` maps Ralph's eight label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, and the lifecycle labels `ready_for_agent`,
