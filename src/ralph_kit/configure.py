@@ -249,7 +249,10 @@ def _ask_model(
 
 
 def _ask_role_profile(prompter: Prompter, config: RalphConfig, state: EditState, role: str) -> AgentProfile:
-    """The role's model profile, from its current one; without one (no review) it starts from init's defaults."""
+    """The role's model profile, with its current one as the default.
+
+    A configuration without review starts it from implementation's engine and a high effort.
+    """
     current = config.models.get(role)
     engine = _choose_engine(prompter, role, (current or config.models["implementation"]).engine, state.installed)
     return _ask_model(

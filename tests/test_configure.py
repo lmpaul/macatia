@@ -42,6 +42,8 @@ display_name = "codex-large"
 reasoning_effort = "medium"
 """
 WITHOUT_BACKUP = DEFAULT_CONFIGURATION.replace(BACKUP_SECTION, "")
+_start, _review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
+WITHOUT_REVIEW = _start + _review.split("\n\n", 1)[1]
 REVIEWED_BY_DEFAULT = DEFAULT_CONFIGURATION.replace(
     '\n\n[labels]',
     "\n# true makes every run a reviewed run; ralph-kit run --no-review overrides it.\nreview_by_default = true\n\n[labels]",
@@ -183,11 +185,9 @@ class ConfigureTests(unittest.TestCase):
         self.assertNotIn("⚠", self.output.getvalue())  # Turning a check off needs no quality policy.
 
     def test_a_configuration_without_review_stays_without_it(self):
-        start, review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
-        contents = start + review.split("\n\n", 1)[1]
-        self.write(contents)
+        self.write(WITHOUT_REVIEW)
         self.run_configure(answers=["4", "2", "", "7"])
-        self.assertEqual(self.read(), contents.replace("ci_checks = false", "ci_checks = true"))
+        self.assertEqual(self.read(), WITHOUT_REVIEW.replace("ci_checks = false", "ci_checks = true"))
 
     def test_comments_the_renderer_would_not_write_are_announced_once(self):
         self.write("# Tuned by hand\n" + DEFAULT_CONFIGURATION.replace('remote = "origin"', 'remote = "origin"  # fork'))
@@ -533,8 +533,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(self.read(), CUSTOM_CONFIGURATION)
 
     def test_a_configuration_without_review_can_add_one(self):
-        start, review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
-        self.write(start + review.split("\n\n", 1)[1])
+        self.write(WITHOUT_REVIEW)
         self.assertTrue(self.run_configure(answers=["1", "2", "", "", "", "7"]))  # Init's defaults: opus, high.
         self.assertIn("  2) review  (none)", self.output.getvalue())
         self.assertEqual(self.models()["review"], ("claude", "opus", "opus", "high"))
@@ -558,8 +557,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertTrue(load_config(self.root / "ralph.toml", self.root).review_by_default)
 
     def test_turning_reviewed_runs_by_default_on_without_review_asks_for_its_profile(self):
-        start, review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
-        self.write(start + review.split("\n\n", 1)[1])
+        self.write(WITHOUT_REVIEW)
         self.assertTrue(self.run_configure(answers=["6", "1", "", "", "7"]))  # Init's defaults: opus, high.
         output = self.output.getvalue()
         self.assertIn("? Model for review\n", output)
