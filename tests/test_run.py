@@ -2225,7 +2225,10 @@ class RunBudgetTests(VerificationTestCase):
             f"run budget of {budget} agent sessions was exhausted after {budget} sessions", handoff
         )
         self.assertIn(COMMITS_STAY, handoff)
-        self.assertIn("- final outcome: stopped safely", self.github.comments(PARENT)[-1])
+        summary = self.github.comments(PARENT)[-1]
+        self.assertIn(f"- agent sessions: {budget}\n", summary)
+        self.assertIn("- final outcome: stopped safely", summary)
+        self.assertIn(f"- agent sessions: {budget}\n", result.stderr)
         self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
         return handoff
 
