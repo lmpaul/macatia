@@ -22,6 +22,7 @@ from .init import (
     CommandRunner,
     InitAborted,
     Prompter,
+    current_login,
     option,
     render,
     run_command,
@@ -138,14 +139,14 @@ def _author_error(value: str) -> str | None:
 
 
 def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, command: CommandRunner) -> RalphConfig:
-    login = command("gh", "api", "user", "--jq", ".login")  # None without gh: no warning.
+    login = current_login(command)  # None without gh: no warning.
     warned = False
     while True:
         authors = config.trusted_authors
         if not login or login in authors:
             warned = False
         elif not warned:  # Once, then again only if it becomes untrusted after being trusted.
-            prompter.say(f"⚠ The current gh account, {login}, is not a trusted author: Ralph would ignore its own implementation evidence.")
+            prompter.say(f"  ⚠ The current gh account, {login}, is not a trusted author: Ralph would ignore its own implementation evidence.")
             warned = True
         answer = prompter.choice(
             f"Trusted authors: {', '.join(sorted(authors))} — what do you want to do?",
@@ -164,7 +165,9 @@ def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, command: Comm
                 config = dataclasses.replace(config, trusted_authors=authors - {author})
                 prompter.say(f"  ✓ {author} removed")
             continue
-        author = prompter.text("GitHub account to trust", validate=_author_error)
+        author = prompter.text("GitHub account to trust (leave empty to go back)", validate=_author_error, required=False)
+        if not author:
+            continue
         if author in authors:
             prompter.say(f"  {author} is already a trusted author")
             continue

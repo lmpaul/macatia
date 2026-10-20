@@ -20,6 +20,9 @@ sys.path.insert(0, str(KIT_ROOT / "tests"))
 from test_init import CUSTOM_CONFIGURATION, DEFAULT_CONFIGURATION  # noqa: E402
 
 
+GH_LOGIN = ("gh", "api", "user", "--jq", ".login")
+
+
 class ConfigureTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -181,6 +184,11 @@ class ConfigureTests(unittest.TestCase):
             CUSTOM_CONFIGURATION.replace('["alice", "bob", "octocat"]', '["alice", "bob", "octocat", "zoe"]'),
         )
 
+    def test_adding_nothing_goes_back(self):
+        self.assertFalse(self.run_configure(answers=["3", "1", "", "", "6"]))
+        self.assertIn("GitHub account to trust (leave empty to go back)", self.output.getvalue())
+        self.assertIn("No changes: nothing written.", self.output.getvalue())
+
     def test_trusted_authors_removes_one(self):
         self.write(CUSTOM_CONFIGURATION)
         # Remove bob (second of alice, bob, octocat), then Back and Save.
@@ -197,8 +205,8 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
     def test_a_gh_login_that_is_not_trusted_is_warned_about(self):
-        warning = "⚠ The current gh account, hubot, is not a trusted author: Ralph would ignore its own implementation evidence."
-        self.responses[("gh", "api", "user", "--jq", ".login")] = "hubot"
+        warning = "  ⚠ The current gh account, hubot, is not a trusted author: Ralph would ignore its own implementation evidence."
+        self.responses[GH_LOGIN] = "hubot"
         self.run_configure(answers=["3", "1", "hubot", "", "7"])
         output = self.output.getvalue()
         self.assertEqual(output.count(warning), 1)  # Not after hubot was added.
@@ -206,15 +214,15 @@ class ConfigureTests(unittest.TestCase):
 
     def test_removing_the_gh_login_warns(self):
         self.write(CUSTOM_CONFIGURATION)
-        self.responses[("gh", "api", "user", "--jq", ".login")] = "octocat"
+        self.responses[GH_LOGIN] = "octocat"
         self.run_configure(answers=["3", "2", "3", "", "7"])
-        self.assertIn("  ✓ octocat removed\n⚠ The current gh account, octocat, is not a trusted author", self.output.getvalue())
+        self.assertIn("  ✓ octocat removed\n  ⚠ The current gh account, octocat, is not a trusted author", self.output.getvalue())
 
     def test_no_warning_when_the_gh_login_is_trusted_or_gh_is_missing(self):
         for login in ("octocat", None):
             with self.subTest(login=login):
                 self.output = io.StringIO()
-                self.responses[("gh", "api", "user", "--jq", ".login")] = login
+                self.responses[GH_LOGIN] = login
                 self.run_configure(answers=["3", "", "7"])
                 self.assertNotIn("⚠", self.output.getvalue())
 

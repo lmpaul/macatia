@@ -158,12 +158,15 @@ class Prompter:
         default: str | None = None,
         placeholder: str | None = None,
         validate: Callable[[str], str | None] | None = None,
+        required: bool = True,
     ) -> str:
         if not self.interactive:
             return placeholder if placeholder is not None else default or ""
         self.say(f"\n? {question}")
         while True:
             answer = self._read(f"Answer [{default}]: " if default else "Answer: ") or (default or "")
+            if not answer and not required:
+                return answer
             error = "an answer is required" if not answer else (validate(answer) if validate else None)
             if error is None:
                 return answer
@@ -182,6 +185,11 @@ def _git_name_error(value: str) -> str | None:
 
 def _authors(value: str) -> list[str]:
     return list(dict.fromkeys(author.strip() for author in value.split(",") if author.strip()))
+
+
+def current_login(command: CommandRunner) -> str | None:
+    """The current gh account, or None without gh."""
+    return command("gh", "api", "user", "--jq", ".login")
 
 
 def _detect_repository(command: CommandRunner) -> tuple[str | None, str | None]:
@@ -345,7 +353,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
     else:
         remote = prompter.text("Remote Ralph pushes to (no Git remote found)", default="origin", validate=_git_name_error)
 
-    login = command("gh", "api", "user", "--jq", ".login")
+    login = current_login(command)
     if login:
         authors = [login]
         say(f"  ✓ Trusted author: {login} (current gh account)")
