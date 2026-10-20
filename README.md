@@ -28,6 +28,8 @@ From the repository root:
 
 ```sh
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
+ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
+ralph-kit configure            # change sections of ./ralph.toml from a menu
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
@@ -59,11 +61,65 @@ After the model profiles, `init` asks for a backup (see
 agent CLIs, plus "No backup". It recommends and preselects the other installed CLI,
 since an engine failure is rarely limited to one model, and preselects "No backup"
 when only one CLI is installed. A chosen backup gets the same model and reasoning
-effort questions, and must differ from the other profiles.
-`--config path/to/other.toml` selects another configuration. Ralph writes run
+effort questions, and must differ from the other profiles: a reasoning effort that
+would make it identical to a session role's model profile is shown greyed out with
+the reason, a model only when all its efforts would, and a model name typed by hand
+is checked right after you enter it.
+`--config path/to/other.toml` selects another configuration, relative to the
+repository root: `init` writes it (its directory must exist, and `./ralph.toml` is left
+untouched), and `run` and `check` read it. `init` refuses an existing file unless
+`--force` is given, which overwrites only that file; its final message suggests
+`ralph-kit check --config path/to/other.toml`. Ralph writes run
 diagnostics to `.ralph/`. Unless Git already ignores it, `init` appends `.ralph/` to the
 repository's `.gitignore` (creating the file if needed) and says so. Commit it with `ralph.toml`;
 `check` reports `.ralph/` when Git does not ignore it.
+
+`init` on an existing file points to `configure`: `ralph-kit configure [--config PATH]`
+opens an existing, valid configuration and shows a menu of its sections (model
+profiles, backup, trusted authors, verification, Git), each with its current value
+and `*` once changed. Pick a section to change only what it holds; nothing is
+re-detected over an existing value, and the values no section edits (label names,
+quality policy paths, display names, a correction profile distinct from
+implementation) are kept. Model profiles picks a session role (implementation, review or
+correction) and asks its engine (the installed agent CLIs plus the role's current one,
+which is the default even when its CLI is not installed here), model and reasoning effort
+as `init` does, with the current values as defaults; a model keeps its display name unless
+it changes. When implementation changes and correction was identical to it, `configure`
+asks whether correction follows (Yes by default). With a backup, efforts that would make
+the profile identical to it, and models whose every effort would, are shown unavailable
+("same as backup"); a free model name clashing with it is explained and asked again.
+Backup adds one when there is none, otherwise changes or removes it (removing drops
+`[models.backup]` from the file). Its engine is asked as in `init`, an installed CLI that
+no session role uses first, with the current backup's engine kept available even when its
+CLI is not installed here (every engine is offered when no agent CLI is); then its model
+and reasoning effort, with the current values as defaults. Efforts that would make the backup identical to a session role's model
+profile, and models whose every effort would, are shown unavailable with the reason
+("same as review"); a free model name clashing with one is explained and asked again.
+Trusted authors lists the configured accounts, adds one
+(a duplicate is not added twice) or removes one, but never the last, and warns when
+the current `gh` account is not trusted, since Ralph would then ignore its own
+implementation evidence. Git changes the repository (owner/name), base branch and
+remote, each asked with its current value as the default and the detected one (gh
+repository, default branch, Git remotes) shown when it differs; without `gh` or `git`
+output, editing still works. After a repository change, the labels missing there are
+offered for creation (Yes / Later), as `init` does, and created once the file is
+written. Verification turns local gates and
+CI checks on or off independently; enabling one without the quality module and
+manifest is accepted with a warning that `ralph-kit check` fails until they exist.
+Save lists each changed key as `key: old → new`, writes the file, validates it and
+suggests committing it, then `ralph-kit check`; Save without changes, Quit without
+saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
+comments added by hand are dropped (`configure` says so when it opens the file). It
+needs a terminal; without one, edit the TOML directly. An invalid configuration is
+refused with the error: fix the file, or start over with `ralph-kit init --force`.
+
+For a variant of an existing configuration, copy the file, then change the copy:
+
+```sh
+cp ralph.toml review.toml
+ralph-kit configure --config review.toml
+ralph-kit check --config review.toml
+```
 
 ## Develop ralph-kit
 
@@ -89,7 +145,8 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   against outputs recorded from the real CLIs in `tests/fixtures/engines/`.
 - **Readiness check** (including the engine flag check): `tests/test_check.py`,
   with injected executable lookup and command runner. `tests/test_init.py`
-  covers `ralph-kit init` the same way.
+  covers `ralph-kit init` the same way, and `tests/test_configure.py` covers
+  `ralph-kit configure`.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
   and `claude`: `tests/test_live.py`, skipped unless `RALPH_LIVE=1` (see below).
 

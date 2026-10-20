@@ -17,6 +17,111 @@ from ralph_kit import check, init
 from ralph_kit.config import load_config
 
 
+DEFAULT_CONFIGURATION = """\
+# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit
+version = 1
+repository = "acme/widget"
+base_branch = "trunk"
+remote = "origin"
+trusted_authors = ["octocat"]
+
+[labels]
+needs_triage = "needs-triage"
+needs_info = "needs-info"
+ready_for_agent = "ready-for-agent"
+ready_for_human = "ready-for-human"
+wontfix = "wontfix"
+agent_working = "agent-working"
+human_review = "human-review"
+implemented = "implemented"
+
+[models.implementation]
+engine = "claude"
+name = "sonnet"
+display_name = "sonnet"
+reasoning_effort = "medium"
+
+# Only used by `ralph-kit run --review`.
+[models.review]
+engine = "claude"
+name = "opus"
+display_name = "opus"
+reasoning_effort = "high"
+
+[models.correction]
+engine = "claude"
+name = "sonnet"
+display_name = "sonnet"
+reasoning_effort = "medium"
+
+# Takes over every session for the rest of a run after an engine failure.
+[models.backup]
+engine = "codex"
+name = "codex-large"
+display_name = "codex-large"
+reasoning_effort = "medium"
+
+[verification]
+# Both checks need the quality module and manifest below; disabled checks do not load them.
+local_checks = false
+ci_checks = false
+quality_module = ".github/scripts/quality.py"
+quality_manifest = ".github/quality-gates.json"
+"""
+# Values init never asks about, as the renderer writes them.
+CUSTOM_CONFIGURATION = """\
+# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit
+version = 1
+repository = "acme/gadget"
+base_branch = "develop"
+remote = "upstream"
+trusted_authors = ["alice", "bob", "octocat"]
+
+[labels]
+needs_triage = "triage: new"
+needs_info = "triage: info"
+ready_for_agent = "agent: ready"
+ready_for_human = "human: ready"
+wontfix = "won't fix"
+agent_working = "agent: working"
+human_review = "human: review"
+implemented = "done"
+
+[models.implementation]
+engine = "claude"
+name = "sonnet"
+display_name = "Sonnet \\"daily\\""
+reasoning_effort = "medium"
+
+# Only used by `ralph-kit run --review`.
+[models.review]
+engine = "codex"
+name = "gpt-5"
+display_name = "GPT-5 review"
+reasoning_effort = "xhigh"
+
+[models.correction]
+engine = "claude"
+name = "opus"
+display_name = "Opus fixer"
+reasoning_effort = "high"
+
+# Takes over every session for the rest of a run after an engine failure.
+[models.backup]
+engine = "codex"
+name = "gpt-5-mini"
+display_name = "Mini"
+reasoning_effort = "low"
+
+[verification]
+# Both checks need the quality module and manifest below; disabled checks do not load them.
+local_checks = true
+ci_checks = false
+quality_module = "tools/policy/quality.py"
+quality_manifest = "tools/policy/gates.json"
+"""
+
+
 class InitTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -55,7 +160,7 @@ class InitTests(unittest.TestCase):
             return completed.stdout.strip() if completed.returncode == 0 else None
         return self.responses.get(args)
 
-    def run_init(self, answers=None, force=False):
+    def run_init(self, answers=None, force=False, config=None):
         """answers=None simulates a non-interactive stdin; otherwise one answer per prompt."""
         pending = list(answers or [])
         self.prompts = []
@@ -67,7 +172,8 @@ class InitTests(unittest.TestCase):
             return pending.pop(0)
 
         prompter = init.Prompter(interactive=answers is not None, read=read, output=self.output)
-        path = init.run(self.root, prompter, force=force, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
+        options = {} if config is None else {"config": config}
+        path = init.run(self.root, prompter, force=force, command=self.command, which=lambda name: name if name in self.installed | self.tools else None, **options)
         return load_config(path, self.root)
 
     def gitignore(self):
@@ -188,26 +294,73 @@ class InitTests(unittest.TestCase):
         self.assertNotIn("codex", backup_options)
         self.assertEqual(self.prompts[-1], "Choice [2]: ")
 
-    def test_backup_on_the_same_engine_must_differ_from_the_regular_profiles(self):
+    def test_clashing_backup_efforts_are_unavailable(self):
         self.installed = {"claude"}
         config = self.run_init(answers=[
             "", "", "", "",  # implementation sonnet/medium, review opus/high
             "1",             # backup: claude
-            "3", "2",        # sonnet/medium, identical to implementation: asked again
-            "1", "2", "",    # claude, opus/medium
+            "3",             # sonnet stays available: only medium clashes
+            "2",             # medium: refused
+            "",              # default effort, the middle one now that medium is taken
         ])
-        self.assertIn("must differ from the implementation model profile", self.output.getvalue())
+        output = self.output.getvalue()
+        efforts = output.split("? Reasoning effort for sonnet")[-1]
+        self.assertIn("2) medium  (unavailable: same as implementation)", efforts)
+        self.assertIn("3) high\n", efforts)
+        self.assertIn("medium is unavailable: same as implementation.", efforts)
+        self.assertNotIn("must differ", output)
+        self.assertEqual(self.prompts[-2:], ["Choice [3]: "] * 2)  # Default moved off medium, asked again after refusal.
         self.assertEqual(
             (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
-            ("claude", "opus", "medium"),
+            ("claude", "sonnet", "high"),
+        )
+        # The backup's engine is asked once.
+        self.assertEqual(output.count("? Backup"), 1)
+
+    def test_a_model_is_unavailable_when_every_effort_clashes(self):
+        self.installed = {"codex"}
+        config = self.run_init(answers=[
+            "2", "1",           # implementation codex-small/low
+            "2", "2",           # review codex-small/medium
+            "1",                # backup: codex
+            "2",                # codex-small: refused
+            "3", "codex-small", # free name: clash explained, asked again
+            "", "",             # codex-large, default effort
+        ])
+        output = self.output.getvalue()
+        models = output.split("? Model for the backup")[1]
+        self.assertIn("1) codex-large  (Smart)\n", models)
+        self.assertIn(
+            "2) codex-small  (Fast)  (unavailable: every reasoning effort same as implementation or review)", models
+        )
+        self.assertIn("codex-small is unavailable: every reasoning effort same as implementation or review.", models)
+        self.assertEqual(output.count("? Model for the backup"), 2)
+        self.assertEqual(output.count("? Backup"), 1)
+        self.assertEqual(
+            (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
+            ("codex", "codex-large", "medium"),
         )
 
-    def test_a_clashing_backup_can_still_be_dropped(self):
-        # Codex defaults to the same first model and effort for the backup as for implementation.
-        self.installed = {"codex"}
-        config = self.run_init(answers=["", "", "", "", "1", "", "", ""])
-        self.assertIn("must differ from the implementation model profile", self.output.getvalue())
-        self.assertIsNone(config.backup)
+    def test_the_arrow_selector_receives_unavailable_choices_with_their_reason(self):
+        self.installed = {"claude"}
+        asked = {}
+
+        def select(question, options, default):
+            asked[question] = (options, default)
+            if question.startswith("Backup"):
+                return "claude"
+            return "sonnet" if question == "Model for the backup" else default
+
+        prompter = init.Prompter(interactive=True, read=lambda prompt: "", output=self.output, select=select)
+        path = init.run(self.root, prompter, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
+        options, default = asked["Reasoning effort for sonnet"]
+        self.assertIn(("medium", "", "same as implementation"), options)
+        self.assertEqual(default, "high")
+        self.assertEqual(load_config(path, self.root).backup.reasoning_effort, "high")
+
+    def test_default_answers_write_the_default_configuration(self):
+        self.run_init(answers=[""] * 8)
+        self.assertEqual((self.root / "ralph.toml").read_text(), DEFAULT_CONFIGURATION)
 
     def test_no_backup_with_both_engines_writes_no_section(self):
         config = self.run_init(answers=[""] * 5 + ["3"])
@@ -315,11 +468,39 @@ class InitTests(unittest.TestCase):
 
     def test_existing_config_is_kept_before_any_question(self):
         (self.root / "ralph.toml").write_text("keep")
-        with self.assertRaisesRegex(init.InitError, "already exists"):
+        with self.assertRaisesRegex(init.InitError, r"already exists: change it with `ralph-kit configure`, or use --force to start over"):
             self.run_init(answers=[])
         self.assertEqual(self.prompts, [])
         self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
         self.run_init(answers=[""] * 8, force=True)
+
+    def test_config_option_writes_the_given_path_and_leaves_the_default_alone(self):
+        (self.root / "ralph.toml").write_text("keep")
+        (self.root / "variants").mkdir()
+        config = self.run_init(answers=[""] * 8, config=pathlib.Path("variants/review.toml"))
+        self.assertEqual(config.repository, "acme/widget")
+        self.assertTrue((self.root / "variants/review.toml").is_file())
+        self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
+        output = self.output.getvalue()
+        self.assertIn(f"Wrote {self.root / 'variants/review.toml'}.", output)
+        self.assertIn("Next step: commit variants/review.toml and .gitignore, then run `ralph-kit check --config variants/review.toml`.", output)
+
+    def test_force_overwrites_only_the_given_path(self):
+        (self.root / "ralph.toml").write_text("keep")
+        (self.root / "other.toml").write_text("old")
+        with self.assertRaisesRegex(init.InitError, r"other.toml already exists: change it with `ralph-kit configure --config other.toml`, or use --force"):
+            self.run_init(answers=[], config=pathlib.Path("other.toml"))
+        self.assertEqual(self.prompts, [])
+        self.assertEqual((self.root / "other.toml").read_text(), "old")
+        self.run_init(answers=[""] * 8, force=True, config=self.root / "other.toml")
+        self.assertIn("[models.implementation]", (self.root / "other.toml").read_text())
+        self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
+        self.assertIn("then run `ralph-kit check --config other.toml`.", self.output.getvalue())
+
+    def test_config_in_a_missing_directory_stops_before_any_question(self):
+        with self.assertRaisesRegex(init.InitError, "missing/ does not exist"):
+            self.run_init(answers=[], config=pathlib.Path("missing/ralph.toml"))
+        self.assertEqual(self.prompts, [])
 
     def test_must_run_from_repository_root(self):
         self.responses[("git", "rev-parse", "--show-toplevel")] = str(self.root.parent)
@@ -380,6 +561,44 @@ class InitTests(unittest.TestCase):
         with self.assertRaises(init.InitAborted):
             self.run_init(answers=["1"])
         self.assertFalse((self.root / "ralph.toml").exists())
+
+
+class RenderTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name).resolve()
+
+    def load(self, contents, **options):
+        path = self.root / "ralph.toml"
+        path.write_text(contents, encoding="utf-8")
+        return load_config(path, self.root, **options)
+
+    def test_a_loaded_configuration_is_rendered_with_its_own_values(self):
+        self.assertEqual(init.render(self.load(CUSTOM_CONFIGURATION), self.root), CUSTOM_CONFIGURATION)
+
+    def test_rendering_a_rendered_configuration_again_yields_the_same_file(self):
+        for name, contents in (("default", DEFAULT_CONFIGURATION), ("custom", CUSTOM_CONFIGURATION)):
+            with self.subTest(name):
+                rendered = init.render(self.load(contents), self.root)
+                self.assertEqual(init.render(self.load(rendered), self.root), rendered)
+
+    def test_hand_written_configuration_is_rendered_in_the_renderer_layout(self):
+        # Unsorted authors and an implicit engine: the renderer writes them its own way.
+        hand_written = (KIT_ROOT / "tests/fixtures/ralph.toml").read_text().replace(
+            'trusted_authors = ["lmpaul"]', 'trusted_authors = ["zoe", "lmpaul"]'
+        ).replace('[models.review]\nengine = "codex"\n', "[models.review]\n")
+        self.assertIn('["zoe", "lmpaul"]', hand_written)
+        self.assertIn("[models.review]\nname", hand_written)
+        rendered = init.render(self.load(hand_written), self.root)
+        self.assertIn('trusted_authors = ["lmpaul", "zoe"]\n', rendered)
+        self.assertIn('[models.review]\nengine = "codex"\nname = "gpt-5.6-sol"\n', rendered)
+        self.assertEqual(init.render(self.load(rendered), self.root), rendered)
+
+    def test_a_configuration_without_review_is_rendered_without_it(self):
+        start, review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
+        contents = start + review.split("\n\n", 1)[1]
+        self.assertEqual(init.render(self.load(contents, require_review=False), self.root), contents)
 
 
 if __name__ == "__main__":

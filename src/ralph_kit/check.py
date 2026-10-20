@@ -170,10 +170,16 @@ def create_labels(command, repository, labels):
 
 
 def arrow_select(question, options, default):
-    """Pick an option with the arrow keys; needs a real terminal on stdin and stdout. Ctrl-C raises KeyboardInterrupt."""
+    """Pick an option with the arrow keys; needs a real terminal on stdin and stdout. Ctrl-C raises KeyboardInterrupt.
+
+    An option (value, label, reason) is greyed out with its reason and cannot be selected.
+    """
     import questionary
 
-    choices = [questionary.Choice(f"{value}  ({label})" if label else value, value=value) for value, label in options]
+    choices = [
+        questionary.Choice(f"{value}  ({label})" if label else value, value=value, disabled=reason[0] if reason else None)
+        for value, label, *reason in options
+    ]
     return questionary.select(question, choices, default=default, instruction="(↑↓ to move, Enter to select)").unsafe_ask()
 
 
