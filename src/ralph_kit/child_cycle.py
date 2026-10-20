@@ -310,10 +310,8 @@ class _ChildCycle:
     def complete(self, result: SessionResult) -> str:
         """Complete outstanding findings, pass local gates, and review if enabled."""
         head_sha = result.head
-        require_unchanged_review = result.outcome == "no_changes"
         while True:
             if result.outcome == "needs_correction":
-                require_unchanged_review = False
                 findings = result.findings
                 self.corrections.start("issue correction", findings=findings)
                 try:
@@ -346,12 +344,6 @@ class _ChildCycle:
             if result.outcome == "needs_correction":
                 head_sha = reviewed_head
                 continue
-            if require_unchanged_review and (
-                result.outcome != "no_changes" or result.commits
-            ):
-                raise ChildWorkRejected(
-                    "implementation no_changes requires an independent review with no corrections"
-                )
             if result.commits:
                 head_sha = self.pass_local_gates(reviewed_head)
                 if head_sha != reviewed_head:

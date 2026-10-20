@@ -2346,7 +2346,6 @@ class StopSummaryTests(VerificationTestCase):
         )
 
     def test_child_handed_to_human_review_links_its_handoff_comment(self):
-        committed = ScriptedResult("committed")
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
         for name, mode, results, reason in (
             ("blocked", loop.MODE, [ScriptedResult("blocked", "Needs a product decision.")],
@@ -2357,8 +2356,6 @@ class StopSummaryTests(VerificationTestCase):
              "Issue correction did not create a new commit"),
             ("correction limit", loop.MODE, [findings, *[dataclasses.replace(findings, commit=True)] * 3],
              "correction limit of 3 exhausted before issue correction"),
-            ("rejected work", loop_review.MODE, [ScriptedResult("no_changes"), committed],
-             "implementation no_changes requires an independent review with no corrections"),
         ):
             with self.subTest(name):
                 self.new_child_run()
