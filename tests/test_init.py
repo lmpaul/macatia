@@ -17,6 +17,111 @@ from ralph_kit import check, init
 from ralph_kit.config import load_config
 
 
+DEFAULT_CONFIGURATION = """\
+# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit
+version = 1
+repository = "acme/widget"
+base_branch = "trunk"
+remote = "origin"
+trusted_authors = ["octocat"]
+
+[labels]
+needs_triage = "needs-triage"
+needs_info = "needs-info"
+ready_for_agent = "ready-for-agent"
+ready_for_human = "ready-for-human"
+wontfix = "wontfix"
+agent_working = "agent-working"
+human_review = "human-review"
+implemented = "implemented"
+
+[models.implementation]
+engine = "claude"
+name = "sonnet"
+display_name = "sonnet"
+reasoning_effort = "medium"
+
+# Only used by `ralph-kit run --review`.
+[models.review]
+engine = "claude"
+name = "opus"
+display_name = "opus"
+reasoning_effort = "high"
+
+[models.correction]
+engine = "claude"
+name = "sonnet"
+display_name = "sonnet"
+reasoning_effort = "medium"
+
+# Takes over every session for the rest of a run after an engine failure.
+[models.backup]
+engine = "codex"
+name = "codex-large"
+display_name = "codex-large"
+reasoning_effort = "medium"
+
+[verification]
+# Both checks need the quality module and manifest below; disabled checks do not load them.
+local_checks = false
+ci_checks = false
+quality_module = ".github/scripts/quality.py"
+quality_manifest = ".github/quality-gates.json"
+"""
+# Values init never asks about, as the renderer writes them.
+CUSTOM_CONFIGURATION = """\
+# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit
+version = 1
+repository = "acme/gadget"
+base_branch = "develop"
+remote = "upstream"
+trusted_authors = ["alice", "bob", "octocat"]
+
+[labels]
+needs_triage = "triage: new"
+needs_info = "triage: info"
+ready_for_agent = "agent: ready"
+ready_for_human = "human: ready"
+wontfix = "won't fix"
+agent_working = "agent: working"
+human_review = "human: review"
+implemented = "done"
+
+[models.implementation]
+engine = "claude"
+name = "sonnet"
+display_name = "Sonnet \\"daily\\""
+reasoning_effort = "medium"
+
+# Only used by `ralph-kit run --review`.
+[models.review]
+engine = "codex"
+name = "gpt-5"
+display_name = "GPT-5 review"
+reasoning_effort = "xhigh"
+
+[models.correction]
+engine = "claude"
+name = "opus"
+display_name = "Opus fixer"
+reasoning_effort = "high"
+
+# Takes over every session for the rest of a run after an engine failure.
+[models.backup]
+engine = "codex"
+name = "gpt-5-mini"
+display_name = "Mini"
+reasoning_effort = "low"
+
+[verification]
+# Both checks need the quality module and manifest below; disabled checks do not load them.
+local_checks = true
+ci_checks = false
+quality_module = "tools/policy/quality.py"
+quality_manifest = "tools/policy/gates.json"
+"""
+
+
 class InitTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -253,6 +358,10 @@ class InitTests(unittest.TestCase):
         self.assertEqual(default, "high")
         self.assertEqual(load_config(path, self.root).backup.reasoning_effort, "high")
 
+    def test_default_answers_write_the_same_file_as_before(self):
+        self.run_init(answers=[""] * 8)
+        self.assertEqual((self.root / "ralph.toml").read_text(), DEFAULT_CONFIGURATION)
+
     def test_no_backup_with_both_engines_writes_no_section(self):
         config = self.run_init(answers=[""] * 5 + ["3"])
         self.assertIsNone(config.backup)
@@ -452,6 +561,42 @@ class InitTests(unittest.TestCase):
         with self.assertRaises(init.InitAborted):
             self.run_init(answers=["1"])
         self.assertFalse((self.root / "ralph.toml").exists())
+
+
+class RenderTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = pathlib.Path(directory.name).resolve()
+
+    def load(self, contents, **options):
+        path = self.root / "ralph.toml"
+        path.write_text(contents, encoding="utf-8")
+        return load_config(path, self.root, **options)
+
+    def test_a_loaded_configuration_is_rendered_with_its_own_values(self):
+        self.assertEqual(init.render(self.load(CUSTOM_CONFIGURATION), self.root), CUSTOM_CONFIGURATION)
+
+    def test_rendering_a_rendered_configuration_again_yields_the_same_file(self):
+        for name, contents in (("default", DEFAULT_CONFIGURATION), ("custom", CUSTOM_CONFIGURATION)):
+            with self.subTest(name):
+                rendered = init.render(self.load(contents), self.root)
+                self.assertEqual(init.render(self.load(rendered), self.root), rendered)
+
+    def test_hand_written_configuration_is_rendered_in_the_renderer_layout(self):
+        # Unsorted authors and an implicit engine: the renderer writes them its own way.
+        hand_written = (KIT_ROOT / "tests/fixtures/ralph.toml").read_text().replace(
+            'trusted_authors = ["lmpaul"]', 'trusted_authors = ["zoe", "lmpaul"]'
+        ).replace('[models.review]\nengine = "codex"\n', "[models.review]\n")
+        rendered = init.render(self.load(hand_written), self.root)
+        self.assertIn('trusted_authors = ["lmpaul", "zoe"]\n', rendered)
+        self.assertIn('[models.review]\nengine = "codex"\nname = "gpt-5.6-sol"\n', rendered)
+        self.assertEqual(init.render(self.load(rendered), self.root), rendered)
+
+    def test_a_configuration_without_review_is_rendered_without_it(self):
+        start, review = CUSTOM_CONFIGURATION.split("# Only used by", 1)
+        contents = start + review.split("\n\n", 1)[1]
+        self.assertEqual(init.render(self.load(contents, require_review=False), self.root), contents)
 
 
 if __name__ == "__main__":

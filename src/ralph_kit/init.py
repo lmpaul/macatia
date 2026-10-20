@@ -14,9 +14,14 @@ from typing import TextIO
 
 from .check import AGENT_CLIS as ENGINES, create_labels, missing_labels, prerequisites
 from .config import (
+    BACKUP_MODEL_KEY,
     CLAUDE_REASONING_EFFORTS,
     DIAGNOSTICS_DIRECTORY,
+    MODEL_ROLES,
+    AgentProfile,
+    RalphConfig,
     RalphConfigError,
+    VerificationConfig,
     load_config,
 )
 
@@ -421,37 +426,63 @@ def _string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
-def render(values: dict) -> str:
+def configuration(values: dict, root: pathlib.Path) -> RalphConfig:
+    """The configuration init collected, in the shape load_config returns."""
+    models = {role: AgentProfile(**profile) for role, profile in values["models"].items()}
+    return RalphConfig(
+        repository=values["repository"],
+        base_branch=values["base_branch"],
+        remote=values["remote"],
+        trusted_authors=frozenset(values["trusted_authors"]),
+        labels=dict(LABELS),
+        models={role: profile for role, profile in models.items() if role != BACKUP_MODEL_KEY},
+        backup=models.get(BACKUP_MODEL_KEY),
+        verification=VerificationConfig(
+            local_checks=values["local_checks"],
+            ci_checks=values["ci_checks"],
+            quality_module=root / QUALITY_MODULE,
+            quality_manifest=root / QUALITY_MANIFEST,
+        ),
+    )
+
+
+def render(config: RalphConfig, root: pathlib.Path) -> str:
+    """The TOML file for a configuration; loading it with load_config gives the same configuration back."""
     lines = [
         "# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit",
         "version = 1",
-        f"repository = {_string(values['repository'])}",
-        f"base_branch = {_string(values['base_branch'])}",
-        f"remote = {_string(values['remote'])}",
-        f"trusted_authors = [{', '.join(_string(author) for author in values['trusted_authors'])}]",
+        f"repository = {_string(config.repository)}",
+        f"base_branch = {_string(config.base_branch)}",
+        f"remote = {_string(config.remote)}",
+        # A set has no order of its own; sorting keeps the file stable from one save to the next.
+        f"trusted_authors = [{', '.join(_string(author) for author in sorted(config.trusted_authors))}]",
         "",
         "[labels]",
-        *(f"{key} = {_string(label)}" for key, label in LABELS.items()),
+        *(f"{key} = {_string(config.labels[key])}" for key in LABELS),
     ]
-    for role in ("implementation", "review", "correction", "backup"):
-        profile = values["models"].get(role)
+    profiles = {**config.models, BACKUP_MODEL_KEY: config.backup}
+    for role in (*MODEL_ROLES, BACKUP_MODEL_KEY):
+        profile = profiles.get(role)
         if profile is None:
             continue
         lines.append("")
         if role == "review":
             lines.append("# Only used by `ralph-kit run --review`.")
-        if role == "backup":
+        if role == BACKUP_MODEL_KEY:
             lines.append("# Takes over every session for the rest of a run after an engine failure.")
         lines.append(f"[models.{role}]")
-        lines += [f"{key} = {_string(profile[key])}" for key in ("engine", "name", "display_name", "reasoning_effort")]
+        lines += [
+            f"{key} = {_string(getattr(profile, key))}" for key in ("engine", "name", "display_name", "reasoning_effort")
+        ]
+    verification = config.verification
     lines += [
         "",
         "[verification]",
         "# Both checks need the quality module and manifest below; disabled checks do not load them.",
-        f"local_checks = {str(values['local_checks']).lower()}",
-        f"ci_checks = {str(values['ci_checks']).lower()}",
-        f"quality_module = {_string(QUALITY_MODULE)}",
-        f"quality_manifest = {_string(QUALITY_MANIFEST)}",
+        f"local_checks = {str(verification.local_checks).lower()}",
+        f"ci_checks = {str(verification.ci_checks).lower()}",
+        f"quality_module = {_string(verification.quality_module.relative_to(root).as_posix())}",
+        f"quality_manifest = {_string(verification.quality_manifest.relative_to(root).as_posix())}",
     ]
     return "\n".join(lines) + "\n"
 
@@ -504,7 +535,7 @@ def run(
         raise InitError(f"{target.parent}/ does not exist")
 
     values = collect(root, prompter, command, which)
-    contents = render(values)
+    contents = render(configuration(values, root), root)
     target.write_text(contents, encoding="utf-8")
     try:
         load_config(target, root)
