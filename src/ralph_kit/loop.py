@@ -26,6 +26,8 @@ MODE = loop_core.RunMode(
         "ℹ️ Ralph is running without automated verification: local gates and "
         "remote CI are explicitly disabled; human review is required before merge."
     ),
+    # One implementation session and three correction sessions, plus one.
+    sessions_per_ready_child=5,
 )
 
 

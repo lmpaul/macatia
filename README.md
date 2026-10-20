@@ -178,12 +178,17 @@ The loop of a standard run is:
 
 The optional final number is the run budget: the total number of agent
 sessions the run may start, shared by all children. The default is
-`max(4, ready_children * 5)`, where `ready_children` counts the ready children
+`max(4, ready_children * 5)` in a standard run and `max(4, ready_children * 9)`
+in a reviewed run: a child's worst case under the correction limit, plus one.
+That worst case is four sessions in a standard run (one implementation session
+and three correction sessions) and eight in a reviewed run (the same, with a
+review session after each of them). `ready_children` counts the ready children
 when the run starts, after the startup choice below: open, not `implemented`,
 with `ready-for-agent` as their only triage label and only lifecycle label,
 blocked or not. Children resumed at that choice count. Closed, implemented,
 agent-working, human-review, and ready-for-human children do not count, so
-resuming a parent with one child left gets 5 sessions.
+resuming a parent with one child left gets 5 sessions in a standard run and 9 in
+a reviewed run.
 The count is taken once; relabelling a child during the run does not change its
 budget. It counts sessions, not tokens or time.
 

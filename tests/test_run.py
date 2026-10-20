@@ -150,7 +150,23 @@ def passing_child_results(mode):
     return [ScriptedResult("committed")] * (2 if mode.review else 1)
 
 
+def worst_case_child_results(mode):
+    """The scripted results of a child that passes after every correction the limit allows.
+
+    Its last review, in a reviewed run, returns no_changes.
+    """
+    committed = ScriptedResult("committed")
+    if not mode.review:
+        corrections = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
+        return [corrections] * 3 + [committed]
+    findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+    return [committed, findings] * 3 + [committed, ScriptedResult("no_changes")]
+
+
 class RunLevelTestCase(unittest.TestCase):
+    # Called with each session request before it is answered; see `ready_for_agent_during_the_run`.
+    before_session = None
+
     def new_run(self, *, parent_labels=("ready-for-agent",)):
         """A fresh repository and GitHub with only the parent; `setUp` starts one."""
         self.repository = RunRepository(self)
@@ -162,6 +178,7 @@ class RunLevelTestCase(unittest.TestCase):
 
     def start(self, mode, *results, budget=None, confirm=None):
         self.sessions = ScriptedSessions(self.repository, *results)
+        self.sessions.before_session = self.before_session
         budget_argument = () if budget is None else (budget,)
         return start_run(
             mode, self.repository, self.github, self.sessions, PARENT, *budget_argument,
@@ -170,6 +187,20 @@ class RunLevelTestCase(unittest.TestCase):
 
     def session_children(self):
         return [request.child for request in self.sessions.requests]
+
+    def ready_for_agent_during_the_run(self, child):
+        """`child` is ready for a human when the run starts and ready for an agent from its first session.
+
+        The run's default budget, sized at the start, leaves it out, so the run
+        can spend more than its ready children's worst case.
+        """
+        self.github.add_issue(child, parent=PARENT, labels=("ready-for-human",))
+
+        def relabel(request):
+            if self.github.labels(child) == {"ready-for-human"}:
+                self.github.edit_issue_labels(child, add="ready-for-agent", remove=["ready-for-human"])
+
+        self.before_session = relabel
 
     def commit_file(self, name, message):
         (self.repository.path / name).write_text(f"{message}\n", encoding="utf-8")
@@ -502,17 +533,17 @@ class LeftAgentWorkingTests(RunLevelTestCase):
 
     def test_resumed_child_counts_in_the_default_run_budget(self):
         self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
-        committed = ScriptedResult("committed")
-        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
 
         result = self.start(
-            loop_review.MODE, committed, findings, committed, findings, committed,
-            confirm=ScriptedConfirm(RESUME),
+            loop_review.MODE, *worst_case_child_results(loop_review.MODE),
+            ScriptedResult("committed"), confirm=ScriptedConfirm(RESUME),
         )
 
         self.assertEqual(result.exit_code, 1)
         self.assertIn("run budget exhausted before review", result.stderr)
-        self.assertEqual(len(self.sessions.requests), 5)
+        self.assertEqual(len(self.sessions.requests), 9)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
     def test_several_children_get_one_warning_and_one_choice(self):
         self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
@@ -2198,35 +2229,49 @@ class RunBudgetTests(VerificationTestCase):
         self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
         return handoff
 
-    def reviewed_twice(self):
-        """Implementation, then two reviews with findings, each followed by an issue correction."""
-        committed = ScriptedResult("committed")
-        findings = ScriptedResult("needs_correction", findings=("Expose freshness for each section.",))
-        return [committed, findings, committed, findings, committed]
-
-    def test_default_budget_allows_five_sessions_per_child_across_the_run(self):
+    def test_default_budget_of_a_reviewed_run_allows_nine_sessions_per_child_across_the_run(self):
         self.new_two_child_run()
-        reviewed_twice = self.reviewed_twice()
+        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
+        worst_case = worst_case_child_results(loop_review.MODE)
 
-        result = self.start(
-            loop_review.MODE, *reviewed_twice, ScriptedResult("no_changes"), *reviewed_twice[:4]
+        result = self.start(loop_review.MODE, *worst_case * 2, *worst_case[:2])
+
+        self.assert_budget_stop(
+            result, READY_FOR_HUMAN_CHILD, role="issue correction", budget=18
         )
-
-        self.assert_budget_stop(result, DEPENDENT, role="issue correction", budget=10)
-        self.assertEqual(self.session_children(), [CHILD] * 6 + [DEPENDENT] * 4)
+        self.assertEqual(
+            self.session_children(), [CHILD] * 8 + [DEPENDENT] * 8 + [READY_FOR_HUMAN_CHILD] * 2
+        )
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertEqual(self.github.labels(DEPENDENT), {"implemented"})
         self.assertTrue(self.github.pull_request().is_draft)
+
+    def test_default_budget_of_a_standard_run_allows_five_sessions_per_child_across_the_run(self):
+        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+
+        result = self.start(loop.MODE, *worst_case_child_results(loop.MODE), findings)
+
+        self.assert_budget_stop(
+            result, READY_FOR_HUMAN_CHILD, role="issue correction", budget=5
+        )
+        self.assertEqual(self.session_children(), [CHILD] * 4 + [READY_FOR_HUMAN_CHILD])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
     def test_default_budget_of_a_resumed_parent_counts_only_children_ready_for_an_agent(self):
         # CHILD, from `setUp`, is the only child ready for an agent.
         self.github.add_issue(CLOSED_CHILD, parent=PARENT, state="closed", labels=())
         self.github.add_issue(IMPLEMENTED_CHILD, parent=PARENT, labels=("implemented",))
         self.github.add_issue(HUMAN_REVIEW_CHILD, parent=PARENT, labels=("human-review",))
-        self.github.add_issue(READY_FOR_HUMAN_CHILD, parent=PARENT, labels=("ready-for-human",))
+        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
 
-        result = self.start(loop_review.MODE, *self.reviewed_twice())
+        result = self.start(
+            loop_review.MODE, *worst_case_child_results(loop_review.MODE),
+            ScriptedResult("committed"),
+        )
 
-        self.assert_budget_stop(result, CHILD, role="review", budget=5)
+        self.assert_budget_stop(result, READY_FOR_HUMAN_CHILD, role="review", budget=9)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
     def test_explicit_budget_replaces_the_default_across_children(self):
         self.new_two_child_run()

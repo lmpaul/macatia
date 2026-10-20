@@ -77,6 +77,8 @@ class RunMode:
     follow_up_commits: str
     gate_correction_scope: str
     unverified_warning: str
+    # The default run budget: a child's worst case under the correction limit, plus one.
+    sessions_per_ready_child: int
 
 
 DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
@@ -2639,7 +2641,7 @@ def run_children(
         siblings = state.github.sub_issues(parent_issue)
     # The default counts the ready children once, after the startup choice.
     ready_children = [child for child in siblings if child_is_ready(state, child)]
-    budget = RunBudget(run_budget or max(4, len(ready_children) * 5))
+    budget = RunBudget(run_budget or max(4, len(ready_children) * state.mode.sessions_per_ready_child))
     update_run_summary(state, parent_issue, siblings, budget, infrastructure)
     adapters = state.adapters.child_cycle(
         ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
