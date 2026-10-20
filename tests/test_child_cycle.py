@@ -199,8 +199,9 @@ class UnchangedImplementationTests(unittest.TestCase):
         self.assertEqual(tools.gate_heads, [BASE])
         self.assertEqual(tools.ci_heads, [BASE])
         self.assertEqual(budget.sessions, 1)
+        self.assertEqual(tools.handoffs, [])
 
-    def test_unchanged_review_leads_to_publication(self):
+    def test_unchanged_review_verifies_the_unchanged_head(self):
         tools = FakeTools({"implementation": [no_changes()], "review": [no_changes()]})
 
         result, _ = cycle(tools, review=True)
@@ -210,7 +211,7 @@ class UnchangedImplementationTests(unittest.TestCase):
         self.assertEqual(tools.ci_heads, [BASE])
         self.assertEqual(tools.handoffs, [])
 
-    def test_review_fixes_pass_local_gates_then_lead_to_publication(self):
+    def test_review_commits_pass_local_gates_then_are_verified(self):
         tools = FakeTools({"implementation": [no_changes()], "review": [committed()]})
 
         result, _ = cycle(tools, review=True)
