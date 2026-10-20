@@ -1602,11 +1602,13 @@ class SleepLockTests(StartupRejectionTestCase):
             with self.subTest(arguments=arguments):
                 self.setUp()
 
-                result = self.start_with(*arguments, results=passing_child_results(mode))
+                results = passing_child_results(mode)
 
-                self.assert_completed(result, sessions=2 if mode.review else 1)
+                result = self.start_with(*arguments, results=results)
+
+                self.assert_completed(result, sessions=len(results))
                 self.assertEqual(result.sleep_lock.taken, 1)
-                self.assertEqual(result.sleep_lock.held_during_sessions, [True] * (2 if mode.review else 1))
+                self.assertEqual(result.sleep_lock.held_during_sessions, [True] * len(results))
                 self.assertFalse(result.sleep_lock.held)
 
     def test_without_the_flag_no_sleep_lock_is_taken(self):
@@ -1614,12 +1616,13 @@ class SleepLockTests(StartupRejectionTestCase):
             with self.subTest(arguments=arguments):
                 self.setUp()
                 mode = loop_core.REVIEWED_RUN if "--review" in arguments else loop_core.STANDARD_RUN
+                results = passing_child_results(mode)
 
-                result = self.start_with(*arguments, results=passing_child_results(mode))
+                result = self.start_with(*arguments, results=results)
 
-                self.assert_completed(result, sessions=2 if mode.review else 1)
+                self.assert_completed(result, sessions=len(results))
                 self.assertEqual(result.sleep_lock.taken, 0)
-                self.assertEqual(result.sleep_lock.held_during_sessions, [False] * (2 if mode.review else 1))
+                self.assertEqual(result.sleep_lock.held_during_sessions, [False] * len(results))
 
     def test_missing_or_invalid_configuration_stops_without_taking_the_sleep_lock(self):
         for name, break_configuration, reason in (
@@ -1643,6 +1646,14 @@ class SleepLockTests(StartupRejectionTestCase):
 
         self.assert_rejected_at_startup(result, "worktree is dirty at startup")
         self.assertEqual(result.sleep_lock.taken, 1)
+        self.assertFalse(result.sleep_lock.held)
+
+    def test_interrupted_run_releases_the_sleep_lock(self):
+        result = self.start_with("--caffeinate", PARENT, results=(KeyboardInterrupt(),))
+
+        self.assertEqual(result.exit_code, 130, result.stderr)
+        self.assertIn("- final outcome: interrupted", self.github.comments(PARENT)[-1])
+        self.assertEqual(result.sleep_lock.held_during_sessions, [True])
         self.assertFalse(result.sleep_lock.held)
 
 
@@ -2676,7 +2687,9 @@ class StopSummaryTests(VerificationTestCase):
     def test_rerun_command_keeps_the_caffeinate_flag(self):
         self.sessions = ScriptedSessions(self.repository, ScriptedResult("blocked", "Stuck."))
 
-        result = start_run(self.repository, self.github, self.sessions, PARENT, "--caffeinate", "--no-review")
+        result = start_run(
+            self.repository, self.github, self.sessions, PARENT, "--caffeinate", "--no-review"
+        )
 
         self.assert_stop_summary(
             result, f"run `ralph-kit run --no-review --caffeinate {PARENT}` again."

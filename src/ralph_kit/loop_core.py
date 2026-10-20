@@ -1075,7 +1075,8 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
     position, is `caffeinate`."""
     caffeinate = "--caffeinate" in argv
     flags = [flag for flag in ("--review", "--no-review") if flag in argv]
-    argv = [argument for argument in argv if argument not in [*flags, "--caffeinate"]]
+    read = {*flags, "--caffeinate"}
+    argv = [argument for argument in argv if argument not in read]
     parser = argparse.ArgumentParser(
         prog=None if prog is None else " ".join([prog, *flags]),
         description=(REVIEWED_RUN if "--review" in flags else STANDARD_RUN).description,
