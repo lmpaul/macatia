@@ -358,7 +358,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(default, "high")
         self.assertEqual(load_config(path, self.root).backup.reasoning_effort, "high")
 
-    def test_default_answers_write_the_same_file_as_before(self):
+    def test_default_answers_write_the_default_configuration(self):
         self.run_init(answers=[""] * 8)
         self.assertEqual((self.root / "ralph.toml").read_text(), DEFAULT_CONFIGURATION)
 
@@ -588,6 +588,8 @@ class RenderTests(unittest.TestCase):
         hand_written = (KIT_ROOT / "tests/fixtures/ralph.toml").read_text().replace(
             'trusted_authors = ["lmpaul"]', 'trusted_authors = ["zoe", "lmpaul"]'
         ).replace('[models.review]\nengine = "codex"\n', "[models.review]\n")
+        self.assertIn('["zoe", "lmpaul"]', hand_written)
+        self.assertIn("[models.review]\nname", hand_written)
         rendered = init.render(self.load(hand_written), self.root)
         self.assertIn('trusted_authors = ["lmpaul", "zoe"]\n', rendered)
         self.assertIn('[models.review]\nengine = "codex"\nname = "gpt-5.6-sol"\n', rendered)
