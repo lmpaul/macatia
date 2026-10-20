@@ -59,6 +59,10 @@ _Avoid_: Implementation-only loop, experimental loop
 A run whose loop adds a review session for each child, once its work passes the local gates and again after every correction session that follows a review.
 _Avoid_: Original loop, review loop (there is only one loop)
 
+**Sleep lock**:
+The hold a run keeps on the machine so it does not idle-sleep until the run ends; when the machine cannot provide one, the run continues without it.
+_Avoid_: Caffeinate, keep-awake, wake lock
+
 **Agent session**:
 One fresh, non-interactive invocation of a coding agent with a single role: an implementation session, a review session, or a correction session.
 _Avoid_: Iteration, agent run
