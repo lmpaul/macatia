@@ -57,8 +57,11 @@ def configure(argv: list[str]) -> int:
     prompter = setup.Prompter(interactive=interactive, select=arrow_select if interactive and sys.stdout.isatty() else None)
     try:
         editor.run(pathlib.Path.cwd().resolve(), prompter, config=args.config)
-    except (editor.ConfigureAborted, KeyboardInterrupt):
-        print("\nconfigure cancelled, nothing written", file=sys.stderr)
+    except editor.ConfigureAborted as error:
+        print(f"\n{error}", file=sys.stderr)
+        return 130
+    except KeyboardInterrupt:  # Outside a question, before anything is written.
+        print(f"\n{editor.CANCELLED}", file=sys.stderr)
         return 130
     except editor.ConfigureError as error:
         print(f"❌ {error}", file=sys.stderr)

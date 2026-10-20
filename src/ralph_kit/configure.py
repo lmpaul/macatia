@@ -24,6 +24,7 @@ SAVE = "Save"
 QUIT = "Quit without saving"
 BACK = "Back"
 NOT_YET = "not editable yet: edit the file directly"
+CANCELLED = "configure cancelled, nothing written"
 
 
 class ConfigureError(RuntimeError):
@@ -55,7 +56,7 @@ def _on(value: bool) -> str:
     return "on" if value else "off"
 
 
-# Each section: its one-line summary, the changed keys it owns, and its editor (None until it gets its own).
+# Each section: its one-line summary, and which changed keys mark it changed. EDITORS lists the editable ones.
 SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] = {
     "Model profiles": (_models_summary, lambda key: key.split(".")[:2] in [["models", role] for role in MODEL_ROLES]),
     "Backup": (
@@ -74,7 +75,7 @@ SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] 
 }
 
 
-def _keys(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
+def _toml_values(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
     """Every configured value by its TOML key, as the renderer writes it."""
     keys = {
         "repository": config.repository,
@@ -98,7 +99,7 @@ def _keys(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
 
 def changes(before: RalphConfig, after: RalphConfig, root: pathlib.Path) -> dict[str, tuple[str | None, str | None]]:
     """Each changed key with its old and new value; None when the key is absent."""
-    old, new = _keys(before, root), _keys(after, root)
+    old, new = _toml_values(before, root), _toml_values(after, root)
     return {key: (old.get(key), new.get(key)) for key in dict.fromkeys([*old, *new]) if old.get(key) != new.get(key)}
 
 
@@ -151,7 +152,7 @@ def _edit_verification(prompter: Prompter, config: RalphConfig) -> RalphConfig:
 EDITORS: dict[str, Callable[[Prompter, RalphConfig], RalphConfig]] = {"Verification": _edit_verification}
 
 
-def _menu(prompter: Prompter, title: str, config: RalphConfig, changed: dict) -> str:
+def _menu(prompter: Prompter, title: str, config: RalphConfig, changed: dict[str, tuple[str | None, str | None]]) -> str:
     choices = []
     for name, (summary, owns) in SECTIONS.items():
         marker = "* " if any(owns(key) for key in changed) else "  "
@@ -205,7 +206,7 @@ def run(
                 break
             edited = EDITORS[answer](prompter, edited)
     except InitAborted:
-        raise ConfigureAborted("configure cancelled, nothing written") from None
+        raise ConfigureAborted(CANCELLED) from None
 
     changed = changes(original, edited, root)
     if not changed:
@@ -214,11 +215,15 @@ def run(
     prompter.say("\nChanges:")
     for key, (old, new) in changed.items():
         prompter.say(f"  {key}: {_shown(old)} → {_shown(new)}")
-    target.write_text(render(edited, root), encoding="utf-8")
+    # Validated next to the target before replacing it, so a renderer bug never costs the configuration.
+    staged = target.with_name(f".{target.name}.configure")
+    staged.write_text(render(edited, root), encoding="utf-8")
     try:
-        load_config(target, root, require_review="review" in edited.models)
+        load_config(staged, root, require_review="review" in edited.models)
     except RalphConfigError as error:  # The renderer must always produce a loadable file.
+        staged.unlink()
         raise ConfigureError(f"saved configuration is invalid, please report this bug: {error}") from error
+    staged.replace(target)
     prompter.say(f"\n✅ Wrote {target}.")
     prompter.say(f"   Next step: commit {display_path}, then run `ralph-kit check{option_text}`.")
     return True

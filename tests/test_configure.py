@@ -128,6 +128,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("Changes:\n  verification.ci_checks: false → true\n", output)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION.replace("ci_checks = false", "ci_checks = true"))
         self.assertIn("Next step: commit ralph.toml, then run `ralph-kit check`.", output)
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), [".git", "ralph.toml"])
 
     def test_no_warning_when_the_quality_policy_exists(self):
         (self.root / ".github/scripts").mkdir(parents=True)
