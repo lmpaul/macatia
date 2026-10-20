@@ -50,6 +50,7 @@ from .config import (
     load_config,
 )
 from .github import GitHub
+from .keep_awake import keep_awake
 from .sanitize import (
     format_findings,
     sanitized_diagnostic,
@@ -402,6 +403,8 @@ class RunAdapters:
     # Asks the startup choice: question -> True to resume children left agent working.
     # None when Ralph is not in a terminal, which always stops.
     confirm: Callable[[str], bool] | None = None
+    # Holds the sleep lock for the duration of the block, for `--caffeinate`.
+    keep_awake: Callable[[], contextlib.AbstractContextManager[None]] = keep_awake
 
 
 @dataclass
@@ -424,6 +427,8 @@ class RunState:
     branch: str | None = None
     # How to start this run again, for the next action of a stopped run.
     rerun_command: str | None = None
+    # What startup holds until the run ends, however it ends: the sleep lock.
+    held_until_the_end: contextlib.ExitStack = field(default_factory=contextlib.ExitStack)
     initial_implemented_children: set[int] | None = None
     summary: RunSummary = field(default_factory=RunSummary)
     # The child the run holds agent working, with the branch head its child cycle
@@ -1066,9 +1071,11 @@ def positive_integer(value: str) -> int:
 
 def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namespace:
     """Read the run's arguments; `--review` and `--no-review`, accepted in any position, are
-    `review` and `no_review`, and together a usage error."""
+    `review` and `no_review`, and together a usage error. `--caffeinate`, accepted in any
+    position, is `caffeinate`."""
+    caffeinate = "--caffeinate" in argv
     flags = [flag for flag in ("--review", "--no-review") if flag in argv]
-    argv = [argument for argument in argv if argument not in flags]
+    argv = [argument for argument in argv if argument not in [*flags, "--caffeinate"]]
     parser = argparse.ArgumentParser(
         prog=None if prog is None else " ".join([prog, *flags]),
         description=(REVIEWED_RUN if "--review" in flags else STANDARD_RUN).description,
@@ -1084,7 +1091,10 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
     if len(flags) == 2:
         parser.error("argument --no-review: not allowed with argument --review")
     return parser.parse_args(
-        argv, argparse.Namespace(review="--review" in flags, no_review="--no-review" in flags)
+        argv,
+        argparse.Namespace(
+            review="--review" in flags, no_review="--no-review" in flags, caffeinate=caffeinate
+        ),
     )
 
 
@@ -2640,8 +2650,8 @@ def real_run_adapters(confirm: Callable[[str], bool] | None = None) -> RunAdapte
 def main(
     state: RunState, argv: list[str] | None = None, prog: str | None = None
 ) -> int:
-    """Start the run: read its arguments and configuration, select its mode, read its quality
-    policy, then run its children."""
+    """Start the run: read its arguments and configuration, take the sleep lock it asks for,
+    select its mode, read its quality policy, then run its children."""
     arguments = parse_arguments(sys.argv[1:] if argv is None else argv, prog)
     # The run budget is left out: each run starts with a fresh one.
     state.rerun_command = shlex.join([
@@ -2649,6 +2659,7 @@ def main(
         "run",
         *(["--review"] if arguments.review else []),
         *(["--no-review"] if arguments.no_review else []),
+        *(["--caffeinate"] if arguments.caffeinate else []),
         *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
         str(arguments.parent_issue),
     ])
@@ -2670,6 +2681,8 @@ def main(
             )
     except RalphConfigError as error:
         raise RalphError(str(error)) from error
+    if arguments.caffeinate:
+        state.held_until_the_end.enter_context(state.adapters.keep_awake())
     mode = state.loaded_mode = (
         REVIEWED_RUN if arguments.review or reviewed_by_setting else STANDARD_RUN
     )
@@ -2813,8 +2826,9 @@ def run(
     """Start a run from repository_root, by default the current directory.
 
     `--review` among argv makes it a reviewed run, `--no-review` a standard run;
-    without either, the configuration's `review_by_default` decides. Usage
-    errors name the program `prog`, followed by the review flags given.
+    without either, the configuration's `review_by_default` decides. `--caffeinate`
+    holds the sleep lock from once the configuration is loaded until the run
+    ends. Usage errors name the program `prog`, followed by the review flags given.
     The run reaches GitHub and agents through adapters. SIGINT, SIGTERM, and
     SIGHUP release the child it is working on, then end it with an interrupted
     terminal summary and the shell's exit code for the signal.
@@ -2824,7 +2838,7 @@ def run(
         repository_root=(repository_root or pathlib.Path.cwd()).resolve(),
         started_at=time.monotonic(),
     )
-    with interruptions_raised():
+    with interruptions_raised(), state.held_until_the_end:
         try:
             try:
                 return main(state, argv, prog)

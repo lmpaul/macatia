@@ -1,4 +1,4 @@
-"""`ralph-kit run --caffeinate`: the sleep lock helper and its CLI flag."""
+"""`ralph-kit run --caffeinate`: the sleep lock helper, and the CLI passing the flag to the run."""
 
 import contextlib
 import io
@@ -60,51 +60,18 @@ class KeepAwakeTests(unittest.TestCase):
 
 
 class CaffeinateFlagTests(unittest.TestCase):
-    """`ralph-kit run` hands its arguments, review flags included, to the run entry point,
-    kept awake with `--caffeinate`."""
+    """`ralph-kit run` leaves `--caffeinate` to the run, which takes the sleep lock at startup."""
 
-    def run_cli(self, *arguments):
-        """The arguments the run entry point received, and whether the machine was kept awake."""
-        awake = []
-        started = []
-
-        @contextlib.contextmanager
-        def fake_keep_awake():
-            awake.append(True)
-            yield
-            awake.clear()
-
-        def run(argv, prog, confirm):
-            started.append((argv, prog, bool(awake)))
-            return 0
-
+    def test_cli_passes_the_flag_through_to_the_run_unchanged(self):
+        arguments = ["--review", "5", "--caffeinate"]
         with (
-            mock.patch.object(keep_awake, "keep_awake", fake_keep_awake),
-            mock.patch.object(loop, "run", run),
+            mock.patch.object(loop, "run", return_value=0) as run,
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
         ):
             self.assertEqual(cli.main(["run", *arguments]), 0)
-        self.assertEqual(len(started), 1)
-        argv, prog, kept_awake = started[0]
-        self.assertEqual(prog, "ralph-kit run")
-        return argv, kept_awake
-
-    def test_flag_wraps_the_run_in_any_position(self):
-        for arguments, passed in (
-            (["--caffeinate", "5"], ["5"]),
-            (["5", "--caffeinate"], ["5"]),
-            (["--review", "--caffeinate", "5"], ["--review", "5"]),
-            (["5", "--caffeinate", "--review"], ["5", "--review"]),
-            (["--no-review", "5", "--caffeinate"], ["--no-review", "5"]),
-            (["--caffeinate", "5", "--no-review"], ["5", "--no-review"]),
-        ):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(self.run_cli(*arguments), (passed, True))
-
-    def test_without_flag_the_machine_may_sleep(self):
-        for arguments in (["5"], ["--review", "5"], ["5", "--no-review"]):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(self.run_cli(*arguments), (arguments, False))
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], arguments)
+        self.assertEqual(run.call_args.kwargs["prog"], "ralph-kit run")
 
 
 if __name__ == "__main__":

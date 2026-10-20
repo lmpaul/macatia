@@ -98,15 +98,8 @@ def main(argv: list[str] | None = None) -> int:
     if command == "run":
         from . import loop
 
-        caffeinate = "--caffeinate" in arguments
-        arguments = [argument for argument in arguments if argument != "--caffeinate"]
         confirm = resume_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
-        if not caffeinate:
-            return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
-        from .keep_awake import keep_awake
-
-        with keep_awake():
-            return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
+        return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
     if command == "check":
         from . import check
 

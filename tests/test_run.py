@@ -18,7 +18,7 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from ralph_kit import check, cli, keep_awake, loop, loop_core
+from ralph_kit import check, cli, loop, loop_core
 from ralph_kit.commands import RalphError
 from run_support import (
     BRANCH,
@@ -1047,8 +1047,6 @@ class RunUsageCommandLineTests(unittest.TestCase):
     def usage_error(self, *arguments):
         stderr = io.StringIO()
         with (
-            # The sleep lock may warn first where it cannot be taken, as on CI runners.
-            mock.patch.object(keep_awake, "keep_awake", contextlib.nullcontext),
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
             contextlib.redirect_stderr(stderr),
             self.assertRaises(SystemExit) as exit,
@@ -1584,6 +1582,68 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
                     self.assert_rejected_at_startup(
                         result, "configuration.review_by_default must be a boolean"
                     )
+
+
+class SleepLockTests(StartupRejectionTestCase):
+    """`--caffeinate` holds a sleep lock from run startup, once the configuration is loaded,
+    until the run ends."""
+
+    def start_with(self, *arguments, results):
+        self.sessions = ScriptedSessions(self.repository, *results)
+        return start_run(self.repository, self.github, self.sessions, *arguments)
+
+    def test_flag_holds_the_sleep_lock_while_sessions_run_in_any_position(self):
+        for arguments, mode in (
+            (("--caffeinate", PARENT), loop_core.STANDARD_RUN),
+            ((PARENT, "--caffeinate"), loop_core.STANDARD_RUN),
+            (("--review", "--caffeinate", PARENT), loop_core.REVIEWED_RUN),
+            ((PARENT, "--caffeinate", "--no-review"), loop_core.STANDARD_RUN),
+        ):
+            with self.subTest(arguments=arguments):
+                self.setUp()
+
+                result = self.start_with(*arguments, results=passing_child_results(mode))
+
+                self.assert_completed(result, sessions=2 if mode.review else 1)
+                self.assertEqual(result.sleep_lock.taken, 1)
+                self.assertEqual(result.sleep_lock.held_during_sessions, [True] * (2 if mode.review else 1))
+                self.assertFalse(result.sleep_lock.held)
+
+    def test_without_the_flag_no_sleep_lock_is_taken(self):
+        for arguments in ((PARENT,), ("--review", PARENT), (PARENT, "--no-review")):
+            with self.subTest(arguments=arguments):
+                self.setUp()
+                mode = loop_core.REVIEWED_RUN if "--review" in arguments else loop_core.STANDARD_RUN
+
+                result = self.start_with(*arguments, results=passing_child_results(mode))
+
+                self.assert_completed(result, sessions=2 if mode.review else 1)
+                self.assertEqual(result.sleep_lock.taken, 0)
+                self.assertEqual(result.sleep_lock.held_during_sessions, [False] * (2 if mode.review else 1))
+
+    def test_missing_or_invalid_configuration_stops_without_taking_the_sleep_lock(self):
+        for name, break_configuration, reason in (
+            ("missing", lambda: (self.repository.path / "ralph.toml").unlink(), "ralph.toml"),
+            ("invalid", lambda: set_review_by_default(self.repository, '"yes"'),
+             "configuration.review_by_default must be a boolean"),
+        ):
+            with self.subTest(name):
+                self.setUp()
+                break_configuration()
+
+                result = self.start_with("--caffeinate", PARENT, results=())
+
+                self.assert_rejected_at_startup(result, reason)
+                self.assertEqual(result.sleep_lock.taken, 0)
+
+    def test_sleep_lock_is_held_through_the_startup_checks(self):
+        (self.repository.path / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+
+        result = self.start_with("--caffeinate", PARENT, results=())
+
+        self.assert_rejected_at_startup(result, "worktree is dirty at startup")
+        self.assertEqual(result.sleep_lock.taken, 1)
+        self.assertFalse(result.sleep_lock.held)
 
 
 class ConfiguredTrustTests(RunLevelTestCase):
@@ -2611,6 +2671,15 @@ class StopSummaryTests(VerificationTestCase):
 
         self.assert_stop_summary(
             result, f"run `ralph-kit run --review --config config/ralph.toml {PARENT}` again."
+        )
+
+    def test_rerun_command_keeps_the_caffeinate_flag(self):
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("blocked", "Stuck."))
+
+        result = start_run(self.repository, self.github, self.sessions, PARENT, "--caffeinate", "--no-review")
+
+        self.assert_stop_summary(
+            result, f"run `ralph-kit run --no-review --caffeinate {PARENT}` again."
         )
 
     def test_completed_run_summary_has_no_stop_details(self):
