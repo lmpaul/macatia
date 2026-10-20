@@ -17,7 +17,7 @@ newer, and the CLI of each configured agent engine.
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh        # once per machine
 uv tool install git+https://github.com/lmpaul/ralph-kit # installs `ralph-kit` on PATH
-uv tool upgrade ralph-kit                               # pick up new versions
+uv tool upgrade ralph-kit --reinstall                   # pick up the latest commit
 ```
 
 Pin a release with `git+https://github.com/lmpaul/ralph-kit@v0.2.0`.
@@ -117,6 +117,8 @@ saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses
 comments added by hand are dropped (`configure` says so when it opens the file). It
 needs a terminal; without one, edit the TOML directly. An invalid configuration is
 refused with the error: fix the file, or start over with `ralph-kit init --force`.
+Unknown keys usually mean the file was written by a newer ralph-kit (for example
+committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
 
 For a variant of an existing configuration, copy the file, then change the copy:
 

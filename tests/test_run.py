@@ -1321,6 +1321,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
         result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(result, "unknown keys: local_gates, mode")
+        self.assertIn("upgrade with `uv tool upgrade ralph-kit --reinstall`", result.stderr)
 
     def test_duplicate_toml_key_is_rejected_before_any_session(self):
         self.repository.edit_configuration("ci_checks = true\n", "ci_checks = true\nci_checks = true\n")

@@ -19,6 +19,9 @@ LABEL_KEYS = {
     "human_review",
     "implemented",
 }
+# Suggested for unknown keys, which usually come from a newer ralph-kit: the version only
+# changes on release, so a plain upgrade can keep an older build installed from Git.
+UPGRADE_COMMAND = "uv tool upgrade ralph-kit --reinstall"
 MODEL_ROLES = ("implementation", "review", "correction")
 MODEL_KEYS = set(MODEL_ROLES)
 # The optional profile that takes over every session role after an engine failure.
@@ -128,7 +131,10 @@ def _mapping(
         raise RalphConfigError(f"{path} must be a mapping")
     actual_keys = set(value)
     if unknown := actual_keys - expected_keys - (optional_keys or set()):
-        raise RalphConfigError(f"{path} has unknown keys: {', '.join(sorted(unknown))}")
+        raise RalphConfigError(
+            f"{path} has unknown keys: {', '.join(sorted(unknown))}"
+            f" (if a newer ralph-kit wrote them, upgrade with `{UPGRADE_COMMAND}`)"
+        )
     if missing := expected_keys - actual_keys:
         raise RalphConfigError(f"{path} is missing keys: {', '.join(sorted(missing))}")
     return value
