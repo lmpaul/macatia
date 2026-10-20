@@ -188,26 +188,69 @@ class InitTests(unittest.TestCase):
         self.assertNotIn("codex", backup_options)
         self.assertEqual(self.prompts[-1], "Choice [2]: ")
 
-    def test_backup_on_the_same_engine_must_differ_from_the_regular_profiles(self):
+    def test_clashing_backup_efforts_are_unavailable(self):
         self.installed = {"claude"}
         config = self.run_init(answers=[
             "", "", "", "",  # implementation sonnet/medium, review opus/high
             "1",             # backup: claude
-            "3", "2",        # sonnet/medium, identical to implementation: asked again
-            "1", "2", "",    # claude, opus/medium
+            "3",             # sonnet stays available: only medium clashes
+            "2",             # medium: refused
+            "",              # default effort, the middle one now that medium is taken
         ])
-        self.assertIn("must differ from the implementation model profile", self.output.getvalue())
+        output = self.output.getvalue()
+        efforts = output.split("? Reasoning effort for sonnet")[-1]
+        self.assertIn("2) medium  (unavailable: same as implementation)", efforts)
+        self.assertIn("3) high\n", efforts)
+        self.assertIn("medium is unavailable: same as implementation.", efforts)
+        self.assertNotIn("must differ", output)
+        self.assertEqual(self.prompts[-2:], ["Choice [3]: "] * 2)  # Default moved off medium, asked again after refusal.
         self.assertEqual(
             (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
-            ("claude", "opus", "medium"),
+            ("claude", "sonnet", "high"),
+        )
+        # The backup engine is asked once.
+        self.assertEqual(output.count("? Backup"), 1)
+
+    def test_a_model_is_unavailable_when_every_effort_clashes(self):
+        self.installed = {"codex"}
+        config = self.run_init(answers=[
+            "2", "1",           # implementation codex-small/low
+            "2", "2",           # review codex-small/medium
+            "1",                # backup: codex
+            "2",                # codex-small: refused
+            "3", "codex-small", # free name: clash explained, asked again
+            "", "",             # codex-large, default effort
+        ])
+        output = self.output.getvalue()
+        models = output.split("? Model for the backup")[1]
+        self.assertIn("1) codex-large  (Smart)\n", models)
+        self.assertIn(
+            "2) codex-small  (Fast)  (unavailable: every reasoning effort same as implementation or review)", models
+        )
+        self.assertIn("codex-small is unavailable: every reasoning effort same as implementation or review.", models)
+        self.assertEqual(output.count("? Model for the backup"), 2)
+        self.assertEqual(output.count("? Backup"), 1)
+        self.assertEqual(
+            (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
+            ("codex", "codex-large", "medium"),
         )
 
-    def test_a_clashing_backup_can_still_be_dropped(self):
-        # Codex defaults to the same first model and effort for the backup as for implementation.
-        self.installed = {"codex"}
-        config = self.run_init(answers=["", "", "", "", "1", "", "", ""])
-        self.assertIn("must differ from the implementation model profile", self.output.getvalue())
-        self.assertIsNone(config.backup)
+    def test_the_arrow_selector_receives_unavailable_choices_with_their_reason(self):
+        self.installed = {"claude"}
+        asked = {}
+
+        def select(question, options, default):
+            asked[question] = (options, default)
+            if question.startswith("Backup"):
+                return "claude"
+            return "sonnet" if question == "Model for the backup" else default
+
+        prompter = init.Prompter(interactive=True, read=lambda prompt: "", output=self.output, select=select)
+        path = init.run(self.root, prompter, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
+        options, default = asked["Reasoning effort for sonnet"]
+        self.assertIn(("medium", "", "same as implementation"), options)
+        self.assertEqual(default, "high")
+        self.assertEqual(load_config(path, self.root).backup.reasoning_effort, "high")
 
     def test_no_backup_with_both_engines_writes_no_section(self):
         config = self.run_init(answers=[""] * 5 + ["3"])

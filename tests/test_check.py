@@ -438,5 +438,27 @@ class ReadinessTests(unittest.TestCase):
         self.assertNotIn("sensitive", str(error.exception))
 
 
+class ArrowSelectTests(unittest.TestCase):
+    def select(self, keys, options, default):
+        """The arrow selector on a scripted keyboard; returns the answer and what the screen showed."""
+        from prompt_toolkit.application import create_app_session
+        from prompt_toolkit.input import create_pipe_input
+        from prompt_toolkit.output.plain_text import PlainTextOutput
+
+        screen = io.StringIO()
+        with create_pipe_input() as keyboard, create_app_session(input=keyboard, output=PlainTextOutput(screen)):
+            keyboard.send_text(keys)
+            return check.arrow_select("Pick", options, default), screen.getvalue()
+
+    def test_unavailable_options_are_shown_with_their_reason_and_skipped(self):
+        down, enter = "\x1b[B", "\r"
+        options = [("low", ""), ("medium", "", "same as implementation"), ("high", "")]
+        answer, screen = self.select(down + enter, options, "low")
+        # Moving down from low skips medium.
+        self.assertEqual(answer, "high")
+        self.assertIn("medium", screen)
+        self.assertIn("same as implementation", screen)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -57,7 +57,19 @@ PLACEHOLDERS = {
 }
 
 CommandRunner = Callable[..., "str | None"]
-Selector = Callable[[str, "list[tuple[str, str]]", str], str]
+# (value, label) or (value, label, reason): a reason marks the option shown but unavailable.
+Option = tuple[str, str] | tuple[str, str, str | None]
+Selector = Callable[[str, list[Option], str], str]
+
+
+def option(value: str, label: str, reason: str | None = None) -> Option:
+    """An option, shown but unavailable when there is a reason."""
+    return (value, label, reason) if reason else (value, label)
+
+
+def unavailable(choice: Option) -> str | None:
+    """Why the option cannot be selected, or None when it can."""
+    return choice[2] if len(choice) > 2 else None
 
 
 class InitError(RuntimeError):
@@ -101,7 +113,10 @@ class Prompter:
         except (EOFError, KeyboardInterrupt):
             raise InitAborted("init cancelled, nothing written") from None
 
-    def choice(self, question: str, options: list[tuple[str, str]], default: str) -> str:
+    def choice(self, question: str, options: list[Option], default: str) -> str:
+        reasons = {choice[0]: reason for choice in options if (reason := unavailable(choice))}
+        if default in reasons:
+            default = next(choice[0] for choice in options if choice[0] not in reasons)
         if not self.interactive:
             return default
         if self.select:
@@ -110,20 +125,25 @@ class Prompter:
             except KeyboardInterrupt:
                 raise InitAborted("init cancelled, nothing written") from None
         # Numbered fallback when no arrow-key selector is available.
-        values = [value for value, _ in options]
+        values = [choice[0] for choice in options]
         self.say(f"\n? {question}")
-        for index, (value, label) in enumerate(options, start=1):
-            self.say(f"  {index}) {value}{f'  ({label})' if label else ''}")
+        for index, choice in enumerate(options, start=1):
+            value, label = choice[:2]
+            reason = f"  (unavailable: {reasons[value]})" if value in reasons else ""
+            self.say(f"  {index}) {value}{f'  ({label})' if label else ''}{reason}")
         default_index = values.index(default) + 1
         while True:
             answer = self._read(f"Choice [{default_index}]: ")
             if not answer:
                 return default
             if answer.isdigit() and 1 <= int(answer) <= len(values):
-                return values[int(answer) - 1]
-            if answer in values:
+                answer = values[int(answer) - 1]
+            if answer in reasons:
+                self.say(f"  {answer} is unavailable: {reasons[answer]}.")
+            elif answer in values:
                 return answer
-            self.say(f"  Expected a number between 1 and {len(values)}.")
+            else:
+                self.say(f"  Expected a number between 1 and {len(values)}.")
 
     def text(
         self,
@@ -190,7 +210,35 @@ def codex_catalog(command: CommandRunner) -> list[dict]:
     return sorted(listed, key=lambda model: model["priority"])
 
 
-def _choose_model(prompter: Prompter, engine: str, catalog: list[dict], role: str, question: str) -> str:
+def _model_efforts(engine: str, catalog: list[dict], name: str) -> list[str]:
+    model = next((model for model in catalog if model["name"] == name), None)
+    supported = [effort for effort in model["efforts"] if effort in EFFORTS[engine]] if model else []
+    return supported or EFFORTS[engine]
+
+
+def _effort_clashes(engine: str, catalog: list[dict], name: str, avoid: dict[str, dict]) -> dict[str, list[str]]:
+    """Each reasoning effort of the model, with the avoided session roles whose model profile it would duplicate."""
+    return {
+        effort: [
+            role for role, profile in avoid.items()
+            if (profile["engine"], profile["name"], profile["reasoning_effort"]) == (engine, name, effort)
+        ]
+        for effort in _model_efforts(engine, catalog, name)
+    }
+
+
+def _model_unavailable(engine: str, catalog: list[dict], name: str, avoid: dict[str, dict]) -> str | None:
+    """Why no reasoning effort of the model is left, or None while one is."""
+    clashes = _effort_clashes(engine, catalog, name, avoid)
+    if not all(clashes.values()):
+        return None
+    roles = dict.fromkeys(role for roles in clashes.values() for role in roles)
+    return f"every reasoning effort same as {' or '.join(roles)}"
+
+
+def _choose_model(
+    prompter: Prompter, engine: str, catalog: list[dict], role: str, question: str, avoid: dict[str, dict]
+) -> str:
     if engine == "claude":
         options = CLAUDE_MODELS
         default = DEFAULT_MODELS["claude"][role]
@@ -198,38 +246,48 @@ def _choose_model(prompter: Prompter, engine: str, catalog: list[dict], role: st
         options = [(model["name"], model["description"]) for model in catalog]
         default = options[0][0] if options else None
     if not options:
-        return prompter.text(f"{question} (Codex model list unavailable)", placeholder=PLACEHOLDERS[role])
-    if not prompter.interactive:
+        def ask() -> str:
+            return prompter.text(f"{question} (Codex model list unavailable)", placeholder=PLACEHOLDERS[role])
+    elif not prompter.interactive:
         return PLACEHOLDERS[role]
-    name = prompter.choice(question, [*options, (OTHER, "enter a full model name")], default)
-    if name == OTHER:
-        name = prompter.text("Model name", placeholder=PLACEHOLDERS[role])
+    else:
+        choices = [option(name, label, _model_unavailable(engine, catalog, name, avoid)) for name, label in options]
+        choices.append((OTHER, "enter a full model name"))
+
+        def ask() -> str:
+            name = prompter.choice(question, choices, default)
+            return prompter.text("Model name", placeholder=PLACEHOLDERS[role]) if name == OTHER else name
+    # A free model name cannot be marked unavailable in advance.
+    while reason := _model_unavailable(engine, catalog, name := ask(), avoid):
+        prompter.say(f"  {name} is unavailable: {reason}.")
     return name
 
 
-def _model_efforts(engine: str, catalog: list[dict], name: str) -> list[str]:
-    model = next((model for model in catalog if model["name"] == name), None)
-    supported = [effort for effort in model["efforts"] if effort in EFFORTS[engine]] if model else []
-    return supported or EFFORTS[engine]
-
-
-def _ask_profile(prompter: Prompter, engine: str, catalog: list[dict], role: str, question: str, effort: str) -> dict:
-    name = _choose_model(prompter, engine, catalog, role, question)
-    efforts = _model_efforts(engine, catalog, name)
+def _ask_profile(
+    prompter: Prompter,
+    engine: str,
+    catalog: list[dict],
+    role: str,
+    question: str,
+    effort: str,
+    avoid: dict[str, dict] | None = None,
+) -> dict:
+    """A model profile; choices that would duplicate a model profile in avoid are shown unavailable."""
+    avoid = avoid or {}
+    name = _choose_model(prompter, engine, catalog, role, question, avoid)
+    clashes = _effort_clashes(engine, catalog, name, avoid)
+    efforts = list(clashes)
+    preferred = [effort, efforts[len(efforts) // 2], *efforts]
     return {
         "engine": engine,
         "name": name,
         "display_name": name,
         "reasoning_effort": prompter.choice(
             f"Reasoning effort for {name}",
-            [(level, "") for level in efforts],
-            effort if effort in efforts else efforts[len(efforts) // 2],
+            [option(level, "", f"same as {' and '.join(roles)}" if roles else None) for level, roles in clashes.items()],
+            next(level for level in preferred if level in clashes and not clashes[level]),
         ),
     }
-
-
-def _same_profile(first: dict, second: dict) -> bool:
-    return all(first[key] == second[key] for key in ("engine", "name", "reasoning_effort"))
 
 
 def _engine_for_backup(prompter: Prompter, engine: str, installed: list[str]) -> str:
@@ -317,14 +375,10 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         models[role] = _ask_profile(prompter, engine, catalog(engine), role, question, effort)
     models["correction"] = dict(models["implementation"])
 
-    # The engine is asked again after a clash, so "No backup" stays reachable.
-    while (chosen := _engine_for_backup(prompter, engine, installed)) != NO_BACKUP:
-        backup = _ask_profile(prompter, chosen, catalog(chosen), "backup", "Model for the backup", "medium")
-        identical = next((role for role, profile in models.items() if _same_profile(profile, backup)), None)
-        if identical is None:
-            models["backup"] = backup
-            break
-        say(f"  The backup must differ from the {identical} model profile in engine, model, or reasoning effort.")
+    if (chosen := _engine_for_backup(prompter, engine, installed)) != NO_BACKUP:
+        # Correction copies implementation, so avoiding implementation avoids both.
+        avoid = {role: models[role] for role in ("implementation", "review")}
+        models["backup"] = _ask_profile(prompter, chosen, catalog(chosen), "backup", "Model for the backup", "medium", avoid)
 
     return {
         "create_labels": _offer_labels(prompter, command, repository),

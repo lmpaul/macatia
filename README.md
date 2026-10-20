@@ -59,7 +59,10 @@ After the model profiles, `init` asks for a backup (see
 agent CLIs, plus "No backup". It recommends and preselects the other installed CLI,
 since an engine failure is rarely limited to one model, and preselects "No backup"
 when only one CLI is installed. A chosen backup gets the same model and reasoning
-effort questions, and must differ from the other profiles.
+effort questions, and must differ from the other profiles: a reasoning effort that
+would make it identical to a session role's model profile is shown greyed out with
+the reason, a model only when all its efforts would, and a model name typed by hand
+is checked right after you enter it.
 `--config path/to/other.toml` selects another configuration. Ralph writes run
 diagnostics to `.ralph/`. Unless Git already ignores it, `init` appends `.ralph/` to the
 repository's `.gitignore` (creating the file if needed) and says so. Commit it with `ralph.toml`;
