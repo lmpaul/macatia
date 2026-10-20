@@ -136,6 +136,9 @@ uv tool install -e .                          # `ralph-kit` now runs this checko
 uv run python -m unittest discover -s tests   # offline tests (~35 s), with dependencies
 ```
 
+Bump `__version__` in `src/ralph_kit/__init__.py` with every change to `ralph.toml`'s
+keys, so `ralph-kit --version` tells whether a machine can read a newer file.
+
 The default suite is offline: it never starts `ralph-kit run` as a subprocess,
 launches a real agent, or calls GitHub. Each rule is tested at one level:
 
