@@ -342,7 +342,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
     report.section("Configuration")
     try:
         config = load_config(config_path, root, require_review=with_review)
-        # The setting lives in the configuration it adds the review profile requirement to.
+        # The setting lives in the configuration whose models.review it makes required.
         if config.review_by_default and not with_review:
             with_review = True
             config = load_config(config_path, root, require_review=True)

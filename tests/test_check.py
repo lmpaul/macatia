@@ -281,7 +281,8 @@ class ReadinessTests(unittest.TestCase):
                 self.assertEqual(code, 0, output)
                 self.assertEqual(self.help_requests(), expected)
 
-    def review_on(self, engine, name="opus"):
+    def use_review_profile(self, engine, name="opus"):
+        # Claude engines also need the implement skill linked under .claude/skills.
         text = self.config.read_text().replace(
             '[models.review]\nengine = "codex"\nname = "gpt-5.6-sol"',
             f'[models.review]\nengine = "{engine}"\nname = "{name}"',
@@ -304,7 +305,7 @@ class ReadinessTests(unittest.TestCase):
         ):
             with self.subTest(setting=setting, with_review=with_review):
                 self.setUp()
-                self.review_on("claude")
+                self.use_review_profile("claude")
                 if setting is not None:
                     self.set_review_by_default(setting)
                 code, output = self.run_check(with_review=with_review)
@@ -313,7 +314,7 @@ class ReadinessTests(unittest.TestCase):
                 self.assertEqual(self.help_requests(), expected)
 
     def test_review_by_default_checks_the_review_model_profile(self):
-        self.review_on("codex", "CHOOSE_MODEL")
+        self.use_review_profile("codex", "CHOOSE_MODEL")
         code, output = self.run_check()
         self.assertEqual(code, 0, output)
         self.commands = []

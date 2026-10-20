@@ -265,8 +265,8 @@ reviewed run without `--review`, and says so once at startup;
 `ralph-kit run --no-review` starts a standard run instead. `--no-review` is
 also accepted when the setting is off. `--review` together with `--no-review`
 is a usage error. A run made reviewed by the setting requires `models.review`
-and gets a reviewed run's default run budget. `ralph-kit check` then checks the review
-role too, as `check --review` does.
+and gets a reviewed run's default run budget. With the setting on,
+`ralph-kit check` also checks the review role, as `check --review` does.
 
 An implementation or correction that returns `needs_correction` must still pass
 its outstanding findings to an issue correction before publication. The
