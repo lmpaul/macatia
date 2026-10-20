@@ -187,6 +187,75 @@ class VerifiedCycleTests(unittest.TestCase):
         self.assertEqual(tools.ci_heads, ["local gate correction-3-0"])
 
 
+class UnchangedImplementationTests(unittest.TestCase):
+    """An implementation session that returned no_changes is reviewed like any other."""
+
+    def test_standard_run_verifies_the_unchanged_head(self):
+        tools = FakeTools({"implementation": [no_changes()]})
+
+        result, budget = cycle(tools)
+
+        self.assertEqual(result, Verified(BASE, BASE))
+        self.assertEqual(tools.gate_heads, [BASE])
+        self.assertEqual(tools.ci_heads, [BASE])
+        self.assertEqual(budget.sessions, 1)
+        self.assertEqual(tools.handoffs, [])
+
+    def test_unchanged_review_verifies_the_unchanged_head(self):
+        tools = FakeTools({"implementation": [no_changes()], "review": [no_changes()]})
+
+        result, _ = cycle(tools, review=True)
+
+        self.assertEqual(result, Verified(BASE, BASE))
+        self.assertEqual(tools.roles(), ["implementation", "review"])
+        self.assertEqual(tools.ci_heads, [BASE])
+        self.assertEqual(tools.handoffs, [])
+
+    def test_review_commits_pass_local_gates_then_are_verified(self):
+        tools = FakeTools({"implementation": [no_changes()], "review": [committed()]})
+
+        result, _ = cycle(tools, review=True)
+
+        self.assertEqual(result, Verified(BASE, "review-2-0"))
+        self.assertEqual(tools.roles(), ["implementation", "review"])
+        self.assertEqual(tools.gate_heads, [BASE, "review-2-0"])
+        self.assertEqual(tools.ci_heads, ["review-2-0"])
+        self.assertEqual(tools.handoffs, [])
+
+    def test_review_findings_lead_to_an_issue_correction_then_another_review(self):
+        tools = FakeTools({
+            "implementation": [no_changes()],
+            "review": [needs_correction("criterion 3 missing"), no_changes()],
+            "issue correction": [committed()],
+        })
+
+        result, _ = cycle(tools, review=True)
+
+        self.assertEqual(result, Verified(BASE, "issue correction-3-0"))
+        self.assertEqual(
+            tools.roles(), ["implementation", "review", "issue correction", "review"]
+        )
+        self.assertEqual(tools.requests[2].findings, ("criterion 3 missing",))
+        self.assertEqual(tools.requests[3].head_sha, "issue correction-3-0")
+        self.assertEqual(tools.ci_heads, ["issue correction-3-0"])
+        self.assertEqual(tools.handoffs, [])
+
+    def test_correction_without_a_commit_is_still_handed_off(self):
+        tools = FakeTools({
+            "implementation": [no_changes()],
+            "review": [needs_correction("criterion 3 missing")],
+            "issue correction": [no_changes()],
+        })
+
+        result, _ = cycle(tools, review=True)
+
+        self.assertEqual(
+            result, HandedToHumanReview("Issue correction did not create a new commit")
+        )
+        self.assertIn("- criterion 3 missing", tools.handoffs[0][1])
+        self.assertEqual(tools.ci_heads, [])
+
+
 class HumanReviewTests(unittest.TestCase):
     def assert_handed_off(self, tools, result, reason, *body_parts, cause=None):
         self.assertEqual(result, HandedToHumanReview(reason, cause))
@@ -449,15 +518,6 @@ class ChildWorkStopTests(unittest.TestCase):
             "Ralph stopped because implementation rewrote the verified commit base",
             tools.handoffs[0][1],
         )
-
-    def test_review_must_not_change_an_unchanged_implementation(self):
-        tools = FakeTools({"implementation": [no_changes()], "review": [committed()]})
-
-        result, _ = cycle(tools, review=True)
-
-        self.assertIsInstance(result, HandedToHumanReview)
-        self.assertIn("independent review with no corrections", result.reason)
-        self.assertEqual(len(tools.handoffs), 1)
 
 
 if __name__ == "__main__":

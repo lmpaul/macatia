@@ -25,6 +25,9 @@ MODE = loop_core.RunMode(
         "⚠️ Ralph is running without automated verification: independent "
         "agent review is the only configured check."
     ),
+    # One implementation session, three correction sessions, and a review session
+    # after each of them, plus one.
+    sessions_per_ready_child=9,
 )
 
 

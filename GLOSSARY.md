@@ -86,7 +86,7 @@ A correction session that repairs a failed CI check.
 ## Limits
 
 **Run budget**:
-The maximum number of agent sessions a run may start, shared by all its children; counted in sessions, never tokens or time. Without an explicit value it is five sessions for each ready child when the run starts, counting children it resumed from agent working, and never fewer than four.
+The maximum number of agent sessions a run may start, shared by all its children; counted in sessions, never tokens or time. Without an explicit value it is five sessions for each ready child in a standard run and nine in a reviewed run (a child's worst case under the correction limit, plus one), never fewer than four; the ready children are counted when the run starts, including children it resumed from agent working.
 _Avoid_: Session budget, agent budget, iteration limit, token budget
 
 **Correction limit**:
