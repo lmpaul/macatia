@@ -61,7 +61,7 @@ class KeepAwakeTests(unittest.TestCase):
 
 
 class CaffeinateFlagTests(unittest.TestCase):
-    """`ralph-kit run` hands its arguments to the run entry point, under the sleep lock with `--caffeinate`.
+    """`ralph-kit run` hands its arguments to the run entry point, kept awake with `--caffeinate`.
 
     The run stops once startup has selected its mode, recording that mode and
     whether the machine was kept awake.
@@ -105,6 +105,7 @@ class CaffeinateFlagTests(unittest.TestCase):
         for arguments, mode in ((["5"], loop_core.STANDARD_RUN), (["--review", "5"], loop_core.REVIEWED_RUN)):
             with self.subTest(arguments=arguments):
                 self.assertEqual(self.run_cli(*arguments), (mode, False))
+
 
 if __name__ == "__main__":
     unittest.main()

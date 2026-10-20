@@ -1,8 +1,9 @@
 """In-memory run support: a GitHub fake, scripted sessions, and a real Git repository.
 
 A run-level test builds a `RunRepository`, a `FakeGitHub`, and `ScriptedSessions`,
-then starts the run with `start_run` (or `start_mode_run`). Git stays real: the repository pushes to a
-local bare `origin`. Everything else a run reaches is configured per test.
+then starts the run with `start_run`, or `start_mode_run` for a given run mode.
+Git stays real: the repository pushes to a local bare `origin`. Everything else
+a run reaches is configured per test.
 """
 
 import contextlib

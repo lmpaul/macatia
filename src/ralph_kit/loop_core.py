@@ -1060,12 +1060,13 @@ def positive_integer(value: str) -> int:
 
 
 def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namespace:
-    """Read the run's arguments; `--review`, accepted in any position, is `review`."""
+    """Read the run's arguments; `--review`, accepted in any position, makes `mode` the reviewed run."""
     review = "--review" in argv
     argv = [argument for argument in argv if argument != "--review"]
+    mode = REVIEWED_RUN if review else STANDARD_RUN
     parser = argparse.ArgumentParser(
         prog=None if prog is None else prog + (" --review" if review else ""),
-        description=(REVIEWED_RUN if review else STANDARD_RUN).description,
+        description=mode.description,
     )
     parser.add_argument(
         "--config",
@@ -1075,7 +1076,7 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
     )
     parser.add_argument("parent_issue", type=positive_integer)
     parser.add_argument("run_budget", nargs="?", type=positive_integer)
-    return parser.parse_args(argv, argparse.Namespace(review=review))
+    return parser.parse_args(argv, argparse.Namespace(mode=mode))
 
 
 def load_quality_module(path: pathlib.Path):
@@ -2630,10 +2631,9 @@ def real_run_adapters(confirm: Callable[[str], bool] | None = None) -> RunAdapte
 def main(
     state: RunState, argv: list[str] | None = None, prog: str | None = None
 ) -> int:
-    """Start the run: read its arguments, select its mode, read its configuration and quality
-    policy, then run its children."""
+    """Start the run: read its arguments and mode, configuration, and quality policy, then run its children."""
     arguments = parse_arguments(sys.argv[1:] if argv is None else argv, prog)
-    mode = state.loaded_mode = REVIEWED_RUN if arguments.review else STANDARD_RUN
+    mode = state.loaded_mode = arguments.mode
     # The run budget is left out: each run starts with a fresh one.
     state.rerun_command = shlex.join([
         "ralph-kit",
