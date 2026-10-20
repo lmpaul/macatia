@@ -2847,7 +2847,7 @@ def run(
     holds the sleep lock from once the configuration is loaded until the run
     ends, `--no-caffeinate` does not; without either, the configuration's
     `caffeinate_by_default` decides. Usage errors name the program `prog`,
-    followed by the review flags given.
+    followed by the review flags given, not the sleep lock flags.
     The run reaches GitHub and agents through adapters. SIGINT, SIGTERM, and
     SIGHUP release the child it is working on, then end it with an interrupted
     terminal summary and the shell's exit code for the signal.

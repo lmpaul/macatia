@@ -97,10 +97,10 @@ class RunRepository:
 
     def edit_configuration(self, old, new, path="ralph.toml"):
         """Replace text in the configuration at `path` and commit it, keeping the worktree clean."""
-        path = self.path / path
-        configuration = path.read_text(encoding="utf-8")
+        configuration_path = self.path / path
+        configuration = configuration_path.read_text(encoding="utf-8")
         assert old in configuration, old
-        path.write_text(configuration.replace(old, new), encoding="utf-8")
+        configuration_path.write_text(configuration.replace(old, new), encoding="utf-8")
         git(self.path, "commit", "-am", "Edit the Ralph configuration")
 
     def head(self):
