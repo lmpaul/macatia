@@ -55,7 +55,7 @@ class InitTests(unittest.TestCase):
             return completed.stdout.strip() if completed.returncode == 0 else None
         return self.responses.get(args)
 
-    def run_init(self, answers=None, force=False):
+    def run_init(self, answers=None, force=False, config=None):
         """answers=None simulates a non-interactive stdin; otherwise one answer per prompt."""
         pending = list(answers or [])
         self.prompts = []
@@ -67,7 +67,8 @@ class InitTests(unittest.TestCase):
             return pending.pop(0)
 
         prompter = init.Prompter(interactive=answers is not None, read=read, output=self.output)
-        path = init.run(self.root, prompter, force=force, command=self.command, which=lambda name: name if name in self.installed | self.tools else None)
+        options = {} if config is None else {"config": config}
+        path = init.run(self.root, prompter, force=force, command=self.command, which=lambda name: name if name in self.installed | self.tools else None, **options)
         return load_config(path, self.root)
 
     def gitignore(self):
@@ -363,6 +364,34 @@ class InitTests(unittest.TestCase):
         self.assertEqual(self.prompts, [])
         self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
         self.run_init(answers=[""] * 8, force=True)
+
+    def test_config_option_writes_the_given_path_and_leaves_the_default_alone(self):
+        (self.root / "ralph.toml").write_text("keep")
+        (self.root / "variants").mkdir()
+        config = self.run_init(answers=[""] * 8, config=pathlib.Path("variants/review.toml"))
+        self.assertEqual(config.repository, "acme/widget")
+        self.assertTrue((self.root / "variants/review.toml").is_file())
+        self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
+        output = self.output.getvalue()
+        self.assertIn(f"Wrote {self.root / 'variants/review.toml'}.", output)
+        self.assertIn("Next step: commit variants/review.toml and .gitignore, then run `ralph-kit check --config variants/review.toml`.", output)
+
+    def test_force_overwrites_only_the_given_path(self):
+        (self.root / "ralph.toml").write_text("keep")
+        (self.root / "other.toml").write_text("old")
+        with self.assertRaisesRegex(init.InitError, "other.toml already exists"):
+            self.run_init(answers=[], config=pathlib.Path("other.toml"))
+        self.assertEqual(self.prompts, [])
+        self.assertEqual((self.root / "other.toml").read_text(), "old")
+        self.run_init(answers=[""] * 8, force=True, config=self.root / "other.toml")
+        self.assertIn("[models.implementation]", (self.root / "other.toml").read_text())
+        self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
+        self.assertIn("then run `ralph-kit check --config other.toml`.", self.output.getvalue())
+
+    def test_config_in_a_missing_directory_stops_before_any_question(self):
+        with self.assertRaisesRegex(init.InitError, "missing/ does not exist"):
+            self.run_init(answers=[], config=pathlib.Path("missing/ralph.toml"))
+        self.assertEqual(self.prompts, [])
 
     def test_must_run_from_repository_root(self):
         self.responses[("git", "rev-parse", "--show-toplevel")] = str(self.root.parent)

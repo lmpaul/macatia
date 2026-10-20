@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -486,6 +487,7 @@ def run(
     prompter: Prompter,
     *,
     force: bool = False,
+    config: pathlib.Path = pathlib.Path(CONFIG_NAME),
     command: CommandRunner | None = None,
     which: Callable[[str], str | None] = shutil.which,
 ) -> pathlib.Path:
@@ -494,9 +496,12 @@ def run(
     toplevel = command("git", "rev-parse", "--show-toplevel")
     if toplevel is None or pathlib.Path(toplevel).resolve() != root:
         raise InitError("run ralph-kit init from the root of a Git repository")
-    target = root / CONFIG_NAME
+    target = root / config  # An absolute config replaces root.
+    shown = target.relative_to(root) if target.is_relative_to(root) else target
     if target.exists() and not force:
         raise InitError(f"{target} already exists (use --force to overwrite it)")
+    if not target.parent.is_dir():
+        raise InitError(f"{target.parent}/ does not exist")
 
     values = collect(root, prompter, command, which)
     contents = render(values)
@@ -517,6 +522,7 @@ def run(
     remaining = [value for value in PLACEHOLDERS.values() if value in contents]
     if remaining:
         prompter.say("   Values to fill in: " + ", ".join(remaining))
-    committed = f"{CONFIG_NAME} and {GITIGNORE}" if ignored else CONFIG_NAME
-    prompter.say(f"   Next step: commit {committed}, then run `ralph-kit check`.")
+    committed = f"{shown} and {GITIGNORE}" if ignored else str(shown)
+    check_command = "ralph-kit check" if target == root / CONFIG_NAME else f"ralph-kit check --config {shlex.quote(str(shown))}"
+    prompter.say(f"   Next step: commit {committed}, then run `{check_command}`.")
     return target

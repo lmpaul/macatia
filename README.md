@@ -28,6 +28,7 @@ From the repository root:
 
 ```sh
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
+ralph-kit init --config other.toml # writes another configuration next to it
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
@@ -63,7 +64,11 @@ effort questions, and must differ from the other profiles: a reasoning effort th
 would make it identical to a session role's model profile is shown greyed out with
 the reason, a model only when all its efforts would, and a model name typed by hand
 is checked right after you enter it.
-`--config path/to/other.toml` selects another configuration. Ralph writes run
+`--config path/to/other.toml` selects another configuration, relative to the
+repository root: `init` writes it (its directory must exist, and `./ralph.toml` is left
+untouched), and `run` and `check` read it. `init` refuses an existing file unless
+`--force` is given, which overwrites only that file; its final message suggests
+`ralph-kit check --config path/to/other.toml`. Ralph writes run
 diagnostics to `.ralph/`. Unless Git already ignores it, `init` appends `.ralph/` to the
 repository's `.gitignore` (creating the file if needed) and says so. Commit it with `ralph.toml`;
 `check` reports `.ralph/` when Git does not ignore it.

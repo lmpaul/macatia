@@ -15,8 +15,9 @@ commands:
       --caffeinate keeps the machine from idle-sleeping until the run ends.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
-  init [--force]
-      Write ./ralph.toml: detect repo, branch, remote, account and checks; ask for the rest.
+  init [--force] [--config PATH]
+      Write a configuration (default ./ralph.toml): detect repo, branch, remote, account and checks; ask for the rest.
+      --force overwrites an existing configuration at PATH, and only that file.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """
@@ -25,14 +26,28 @@ def init(argv: list[str]) -> int:
     from . import init as setup
     from .check import arrow_select
 
-    force = "--force" in argv
-    if unknown := [argument for argument in argv if argument != "--force"]:
+    force = False
+    config = pathlib.Path(setup.CONFIG_NAME)
+    unknown = []
+    arguments = iter(argv)
+    for argument in arguments:
+        if argument == "--force":
+            force = True
+        elif argument == "--config" or argument.startswith("--config="):
+            value = argument.partition("=")[2] if "=" in argument else next(arguments, "")
+            if not value:
+                print("ralph-kit init: --config needs a PATH", file=sys.stderr)
+                return 2
+            config = pathlib.Path(value)
+        else:
+            unknown.append(argument)
+    if unknown:
         print(f"ralph-kit init: unknown arguments: {' '.join(unknown)}", file=sys.stderr)
         return 2
     interactive = sys.stdin.isatty()
     prompter = setup.Prompter(interactive=interactive, select=arrow_select if interactive and sys.stdout.isatty() else None)
     try:
-        setup.run(pathlib.Path.cwd().resolve(), prompter, force=force)
+        setup.run(pathlib.Path.cwd().resolve(), prompter, force=force, config=config)
     except setup.InitAborted as error:
         print(f"\n{error}", file=sys.stderr)
         return 130
