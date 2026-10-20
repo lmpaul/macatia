@@ -56,7 +56,7 @@ A run whose loop has no review session.
 _Avoid_: Implementation-only loop, experimental loop
 
 **Reviewed run**:
-A run whose loop adds a review session for each child, once its work passes the local gates and again after each issue correction the review causes.
+A run whose loop adds a review session for each child, once its work passes the local gates and again after every correction session that follows a review.
 _Avoid_: Original loop, review loop (there is only one loop)
 
 **Agent session**:
@@ -67,7 +67,7 @@ _Avoid_: Iteration, agent run
 The agent session that first implements a child.
 
 **Review session**:
-An agent session that independently checks a child's work against its whole issue, reports findings, and may commit fixes itself. Only reviewed runs start one.
+An agent session that independently checks a child's work against its whole issue, fixes what it can and commits, and reports as findings only the gaps that remain. Only reviewed runs start one.
 _Avoid_: Review (alone), code review
 
 **Correction session**:

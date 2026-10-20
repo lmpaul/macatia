@@ -130,11 +130,11 @@ RALPH_LIVE=1 RALPH_LIVE_REFRESH=1 uv run python -m unittest discover -s tests -p
 Each run executes the loop over the parent issue's runnable children.
 `ralph-kit run` starts a standard run, with no review session.
 `ralph-kit run --review` starts a reviewed run: the same loop, plus a review
-session for each child once its local gates pass, repeated after each issue
-correction that review causes. Once a child is selected and its issue trusted,
-Ralph replaces its `ready-for-agent` label with `agent-working` before the first
-agent session; if that label write fails, the run stops before any session. The
-child keeps `agent-working` throughout its child cycle.
+session for each child once its local gates pass, repeated after every
+correction session that follows a review (issue, local gate, or CI). Once a
+child is selected and its issue trusted, Ralph replaces its `ready-for-agent`
+label with `agent-working` before the first agent session; if that label write
+fails, the run stops before any session. The child keeps `agent-working` throughout its child cycle.
 
 Ralph then posts a trusted comment on the child naming its child base, the
 commit its implementation evidence, review session diff, and local gate
