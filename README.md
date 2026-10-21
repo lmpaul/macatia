@@ -63,21 +63,35 @@ Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean
 
 A run started on the base branch offers a run branch named
 `ralph-kit/issue-<parent>` once every other startup check has passed, the parent
-included. If that branch exists neither locally nor on the remote (checked with
-`git ls-remote`, which writes no local ref; an unreachable remote stops the run),
-Ralph warns that it is on the base branch and asks "Create ralph-kit/issue-N from
-an up-to-date <base>?":
+included. Ralph first looks for that branch locally and on the remote (with
+`git ls-remote`, which writes no local ref; an unreachable remote stops the run)
+and warns that it is on the base branch.
+
+If the branch exists neither locally nor on the remote, Ralph asks "Create
+ralph-kit/issue-N from an up-to-date <base>?":
 
 - **Create** (the default) pulls the base branch fast-forward only from the
-  remote, creates and switches to the run branch, and pushes it with its upstream
-  before any agent session. A base branch with commits that are not on the remote
-  stops the run with no branch created; a failed push stops it and keeps the
-  local branch. The draft PR is still opened at the first publication.
+  remote, then creates and switches to the run branch. A base branch with commits
+  that are not on the remote stops the run with no branch created.
 - **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
 
+If the branch exists locally, and the remote has either no such branch or one the
+local branch already contains, Ralph asks "Switch to the existing
+ralph-kit/issue-N?":
+
+- **Switch** (the default) moves to the branch. The base branch is not pulled, and
+  nothing is merged or rebased into the run branch.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
+Once on the run branch, Ralph pushes it with its upstream before any agent
+session unless it is already on the remote at the same commit with that upstream.
+A failed push stops the run and leaves you on the local branch. The draft PR is
+still opened at the first publication.
+
 Without a terminal the run stops with nothing changed and names the branch to
-create. A run branch that already exists, locally or on the remote, stops the run;
-switch to it and run again. A detached HEAD is refused.
+create or switch to. A run branch that exists only on the remote, or whose local
+copy is behind or has diverged from the remote, stops the run; switch to it and
+bring it up to date, then run again. A detached HEAD is refused.
 
 `init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats
@@ -404,7 +418,7 @@ infrastructure retries, then stops the run.
 
 - `repository` is the exact GitHub `owner/name` returned by `gh repo view`.
 - `base_branch` is the protected branch Ralph never commits to; it only fast-forwards it
-  from the remote before creating a run branch.
+  from the remote before creating a run branch, never when switching to an existing one.
 - `remote` is the Git remote Ralph pushes to.
 - `trusted_authors` is the non-empty allowlist of trusted authors for parent
   issues and children. Include the GitHub account Ralph runs as so a restarted

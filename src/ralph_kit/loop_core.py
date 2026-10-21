@@ -1236,11 +1236,14 @@ RUN_BRANCH_PREFIX = "ralph-kit/issue-"
 
 
 def offer_run_branch(state: RunState, parent_issue: int) -> str:
-    """On the base branch, ask to create the parent's run branch from an up-to-date base branch.
+    """On the base branch, offer the parent's run branch and return it once it is published.
 
-    Create pulls the base branch fast-forward only, creates and switches to the run
-    branch, and pushes it with its upstream; anything else stops with nothing changed.
-    A run branch that already exists, locally or on the remote, stops the run.
+    A run branch that exists nowhere is created from the base branch pulled
+    fast-forward only. A local run branch that is not behind the remote one is
+    switched to without touching the base branch. Either way the run branch is
+    then pushed with its upstream; anything other than the accepting choice
+    stops with nothing changed. A run branch only on the remote, or behind or
+    diverged from it, stops the run.
     """
     configuration = state.config
     base, remote = configuration.base_branch, configuration.remote
@@ -1253,36 +1256,73 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
         detail = " ".join((listing.stderr or "").split())
         raise RalphError(f"could not reach {remote} to look for {run_branch}: {detail}")
     # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
-    on_remote = any(
-        line.split("\t")[-1] == f"refs/heads/{run_branch}" for line in listing.stdout.splitlines()
+    remote_head = next(
+        (
+            line.split("\t")[0]
+            for line in listing.stdout.splitlines()
+            if line.split("\t")[-1] == f"refs/heads/{run_branch}"
+        ),
+        None,
     )
     local = command(
         state, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{run_branch}"], check=False
-    ).returncode == 0
-    if local or on_remote:
-        where = " and ".join(
-            place for place, found in (("locally", local), (f"on {remote}", on_remote)) if found
-        )
+    )
+    local_head = local.stdout.strip() if local.returncode == 0 else None
+    if remote_head is not None and (
+        local_head is None
+        # The remote head must be a commit the local branch already contains.
+        or command(
+            state, ["git", "merge-base", "--is-ancestor", remote_head, local_head], check=False
+        ).returncode != 0
+    ):
+        where = f"on {remote}" if local_head is None else f"locally and on {remote}, out of step"
         raise RalphError(
-            f"{run_branch} already exists {where}; switch to it, then run "
-            f"`{state.rerun_command}` again"
+            f"{run_branch} already exists {where}; switch to it and bring it up to date, "
+            f"then run `{state.rerun_command}` again"
         )
+
+    if local_head is None:
+        question, accept = f"Create {run_branch} from an up-to-date {base}?", "Create"
+        not_done, by_hand = "was not created", f"create {run_branch} from an up-to-date {base}"
+    else:
+        question, accept = f"Switch to the existing {run_branch}?", "Switch"
+        not_done, by_hand = "was not switched to", f"switch to {run_branch}"
     confirm = state.adapters.confirm
     if confirm is None:
         raise RalphError(
-            f"{base} is the base branch: create {run_branch} from an up-to-date {base} "
-            f"and push it to {remote}, or run `{state.rerun_command}` in a terminal"
+            f"{base} is the base branch: {by_hand} and push it to {remote}, "
+            f"or run `{state.rerun_command}` in a terminal"
         )
     print(f"⚠️  {base} is the base branch: Ralph does not run on it.", flush=True)
     try:
-        create = confirm(
-            f"Create {run_branch} from an up-to-date {base}?", "Create", accept_by_default=True
-        )
+        accepted = confirm(question, accept, accept_by_default=True)
     except KeyboardInterrupt:
-        create = False
-    if not create:
-        raise RalphError(f"stopped on {base}: {run_branch} was not created")
+        accepted = False
+    if not accepted:
+        raise RalphError(f"stopped on {base}: {run_branch} {not_done}")
 
+    if local_head is None:
+        create_run_branch(state, run_branch)
+    else:
+        # The base branch is left alone, and nothing is merged into the run branch.
+        git(state, "switch", run_branch)
+    upstream = command(
+        state, ["git", "rev-parse", "--abbrev-ref", f"{run_branch}@{{upstream}}"], check=False
+    ).stdout.strip()
+    if upstream != f"{remote}/{run_branch}" or remote_head != local_head:
+        try:
+            push_branch(state, run_branch)
+        except RalphError as error:
+            raise RalphError(
+                f"could not push {run_branch} to {remote}; the local branch is kept: {error}"
+            ) from error
+    return run_branch
+
+
+def create_run_branch(state: RunState, run_branch: str) -> None:
+    """Pull the base branch fast-forward only, then create and switch to `run_branch` from it."""
+    configuration = state.config
+    base, remote = configuration.base_branch, configuration.remote
     print(f"⬇️  Pulling {base} from {remote}.", flush=True)
     # Not under a spinner: git writes its own progress to the terminal.
     pulled = command(
@@ -1300,13 +1340,6 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
             f"{base} has commits that are not on {remote}/{base}; {run_branch} was not created"
         )
     git(state, "switch", "--create", run_branch)
-    try:
-        push_branch(state, run_branch)
-    except RalphError as error:
-        raise RalphError(
-            f"could not push {run_branch} to {remote}; the local branch is kept: {error}"
-        ) from error
-    return run_branch
 
 
 def labels(issue: dict[str, Any]) -> set[str]:
