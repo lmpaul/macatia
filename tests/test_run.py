@@ -1207,7 +1207,10 @@ class ParentWorkStartedTests(ParentLabelTestCase):
         self.assertEqual(
             self.observed_parent_labels, [{"work-started", "documentation", "human-review"}]
         )
-        self.assertEqual(self.parent_edits[0], ("work-started", ["ready-for-agent"]))
+        self.assertEqual(
+            self.parent_edits,
+            [("work-started", ["ready-for-agent"]), ("human-review", ["work-started"])],
+        )
         self.assertEqual(self.github.labels(PARENT), {"human-review", "documentation"})
 
     def test_later_children_of_the_same_run_make_no_parent_label_write(self):
@@ -1233,6 +1236,19 @@ class ParentWorkStartedTests(ParentLabelTestCase):
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(self.observed_parent_labels, [{"work-started", "documentation"}])
+        self.assertEqual(self.parent_edits, [("human-review", ["work-started"])])
+
+    def test_resumed_run_on_a_work_started_parent_makes_no_parent_label_write(self):
+        self.new_run(parent_labels=("work-started",))
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        self.record_parent_label_edits()
+
+        result = self.start(
+            loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN),
+            confirm=ScriptedConfirm(RESUME),
+        )
+
+        self.assert_completed(result, sessions=1)
         self.assertEqual(self.parent_edits, [("human-review", ["work-started"])])
 
     def test_run_stopped_on_a_child_handed_to_human_review_leaves_the_parent_work_started(self):
@@ -1269,9 +1285,28 @@ class ParentWorkStartedTests(ParentLabelTestCase):
                 self.assertEqual(self.parent_edits, [])
                 self.assertEqual(self.github.labels(PARENT), {"ready-for-agent", "documentation"})
 
+    def test_run_stopped_on_another_run_before_any_child_cycle_leaves_the_parent_labels_untouched(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        self.record_parent_label_edits()
+        record_parent_edit = self.github.after_label_edit
+
+        def another_run_takes_the_resumed_child(number, add, remove):
+            record_parent_edit(number, add, remove)
+            if number == CHILD and add == "ready-for-agent":
+                self.github.edit_issue_labels(CHILD, add="agent-working", remove=["ready-for-agent"])
+
+        self.github.after_label_edit = another_run_takes_the_resumed_child
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(RESUME))
+
+        self.assert_stopped_before_any_session(result, "another run on this parent is working on it")
+        self.assertEqual(self.parent_edits, [])
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+
     def test_failed_work_started_write_warns_and_the_run_continues(self):
         self.github.add_issue(CHILD, parent=PARENT)
 
+        # The parent write is the next label edit after the child is marked agent working.
         def fail_the_parent_write(number, add, remove):
             if number == CHILD and add == "agent-working":
                 self.github.label_edit_error = RalphError("gh issue edit failed: HTTP 502")

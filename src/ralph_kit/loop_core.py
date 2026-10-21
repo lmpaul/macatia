@@ -445,7 +445,7 @@ class RunState:
     # The engine failure that ended a regular profile's session with a backup
     # configured; None while no such session ended in one.
     backup_switch: BackupSwitch | None = None
-    # Whether this run has already made sure the parent is labelled work started.
+    # Whether this run has already tried to label the parent work started.
     parent_work_started: bool = False
     # Warnings that did not stop the run, for the terminal summary.
     warnings: list[str] = field(default_factory=list)
@@ -1472,7 +1472,9 @@ def mark_parent_work_started(state: RunState, parent_number: int) -> None:
         parent_labels = labels(issue_details(state, parent_number))
         if work_started in parent_labels and ready_label not in parent_labels:
             return
-        state.github.edit_issue_labels(parent_number, add=work_started, remove=[ready_label])
+        state.github.edit_issue_labels(
+            parent_number, add=work_started, remove=sorted({ready_label} & parent_labels)
+        )
     except RalphError as error:
         warning = (
             f"Ralph could not label parent #{parent_number} {work_started}: "
