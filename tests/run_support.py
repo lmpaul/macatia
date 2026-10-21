@@ -304,7 +304,11 @@ class FakeGitHub:
     check-runs request is answered; `after_label_edit`, when set, is called with
     the issue number, the added label, and the removed labels after each label
     edit. Setting `label_edit_error` makes the next label edit raise it, as the
-    failed `gh` call would, without changing labels.
+    failed `gh` call would, without changing labels. Closing an issue records
+    its reason as `stateReason`; `close_error` maps an issue number to the error
+    its next close raises instead, and `after_close`, when set, is called with
+    the issue number and reason after each close. Reading an unknown issue raises
+    as `gh` does for an issue that does not exist.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     """
 
@@ -341,6 +345,8 @@ class FakeGitHub:
         self.before_check_runs = None
         self.after_label_edit = None
         self.label_edit_error = None
+        self.close_error = {}
+        self.after_close = None
         self.opened_for = []
 
     # Test setup and observation.
@@ -406,6 +412,11 @@ class FakeGitHub:
         return self.repository
 
     def issue(self, number):
+        if number not in self.issues:
+            raise RalphError(
+                f"command failed (gh issue view {number}): "
+                f"GraphQL: Could not resolve to an issue or pull request with the number of {number}."
+            )
         return copy.deepcopy(self.issues[number])
 
     def sub_issues(self, parent):
@@ -430,6 +441,15 @@ class FakeGitHub:
             raise RunInterrupted(f"interrupted after commenting on #{number}")
         if self.after_comment is not None:
             self.after_comment(number, body)
+
+    def close_issue(self, number, reason):
+        if number in self.close_error:
+            raise self.close_error.pop(number)
+        self.issues[number]["state"] = "CLOSED"
+        self.issues[number]["stateReason"] = reason.upper()
+        self._touch(number)
+        if self.after_close is not None:
+            self.after_close(number, reason)
 
     def edit_issue_labels(self, number, add, remove):
         if self.label_edit_error is not None:

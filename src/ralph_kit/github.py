@@ -65,6 +65,8 @@ class GitHub:
             "issue",
             "view",
             str(number),
+            "--repo",
+            self.repository,
             "--json",
             "number,title,body,state,labels,author,comments,updatedAt",
         )
@@ -78,7 +80,11 @@ class GitHub:
         )
 
     def comment_on_issue(self, number: int, body: str) -> None:
-        self._gh("issue", "comment", str(number), "--body", body)
+        self._gh("issue", "comment", str(number), "--repo", self.repository, "--body", body)
+
+    def close_issue(self, number: int, reason: str) -> None:
+        """Close an issue with a reason: `completed` or `not planned`."""
+        self._gh("issue", "close", str(number), "--repo", self.repository, "--reason", reason)
 
     def edit_issue_labels(self, number: int, add: str, remove: list[str]) -> None:
         arguments = ["issue", "edit", str(number), "--add-label", add]

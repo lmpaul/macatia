@@ -38,6 +38,8 @@ ralph-kit run --review 123     # reviewed run: adds an independent review sessio
 ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
+ralph-kit close 123            # parent closure: close #123's children, then #123 (asks first)
+ralph-kit close --yes 123      # same, without the confirmation
 ```
 
 `--caffeinate` holds a sleep lock for the run, from once the configuration is
@@ -172,6 +174,9 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   with injected executable lookup and command runner. `tests/test_init.py`
   covers `ralph-kit init` the same way, and `tests/test_configure.py` covers
   `ralph-kit configure`.
+- **Parent closure** (every check, the confirmation, the writes and resuming
+  them): `tests/test_close.py`, the close command's entry point in memory with
+  the GitHub fake and a scripted confirmer.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
   and `claude`: `tests/test_live.py`, skipped unless `RALPH_LIVE=1` (see below).
 
@@ -590,6 +595,37 @@ leaving the labels as they are, so the next run asks about a child still
 `agent-working` as described above. `kill -9`, crashes, and power loss are never
 caught: they release nothing and publish no interrupted summary. A signal
 ignored at launch, such as SIGHUP under `nohup`, stays ignored.
+
+## Parent closure: `close`
+
+Merging the cumulative draft PR closes nothing: its body carries no closing
+keyword. Once the work is merged, a parent closure closes the parent's open
+children, then the parent itself, as `completed`:
+
+```sh
+ralph-kit close 123
+ralph-kit close --yes --config review.toml 123
+```
+
+`close` loads the configuration like the other commands (repository, label
+names, trusted authors) and needs nothing else from the checkout: no branch,
+clean worktree or Git remote. Before writing anything it checks that:
+
+- the parent is open (a closed parent prints `already closed` and exits 0);
+- the parent has sub-issues, carries `human-review` and is authored by a trusted author;
+- each open child is authored by a trusted author and has `implemented` as its
+  only lifecycle label. Closed children are ignored, whatever their labels.
+
+A refusal lists every failed check at once and closes nothing. When every check
+passes, `close` lists the children and the parent it will close and asks one
+Yes/No question (No by default); `--yes` skips it. Without a terminal and without
+`--yes`, it refuses. It then closes the open children, posts one comment on the
+parent listing the children it closed, and closes the parent. Labels are left
+as they are. After a GitHub error partway, rerun the same command: children
+already closed are skipped and the closure finishes.
+
+Exit codes: 0 once closed or already closed; 1 for a refusal, a declined
+confirmation or a GitHub error; 2 for a usage error; 130 for Ctrl-C.
 
 ## Readiness check
 

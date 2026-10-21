@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the run, the readiness check, init and configure."""
+"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure and close."""
 
 from __future__ import annotations
 
@@ -24,6 +24,10 @@ commands:
       --force overwrites an existing configuration at PATH, and only that file.
   configure [--config PATH]
       Change sections of an existing configuration (default ./ralph.toml) from a menu; saves only what changed.
+  close [--yes] [--config PATH] PARENT
+      Parent closure: once every open child of PARENT is implemented and PARENT is in human review,
+      close the open children, then PARENT, as completed, after one confirmation.
+      --yes closes without asking; without a terminal, close needs --yes.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """
@@ -79,6 +83,13 @@ def resume_with_arrows(question: str) -> bool:
     return arrow_select(question, [("Stop", ""), ("Resume", "")], "Stop") == "Resume"
 
 
+def yes_no_with_arrows(question: str) -> bool:
+    """No (the default) or Yes; Ctrl-C raises KeyboardInterrupt."""
+    from .check import arrow_select
+
+    return arrow_select(question, [("No", ""), ("Yes", "")], "No") == "Yes"
+
+
 def main(argv: list[str] | None = None) -> int:
     # Kept for source checkouts run with an older interpreter; pip enforces it otherwise.
     if sys.version_info < (3, 11):  # noqa: UP036
@@ -109,5 +120,10 @@ def main(argv: list[str] | None = None) -> int:
         return init(arguments)
     if command == "configure":
         return configure(arguments)
+    if command == "close":
+        from . import close
+
+        confirm = yes_no_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
+        return close.run(arguments, confirm=confirm)
     print(f"ralph-kit: unknown command {command!r}\n\n{USAGE}", end="", file=sys.stderr)
     return 2
