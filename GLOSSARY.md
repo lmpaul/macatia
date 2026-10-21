@@ -180,7 +180,7 @@ _Avoid_: Escalation, stuck
 One of Ralph's eight canonical meanings for a label, mapped to a label name in each repository.
 
 **Triage labels**:
-The label roles that say whether a child is ready for an agent: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix.
+The label roles that say whether a child is ready for an agent: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix. A run also refuses to start on a parent carrying any of them other than ready-for-agent.
 
 **Lifecycle labels**:
 The label roles that track a child's progress through a run: ready-for-agent, agent-working, implemented, and human-review.

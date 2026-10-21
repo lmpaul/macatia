@@ -224,16 +224,16 @@ correction session that follows a review (issue, local gate, or CI).
 
 At startup, before anything is commented, labelled, pushed or run, the parent
 must be authored by a trusted author and must not be held back by triage: a
-parent carrying any configured triage label other than `ready-for-agent`
-(`needs-triage`, `needs-info`, `wontfix` or `ready-for-human`) is rejected, and
-the error names the parent and the labels found. `ready-for-agent` is not
+parent carrying any triage label configured in `ralph.toml` other than
+`ready-for-agent` (by default `needs-triage`, `needs-info`, `wontfix` or
+`ready-for-human`) is rejected, and the error names the parent and the labels
+found. `ready-for-agent` is not
 required on the parent, and a parent with no triage label starts normally.
 Children's triage rules are described below.
 
-Once a
-child is selected and its issue trusted, Ralph replaces its `ready-for-agent`
-label with `agent-working` before the first agent session; if that label write
-fails, the run stops before any session. The child keeps `agent-working` throughout its child cycle.
+Once a child is selected and its issue trusted, Ralph replaces its
+`ready-for-agent` label with `agent-working` before the first agent session; if
+that label write fails, the run stops before any session. The child keeps `agent-working` throughout its child cycle.
 
 Ralph then posts a trusted comment on the child naming its child base, the
 commit its implementation evidence, review session diff, and local gate

@@ -1675,7 +1675,7 @@ def require_trusted_issue(state: RunState, issue: dict[str, Any]) -> None:
         )
 
 
-def require_runnable_parent(state: RunState, parent: dict[str, Any]) -> None:
+def require_startable_parent(state: RunState, parent: dict[str, Any]) -> None:
     """The parent is trusted and carries no triage label other than ready-for-agent."""
     require_trusted_issue(state, parent)
     blocking = labels(parent) & (
@@ -2796,7 +2796,7 @@ def run_children(
     branch = state.branch
     assert branch is not None
     with spinner(f"Reading #{parent_issue} and its sub-issues…"):
-        require_runnable_parent(state, issue_details(state, parent_issue))
+        require_startable_parent(state, issue_details(state, parent_issue))
         infrastructure = InfrastructureRetryTracker(state)
         siblings = state.github.sub_issues(parent_issue)
         update_run_summary(state, parent_issue, siblings, None, infrastructure)
