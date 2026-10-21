@@ -110,6 +110,11 @@ class LiveGitHubTests(unittest.TestCase):
     def default_branch_head(self):
         return self.gh_json("api", f"repos/{self.repository}/commits/HEAD")["sha"]
 
+    def test_the_compare_api_finds_the_default_branch_head_on_the_default_branch(self):
+        branch = self.gh_json("repo", "view", "--json", "defaultBranchRef")["defaultBranchRef"]["name"]
+
+        self.assertIs(self.github.commit_is_on_branch(branch, self.default_branch_head()), True)
+
     def test_open_pull_requests_list_each_pull_request_with_its_number_draft_state_and_url(self):
         open_pulls = self.gh_json(
             "pr", "list", "--state", "open", "--limit", "1", "--json", "headRefName,baseRefName"

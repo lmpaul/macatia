@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the run, the readiness check, init and configure."""
+"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure and close."""
 
 from __future__ import annotations
 
@@ -24,6 +24,11 @@ commands:
       --force overwrites an existing configuration at PATH, and only that file.
   configure [--config PATH]
       Change sections of an existing configuration (default ./ralph.toml) from a menu; saves only what changed.
+  close [--yes | --force] [--config PATH] PARENT
+      Parent closure: once every open child of PARENT is implemented and PARENT is in human review,
+      close the open children, then PARENT, as completed, after one confirmation.
+      --yes closes without asking; without a terminal, close needs --yes.
+      --force closes despite failed checks, shown as warnings, once you type PARENT at a terminal.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """
@@ -31,13 +36,15 @@ Run every command from the target repository root. Configuration defaults to ./r
 def init(argv: list[str]) -> int:
     from . import init as setup
     from .check import arrow_select
+    from .progress import spinner
 
     parser = argparse.ArgumentParser(prog="ralph-kit init", description="Write a configuration; ask for what cannot be detected.")
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path(setup.CONFIG_NAME), metavar="PATH")
     parser.add_argument("--force", action="store_true", help="overwrite an existing configuration at --config, and only that file")
     args = parser.parse_args(argv)  # Exits with status 2 on unknown arguments.
     interactive = sys.stdin.isatty()
-    prompter = setup.Prompter(interactive=interactive, select=arrow_select if interactive and sys.stdout.isatty() else None)
+    terminal = interactive and sys.stdout.isatty()
+    prompter = setup.Prompter(interactive=interactive, select=arrow_select if terminal else None, spinner=spinner if terminal else None)
     try:
         setup.run(pathlib.Path.cwd().resolve(), prompter, force=args.force, config=args.config)
     except setup.InitAborted as error:
@@ -52,12 +59,14 @@ def init(argv: list[str]) -> int:
 def configure(argv: list[str]) -> int:
     from . import configure as editor, init as setup
     from .check import arrow_select
+    from .progress import spinner
 
     parser = argparse.ArgumentParser(prog="ralph-kit configure", description="Change sections of an existing configuration.")
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path(setup.CONFIG_NAME), metavar="PATH")
     args = parser.parse_args(argv)  # Exits with status 2 on unknown arguments.
     interactive = sys.stdin.isatty()
-    prompter = setup.Prompter(interactive=interactive, select=arrow_select if interactive and sys.stdout.isatty() else None)
+    terminal = interactive and sys.stdout.isatty()
+    prompter = setup.Prompter(interactive=interactive, select=arrow_select if terminal else None, spinner=spinner if terminal else None)
     try:
         editor.run(pathlib.Path.cwd().resolve(), prompter, config=args.config)
     except editor.ConfigureAborted as error:
@@ -77,6 +86,13 @@ def resume_with_arrows(question: str) -> bool:
     from .check import arrow_select
 
     return arrow_select(question, [("Stop", ""), ("Resume", "")], "Stop") == "Resume"
+
+
+def yes_no_with_arrows(question: str) -> bool:
+    """No (the default) or Yes; Ctrl-C raises KeyboardInterrupt."""
+    from .check import arrow_select
+
+    return arrow_select(question, [("No", ""), ("Yes", "")], "No") == "Yes"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -109,5 +125,14 @@ def main(argv: list[str] | None = None) -> int:
         return init(arguments)
     if command == "configure":
         return configure(arguments)
+    if command == "close":
+        from . import close
+
+        terminal = sys.stdin.isatty() and sys.stdout.isatty()
+        return close.run(
+            arguments,
+            confirm=yes_no_with_arrows if terminal else None,
+            type_answer=input if terminal else None,
+        )
     print(f"ralph-kit: unknown command {command!r}\n\n{USAGE}", end="", file=sys.stderr)
     return 2

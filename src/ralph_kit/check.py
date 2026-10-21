@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import importlib.util
 import json
 import os
@@ -27,6 +28,7 @@ from .config import (
     RalphConfigError,
     load_config,
 )
+from .progress import spinner
 
 
 PACKAGE_DIRECTORY = pathlib.Path(__file__).resolve().parent
@@ -337,8 +339,16 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
     """confirm(question) -> bool offers to create missing labels; None never writes to GitHub.
 
     command(*args) -> stdout runs git, gh and engine help commands; it raises on failure.
+    A terminal sees a spinner until the report is ready.
     """
     console = console or Console(highlight=False)
+    with contextlib.ExitStack() as checking:
+        checking.enter_context(spinner("Checking that this repository is ready for Ralph…", console))
+        return readiness(root, config_path, with_review=with_review, console=console, confirm=confirm, command=command, checked=checking.close)
+
+
+def readiness(root, config_path, *, with_review, console, confirm, command, checked):
+    """Run every check, call checked() once they are done, then render the report."""
     report = Readiness(root)
     command = command or report.command
     report.section("Configuration")
@@ -353,10 +363,12 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
         require(not placeholder([config.repository, config.trusted_authors, [profile.name for profile in profiles]]), "repository, authors or models still have placeholders")
     except MissingConfigError:
         report.add("fail", config_path.name, "not found: this repository is not set up yet", "ralph-kit init")
+        checked()
         render(console, report)
         return 1
     except (RalphConfigError, ValueError) as error:
         report.add("fail", config_path.name, str(error), f"fill in {config_path.name}, or regenerate it with ralph-kit init --force")
+        checked()
         render(console, report)
         return 1
     report.add("ok", config_path.name, "values filled in")
@@ -491,6 +503,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
         reminders.append("Local check commands run and their results verified")
     if config.verification.ci_checks:
         reminders.append("CI workflow check names confirmed and workflow working")
+    checked()
     render(console, report, config.repository, [*reminders, *FINAL_REMINDERS])
     errors = report.errors
     if missing and confirm:
@@ -498,7 +511,8 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
         count = f"{len(missing)} missing label{'s' if len(missing) > 1 else ''}"
         if confirm(f"Create the {count} on {config.repository}?"):
             roles = {name: role for role, name in config.labels.items()}
-            failed = create_labels(command, config.repository, {roles[name]: name for name in missing})
+            with spinner(f"Creating the {count} on {config.repository}…", console):
+                failed = create_labels(command, config.repository, {roles[name]: name for name in missing})
             for name in missing:
                 console.print(Text(f"✗ {name} not created", style="red") if name in failed else Text(f"✓ {name} created", style="green"))
             errors -= not failed

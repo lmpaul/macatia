@@ -178,7 +178,8 @@ def _author_error(value: str) -> str | None:
 
 
 def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
-    login = current_login(state.command)  # None without gh: no warning.
+    with prompter.working("Reading the current gh account…"):
+        login = current_login(state.command)  # None without gh: no warning.
     warned = False
     while True:
         authors = config.trusted_authors
@@ -408,8 +409,9 @@ def _with_hint(text: str, hint: str | None) -> str:
 
 def _edit_git(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
     command = state.command
-    detected_repository, detected_branch = detect_repository(command)
-    remotes = git_remotes(command)
+    with prompter.working("Detecting the GitHub repository…"):
+        detected_repository, detected_branch = detect_repository(command)
+        remotes = git_remotes(command)
     while True:
         # gh's default branch belongs to the working directory's repository, which the configuration may not name.
         if detected_branch and detected_repository == config.repository:

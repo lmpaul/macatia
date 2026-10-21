@@ -179,13 +179,13 @@ class RunLevelTestCase(unittest.TestCase):
     def setUp(self):
         self.new_run()
 
-    def start(self, mode, *results, budget=None, confirm=None):
+    def start(self, mode, *results, budget=None, confirm=None, terminal=False):
         self.sessions = ScriptedSessions(self.repository, *results)
         self.sessions.before_session = self.before_session
         budget_argument = () if budget is None else (budget,)
         return start_mode_run(
             mode, self.repository, self.github, self.sessions, PARENT, *budget_argument,
-            confirm=confirm,
+            confirm=confirm, terminal=terminal,
         )
 
     def session_children(self):
@@ -2343,6 +2343,21 @@ class InterruptedRunTests(VerificationTestCase):
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
         self.assertEqual(self.github.reports(CHILD), [])
         self.assertIn(f"- #{CHILD}: runnable.", self.github.comments(PARENT)[-1])
+
+    def test_a_terminal_sees_the_cleanup_after_ctrl_c(self):
+        result = self.start(loop_core.STANDARD_RUN, KeyboardInterrupt(), terminal=True)
+
+        self.assert_interrupted(result, 130, "SIGINT")
+        self.assertIn(
+            f"Interrupted: releasing #{CHILD} and publishing the summary… "
+            "(Ctrl-C again skips the cleanup)",
+            " ".join(result.stdout.split()),
+        )
+
+    def test_other_output_gets_no_cleanup_spinner(self):
+        result = self.start(loop_core.STANDARD_RUN, KeyboardInterrupt())
+
+        self.assertNotIn("Ctrl-C again", result.stdout + result.stderr)
 
     def interrupt_while_waiting_for_ci(self, signal_number):
         """Interrupt the run once the child's commit waits for CI, as Ctrl-C or `kill` would."""

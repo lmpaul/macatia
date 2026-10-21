@@ -304,7 +304,12 @@ class FakeGitHub:
     check-runs request is answered; `after_label_edit`, when set, is called with
     the issue number, the added label, and the removed labels after each label
     edit. Setting `label_edit_error` makes the next label edit raise it, as the
-    failed `gh` call would, without changing labels.
+    failed `gh` call would, without changing labels. Closing an issue records
+    its reason as `stateReason`; `close_error` maps an issue number to the error
+    its next close raises instead, and `after_close`, when set, is called with
+    the issue number and reason after each close. Reading an unknown issue raises
+    as `gh` does for an issue that does not exist. A commit is on a branch when
+    `on_branch` maps its SHA to True; `compared` keeps each (branch, SHA) asked.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     """
 
@@ -341,6 +346,10 @@ class FakeGitHub:
         self.before_check_runs = None
         self.after_label_edit = None
         self.label_edit_error = None
+        self.close_error = {}
+        self.after_close = None
+        self.on_branch = {}
+        self.compared = []
         self.opened_for = []
 
     # Test setup and observation.
@@ -406,6 +415,11 @@ class FakeGitHub:
         return self.repository
 
     def issue(self, number):
+        if number not in self.issues:
+            raise RalphError(
+                f"command failed (gh issue view {number}): "
+                f"GraphQL: Could not resolve to an issue or pull request with the number of {number}."
+            )
         return copy.deepcopy(self.issues[number])
 
     def sub_issues(self, parent):
@@ -413,6 +427,10 @@ class FakeGitHub:
 
     def blockers(self, child):
         return [self.issue(number) for number in self.blocked_by.get(child, [])]
+
+    def commit_is_on_branch(self, branch, sha):
+        self.compared.append((branch, sha))
+        return self.on_branch.get(sha, False)
 
     def comment_on_issue(self, number, body):
         created_at = self._touch(number)
@@ -430,6 +448,15 @@ class FakeGitHub:
             raise RunInterrupted(f"interrupted after commenting on #{number}")
         if self.after_comment is not None:
             self.after_comment(number, body)
+
+    def close_issue(self, number, reason):
+        if number in self.close_error:
+            raise self.close_error.pop(number)
+        self.issues[number]["state"] = "CLOSED"
+        self.issues[number]["stateReason"] = reason.upper()
+        self._touch(number)
+        if self.after_close is not None:
+            self.after_close(number, reason)
 
     def edit_issue_labels(self, number, add, remove):
         if self.label_edit_error is not None:
@@ -707,6 +734,13 @@ class FakeSleepLock:
         self.held_during_sessions.append(self.held)
 
 
+class TerminalOutput(io.StringIO):
+    """Output that says it is a terminal."""
+
+    def isatty(self):
+        return True
+
+
 @dataclass(frozen=True)
 class RunResult:
     exit_code: int
@@ -724,12 +758,12 @@ def start_mode_run(mode, repository, github, sessions, *arguments, **options):
     return start_run(repository, github, sessions, *review, *arguments, **options)
 
 
-def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
+def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None, terminal=False):
     """Start one run from its command-line `arguments`, with in-memory GitHub and sessions,
     from `cwd` or the repository root.
 
     `confirm` answers the run's startup question, as a terminal would; None runs
-    without a terminal.
+    without a terminal. `terminal` makes the output a terminal, which gets the spinners.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
@@ -776,7 +810,8 @@ def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
             confirm=confirm,
             keep_awake=sleep_lock,
         )
-    stdout, stderr = io.StringIO(), io.StringIO()
+    output = TerminalOutput if terminal else io.StringIO
+    stdout, stderr = output(), output()
     with (
         contextlib.chdir(cwd or repository.path),
         contextlib.redirect_stdout(stdout),

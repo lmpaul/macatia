@@ -38,6 +38,9 @@ ralph-kit run --review 123     # reviewed run: adds an independent review sessio
 ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
+ralph-kit close 123            # parent closure: close #123's children, then #123 (asks first)
+ralph-kit close --yes 123      # same, without the confirmation
+ralph-kit close --force 123    # close despite failed checks, after typing 123
 ```
 
 `--caffeinate` holds a sleep lock for the run, from once the configuration is
@@ -172,6 +175,9 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   with injected executable lookup and command runner. `tests/test_init.py`
   covers `ralph-kit init` the same way, and `tests/test_configure.py` covers
   `ralph-kit configure`.
+- **Parent closure** (every check, the confirmation, the writes and resuming
+  them): `tests/test_close.py`, the close command's entry point in memory with
+  the GitHub fake and a scripted confirmer.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
   and `claude`: `tests/test_live.py`, skipped unless `RALPH_LIVE=1` (see below).
 
@@ -185,9 +191,10 @@ of the default suite, local gates or CI:
 RALPH_LIVE=1 uv run python -m unittest discover -s tests -p test_live.py -v
 ```
 
-It makes read-only `gh` calls of each shape a run parses (repository, children,
-blockers, issue details, open pull requests, check runs, and the Actions job, job
-log and check run behind a check) through Ralph's GitHub adapter, against the
+It makes read-only `gh` calls of each shape a run or `close` parses (repository,
+children, blockers, issue details, open pull requests, check runs, the Actions job,
+job log and check run behind a check, and the compare of the default branch with
+its head) through Ralph's GitHub adapter, against the
 children of parent issue #5 in this repository (`RALPH_LIVE_PARENT` selects another
 parent issue with children and blockers) and the check runs of its default branch
 head. It then starts one Claude Code and one Codex session in a scratch Git
@@ -590,6 +597,60 @@ leaving the labels as they are, so the next run asks about a child still
 `agent-working` as described above. `kill -9`, crashes, and power loss are never
 caught: they release nothing and publish no interrupted summary. A signal
 ignored at launch, such as SIGHUP under `nohup`, stays ignored.
+
+## Parent closure: `close`
+
+Merging the cumulative draft PR closes nothing: its body carries no closing
+keyword. Once the work is merged, a parent closure closes the parent's open
+children, then the parent itself, as `completed`:
+
+```sh
+ralph-kit close 123
+ralph-kit close --yes --config review.toml 123
+ralph-kit close --force 123
+```
+
+`close` loads the configuration like the other commands (repository, label
+names, trusted authors) and needs nothing else from the checkout: no branch,
+clean worktree or Git remote. Before writing anything it checks that:
+
+- the parent is open (a closed parent prints `already closed` and exits 0);
+- the parent has sub-issues, carries `human-review` and is authored by a trusted author;
+- each open child is authored by a trusted author and has `implemented` as its
+  only lifecycle label. Closed children are ignored, whatever their labels;
+- each open child with trusted implementation evidence is merged: its verified
+  head is on the remote base branch. The latest trusted evidence comment counts,
+  whether a standard or a reviewed run wrote it (legacy formats included).
+  `close` asks GitHub's compare API (`base_branch...verified_head` is `behind` or
+  `identical`) and never reads local Git. Work merged by squash or rebase has new
+  commits, so its verified head is not on the base branch and the check fails.
+
+An open child labelled `implemented` without trusted implementation evidence
+(typically work a human did) does not fail a check: `close` lists it apart as
+`implemented without evidence: merge not verified`.
+
+A refusal lists every failed check at once and closes nothing. When every check
+passes, `close` lists the children and the parent it will close and asks one
+Yes/No question (No by default); `--yes` skips it, unless a child is implemented
+without evidence: only a human at a terminal confirms closing that one. Without
+a terminal, when the confirmation is required, it refuses. It then closes the
+open children, posts one comment on the parent listing the children it closed
+(those without evidence apart, as confirmed by a human), and closes the parent. Labels are left
+as they are. After a GitHub error partway, rerun the same command: children
+already closed are skipped, the comment lists the children this run of `close`
+closed (it is not repeated when only the parent was left open), and the closure finishes.
+
+`--force` lets a human at a terminal close despite failed checks. Every check
+still runs and each failure is printed as a warning; instead of the Yes/No
+question, `close` asks you to type the parent number, and anything else closes
+nothing. A forced closure is never unattended: without a terminal `--force` is
+refused, and `--force` with `--yes` is a usage error. On an issue with no
+sub-issues, `--force` closes only that issue. The parent comment says the
+closure was forced and lists the failed checks. A nonexistent issue is still
+refused, and a closed parent still prints `already closed` and exits 0.
+
+Exit codes: 0 once closed or already closed; 1 for a refusal, a declined
+confirmation or a GitHub error; 2 for a usage error; 130 for Ctrl-C.
 
 ## Readiness check
 
