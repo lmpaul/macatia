@@ -50,6 +50,7 @@ from .config import (
     load_config,
 )
 from .github import GitHub
+from .keep_awake import keep_awake
 from .sanitize import (
     format_findings,
     sanitized_diagnostic,
@@ -159,6 +160,10 @@ REVIEWED_RUN = RunMode(
 REVIEW_BY_DEFAULT_NOTICE = (
     "ℹ️ review_by_default is on in ralph.toml: this is a reviewed run, with a review "
     "session per child. Use --no-review for a standard run."
+)
+CAFFEINATE_BY_DEFAULT_NOTICE = (
+    "ℹ️ caffeinate_by_default is on in ralph.toml: this run holds a sleep lock until it "
+    "ends. Use --no-caffeinate to let the machine sleep."
 )
 
 
@@ -402,6 +407,9 @@ class RunAdapters:
     # Asks the startup choice: question -> True to resume children left agent working.
     # None when Ralph is not in a terminal, which always stops.
     confirm: Callable[[str], bool] | None = None
+    # Holds the sleep lock for the duration of the block, for `--caffeinate` or
+    # `caffeinate_by_default`.
+    keep_awake: Callable[[], contextlib.AbstractContextManager[None]] = keep_awake
 
 
 @dataclass
@@ -424,6 +432,8 @@ class RunState:
     branch: str | None = None
     # How to start this run again, for the next action of a stopped run.
     rerun_command: str | None = None
+    # What startup holds until the run ends, however it ends: the sleep lock.
+    held_until_the_end: contextlib.ExitStack = field(default_factory=contextlib.ExitStack)
     initial_implemented_children: set[int] | None = None
     summary: RunSummary = field(default_factory=RunSummary)
     # The child the run holds agent working, with the branch head its child cycle
@@ -1066,9 +1076,12 @@ def positive_integer(value: str) -> int:
 
 def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namespace:
     """Read the run's arguments; `--review` and `--no-review`, accepted in any position, are
-    `review` and `no_review`, and together a usage error."""
+    `review` and `no_review`, and together a usage error. So are `--caffeinate` and
+    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`."""
     flags = [flag for flag in ("--review", "--no-review") if flag in argv]
-    argv = [argument for argument in argv if argument not in flags]
+    sleep_lock_flags = [flag for flag in ("--caffeinate", "--no-caffeinate") if flag in argv]
+    read = {*flags, *sleep_lock_flags}
+    argv = [argument for argument in argv if argument not in read]
     parser = argparse.ArgumentParser(
         prog=None if prog is None else " ".join([prog, *flags]),
         description=(REVIEWED_RUN if "--review" in flags else STANDARD_RUN).description,
@@ -1083,8 +1096,16 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
     parser.add_argument("run_budget", nargs="?", type=positive_integer)
     if len(flags) == 2:
         parser.error("argument --no-review: not allowed with argument --review")
+    if len(sleep_lock_flags) == 2:
+        parser.error("argument --no-caffeinate: not allowed with argument --caffeinate")
     return parser.parse_args(
-        argv, argparse.Namespace(review="--review" in flags, no_review="--no-review" in flags)
+        argv,
+        argparse.Namespace(
+            review="--review" in flags,
+            no_review="--no-review" in flags,
+            caffeinate="--caffeinate" in sleep_lock_flags,
+            no_caffeinate="--no-caffeinate" in sleep_lock_flags,
+        ),
     )
 
 
@@ -2640,8 +2661,8 @@ def real_run_adapters(confirm: Callable[[str], bool] | None = None) -> RunAdapte
 def main(
     state: RunState, argv: list[str] | None = None, prog: str | None = None
 ) -> int:
-    """Start the run: read its arguments and configuration, select its mode, read its quality
-    policy, then run its children."""
+    """Start the run: read its arguments and configuration, take the sleep lock it asks for,
+    select its mode, read its quality policy, then run its children."""
     arguments = parse_arguments(sys.argv[1:] if argv is None else argv, prog)
     # The run budget is left out: each run starts with a fresh one.
     state.rerun_command = shlex.join([
@@ -2649,6 +2670,8 @@ def main(
         "run",
         *(["--review"] if arguments.review else []),
         *(["--no-review"] if arguments.no_review else []),
+        *(["--caffeinate"] if arguments.caffeinate else []),
+        *(["--no-caffeinate"] if arguments.no_caffeinate else []),
         *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
         str(arguments.parent_issue),
     ])
@@ -2670,11 +2693,18 @@ def main(
             )
     except RalphConfigError as error:
         raise RalphError(str(error)) from error
+    caffeinated_by_setting = configuration.caffeinate_by_default and not (
+        arguments.caffeinate or arguments.no_caffeinate
+    )
+    if arguments.caffeinate or caffeinated_by_setting:
+        state.held_until_the_end.enter_context(state.adapters.keep_awake())
     mode = state.loaded_mode = (
         REVIEWED_RUN if arguments.review or reviewed_by_setting else STANDARD_RUN
     )
     if reviewed_by_setting:
         print(REVIEW_BY_DEFAULT_NOTICE, flush=True)
+    if caffeinated_by_setting:
+        print(CAFFEINATE_BY_DEFAULT_NOTICE, flush=True)
     state.loaded_config = configuration
     state.loaded_github = state.adapters.github(
         state.repository_root, configuration.repository
@@ -2813,8 +2843,11 @@ def run(
     """Start a run from repository_root, by default the current directory.
 
     `--review` among argv makes it a reviewed run, `--no-review` a standard run;
-    without either, the configuration's `review_by_default` decides. Usage
-    errors name the program `prog`, followed by the review flags given.
+    without either, the configuration's `review_by_default` decides. `--caffeinate`
+    holds the sleep lock from once the configuration is loaded until the run
+    ends, `--no-caffeinate` does not; without either, the configuration's
+    `caffeinate_by_default` decides. Usage errors name the program `prog`,
+    followed by the review flags given, not the sleep lock flags.
     The run reaches GitHub and agents through adapters. SIGINT, SIGTERM, and
     SIGHUP release the child it is working on, then end it with an interrupted
     terminal summary and the shell's exit code for the signal.
@@ -2824,7 +2857,7 @@ def run(
         repository_root=(repository_root or pathlib.Path.cwd()).resolve(),
         started_at=time.monotonic(),
     )
-    with interruptions_raised():
+    with interruptions_raised(), state.held_until_the_end:
         try:
             try:
                 return main(state, argv, prog)

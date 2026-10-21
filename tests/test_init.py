@@ -26,6 +26,8 @@ remote = "origin"
 trusted_authors = ["octocat"]
 # true makes every run a reviewed run; ralph-kit run --no-review overrides it.
 review_by_default = false
+# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.
+caffeinate_by_default = false
 
 [labels]
 needs_triage = "needs-triage"
@@ -80,6 +82,8 @@ remote = "upstream"
 trusted_authors = ["alice", "bob", "octocat"]
 # true makes every run a reviewed run; ralph-kit run --no-review overrides it.
 review_by_default = false
+# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.
+caffeinate_by_default = false
 
 [labels]
 needs_triage = "triage: new"
@@ -200,6 +204,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(config.models["correction"], config.models["implementation"])
         self.assertFalse(config.verification.local_checks or config.verification.ci_checks)
         self.assertFalse(config.review_by_default)
+        self.assertFalse(config.caffeinate_by_default)
 
     def test_review_model_question_is_for_every_reviewed_run(self):
         self.run_init(answers=[""] * 8)

@@ -19,7 +19,7 @@ from rich.padding import Padding
 from rich.table import Table
 from rich.text import Text
 
-from . import __version__
+from . import __version__, keep_awake
 from .agent import engine_help_command_and_flags
 from .config import (
     DIAGNOSTICS_DIRECTORY,
@@ -206,7 +206,7 @@ def require(condition, message, fix=None):
 
 @dataclass
 class Result:
-    status: str  # ok, fail, skip (not verified) or off (disabled)
+    status: str  # ok, warn (never blocks), fail, skip (not verified) or off (disabled)
     label: str
     detail: str = ""
     fix: str | None = None
@@ -250,7 +250,7 @@ class Readiness:
         return result.stdout.strip()
 
 
-ICONS = {"ok": ("✓", "green"), "fail": ("✗", "bold red"), "skip": ("○", "yellow"), "off": ("–", "dim")}
+ICONS = {"ok": ("✓", "green"), "warn": ("!", "yellow"), "fail": ("✗", "bold red"), "skip": ("○", "yellow"), "off": ("–", "dim")}
 
 
 def render(console, report, repository=None, reminders=()):
@@ -283,6 +283,8 @@ def render(console, report, repository=None, reminders=()):
     else:
         summary.append("✓ No blockers", style="bold green")
     summary.append(f" · {counts['ok']} OK", style="dim")
+    if counts["warn"]:
+        summary.append(f" · {counts['warn']} {'warning' if counts['warn'] == 1 else 'warnings'}", style="yellow")
     if counts["skip"]:
         summary.append(f" · {counts['skip']} not verified", style="dim")
     console.print(summary)
@@ -377,6 +379,14 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
         require(isinstance(schema, dict) and schema.get("type") == "object", "invalid result schema")
         return f"{__version__}, files complete"
     report.check("ralph-kit", package_files, "reinstall ralph-kit")
+    if config.caffeinate_by_default:
+        # A run continues without a sleep lock, so its absence only warns.
+        helper, problem = keep_awake.availability(sys.platform)
+        if problem:
+            fix = f"install {helper}, or set caffeinate_by_default = false" if helper else "set caffeinate_by_default = false"
+            report.add("warn", "Sleep lock", f"{problem}; the machine may sleep during runs", fix)
+        else:
+            report.add("ok", "Sleep lock", helper)
 
     report.section("Git")
     if "git" not in available:

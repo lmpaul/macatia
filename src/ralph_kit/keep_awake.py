@@ -1,4 +1,5 @@
-"""`ralph-kit run --caffeinate`: keep the machine from idle-sleeping while the run lasts."""
+"""The sleep lock: keep the machine from idle-sleeping while a run lasts, for `--caffeinate`
+or `caffeinate_by_default`."""
 
 from __future__ import annotations
 
@@ -35,8 +36,21 @@ def helper_command(platform: str, pid: int) -> list[str] | None:
     return None
 
 
+def availability(platform: str = sys.platform) -> tuple[str, str | None]:
+    """What holds the sleep lock on this platform, and why this machine cannot provide it, or None."""
+    if platform == "win32":
+        return "SetThreadExecutionState", None
+    command = helper_command(platform, os.getpid())
+    if command is None:
+        return "", f"not supported on {platform}"
+    if shutil.which(command[0]) is None:
+        return command[0], f"{command[0]} not found"
+    return command[0], None
+
+
 def warn(reason: str) -> None:
-    print(f"⚠️ --caffeinate ignored: {reason}; the machine may sleep during the run.", file=sys.stderr)
+    # Neutral wording: the flag or the setting may have asked for the sleep lock.
+    print(f"⚠️ No sleep lock: {reason}; the machine may sleep during the run.", file=sys.stderr)
 
 
 @contextlib.contextmanager
@@ -61,15 +75,12 @@ def keep_awake(platform: str = sys.platform):
         with windows_execution_state():
             yield
         return
+    _, problem = availability(platform)
+    if problem:
+        warn(problem)
+        yield
+        return
     command = helper_command(platform, os.getpid())
-    if command is None:
-        warn(f"not supported on {platform}")
-        yield
-        return
-    if shutil.which(command[0]) is None:
-        warn(f"{command[0]} not found")
-        yield
-        return
     process = subprocess.Popen(
         command, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True
     )

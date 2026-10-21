@@ -10,11 +10,12 @@ import sys
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review | --no-review] [--caffeinate] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
+  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
       Standard run: implement the children of PARENT_ISSUE, with at most RUN_BUDGET agent sessions.
       --review starts a reviewed run, which adds an independent review session per child.
       --no-review starts a standard run, even when review_by_default = true in the configuration.
       --caffeinate keeps the machine from idle-sleeping until the run ends.
+      --no-caffeinate lets the machine sleep, even when caffeinate_by_default = true in the configuration.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
       --review also checks the review role, as review_by_default = true does.
@@ -98,15 +99,8 @@ def main(argv: list[str] | None = None) -> int:
     if command == "run":
         from . import loop
 
-        caffeinate = "--caffeinate" in arguments
-        arguments = [argument for argument in arguments if argument != "--caffeinate"]
         confirm = resume_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
-        if not caffeinate:
-            return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
-        from .keep_awake import keep_awake
-
-        with keep_awake():
-            return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
+        return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
     if command == "check":
         from . import check
 

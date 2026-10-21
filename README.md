@@ -37,11 +37,23 @@ ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
 ralph-kit run --review 123     # reviewed run: adds an independent review session per child
 ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
+ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
 ```
 
-`--caffeinate` holds an idle-sleep lock for the run: `caffeinate -i` on macOS,
+`--caffeinate` holds a sleep lock for the run, from once the configuration is
+loaded until the run ends: `caffeinate -i` on macOS,
 `systemd-inhibit --what=idle:sleep` on Linux, `SetThreadExecutionState` on Windows.
-Where none is available, the run warns and continues. The display may still turn off.
+Where none is available, the run warns (`No sleep lock: ...`) and continues.
+The display may still turn off.
+
+With `caffeinate_by_default = true` in `ralph.toml`, every run holds the sleep
+lock without `--caffeinate`, and says so once at startup;
+`ralph-kit run --no-caffeinate` runs without it instead. `--no-caffeinate` is
+also accepted when the setting is off, and `--caffeinate` holds the sleep lock
+whatever the setting, without the notice. `--caffeinate` together with
+`--no-caffeinate` is a usage error.
+With the setting on, `ralph-kit check` also reports whether this machine can
+provide the sleep lock, as a warning only: a run continues without one.
 
 Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean, dedicated branch (never the base branch).
 
@@ -78,7 +90,8 @@ repository's `.gitignore` (creating the file if needed) and says so. Commit it w
 
 `init` on an existing file points to `configure`: `ralph-kit configure [--config PATH]`
 opens an existing, valid configuration and shows a menu of its sections (model
-profiles, backup, trusted authors, verification, Git, reviewed runs by default), each with its current value
+profiles, backup, trusted authors, verification, Git, reviewed runs by default, keep the
+machine awake by default), each with its current value
 and `*` once changed. Pick a section to change only what it holds; nothing is
 re-detected over an existing value, and the values no section edits (label names,
 quality policy paths, display names, a correction profile distinct from
@@ -111,6 +124,8 @@ manifest is accepted with a warning that `ralph-kit check` fails until they exis
 Reviewed runs by default turns `review_by_default` on or off. Turning it on without a
 review profile first asks for one, as Model profiles does for review; turning it off keeps
 the review profile.
+Keep the machine awake by default turns `caffeinate_by_default` on or off; it asks
+for nothing else.
 Save lists each changed key as `key: old → new`, writes the file, validates it and
 suggests committing it, then `ralph-kit check`; Save without changes, Quit without
 saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
@@ -330,6 +345,9 @@ implementation evidence from either kind of run when its commits are on the bran
 - `review_by_default` is optional (`false` when missing). `true` makes every
   run a reviewed run, which requires `models.review`; `ralph-kit run
   --no-review` overrides it for one run.
+- `caffeinate_by_default` is optional (`false` when missing). `true` makes every
+  run hold a sleep lock until it ends; `ralph-kit run --no-caffeinate` overrides
+  it for one run.
 - `labels` maps Ralph's eight label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, and the lifecycle labels `ready_for_agent`,

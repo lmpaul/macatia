@@ -1,4 +1,4 @@
-"""`ralph-kit run --caffeinate`: the sleep lock helper and its CLI flag."""
+"""The sleep lock helper, and the CLI passing `--caffeinate` and `--no-caffeinate` to the run."""
 
 import contextlib
 import io
@@ -29,6 +29,19 @@ class HelperCommandTests(unittest.TestCase):
         self.assertIsNone(keep_awake.helper_command("freebsd14", 42))
 
 
+class AvailabilityTests(unittest.TestCase):
+    def test_installed_helper_is_available(self):
+        with mock.patch.object(keep_awake.shutil, "which", return_value="/usr/bin/systemd-inhibit"):
+            self.assertEqual(keep_awake.availability("linux"), ("systemd-inhibit", None))
+
+    def test_missing_helper_is_named(self):
+        with mock.patch.object(keep_awake.shutil, "which", return_value=None):
+            self.assertEqual(keep_awake.availability("darwin"), ("caffeinate", "caffeinate not found"))
+
+    def test_unsupported_platform_has_no_helper(self):
+        self.assertEqual(keep_awake.availability("freebsd14"), ("", "not supported on freebsd14"))
+
+
 class KeepAwakeTests(unittest.TestCase):
     def test_unsupported_platform_warns_and_runs_the_block(self):
         stderr = io.StringIO()
@@ -36,7 +49,7 @@ class KeepAwakeTests(unittest.TestCase):
         with contextlib.redirect_stderr(stderr), keep_awake.keep_awake("freebsd14"):
             ran = True
         self.assertTrue(ran)
-        self.assertIn("--caffeinate ignored: not supported on freebsd14", stderr.getvalue())
+        self.assertIn("No sleep lock: not supported on freebsd14", stderr.getvalue())
 
     def test_missing_helper_warns_and_runs_the_block(self):
         stderr = io.StringIO()
@@ -46,7 +59,7 @@ class KeepAwakeTests(unittest.TestCase):
             keep_awake.keep_awake("linux"),
         ):
             pass
-        self.assertIn("--caffeinate ignored: systemd-inhibit not found", stderr.getvalue())
+        self.assertIn("No sleep lock: systemd-inhibit not found", stderr.getvalue())
 
     @unittest.skipUnless(sys.platform == "darwin" and shutil.which("caffeinate"), "needs macOS caffeinate")
     def test_macos_holds_the_assertion_only_during_the_block(self):
@@ -60,51 +73,30 @@ class KeepAwakeTests(unittest.TestCase):
 
 
 class CaffeinateFlagTests(unittest.TestCase):
-    """`ralph-kit run` hands its arguments, review flags included, to the run entry point,
-    kept awake with `--caffeinate`."""
+    """`ralph-kit run` leaves `--caffeinate` and `--no-caffeinate` to the run, which decides on
+    the sleep lock at startup."""
 
-    def run_cli(self, *arguments):
-        """The arguments the run entry point received, and whether the machine was kept awake."""
-        awake = []
-        started = []
+    def test_cli_passes_the_flags_through_to_the_run_unchanged(self):
+        for arguments in (["--review", "5", "--caffeinate"], ["--no-caffeinate", "5"]):
+            with self.subTest(arguments=arguments):
+                self.assert_passed_through(arguments)
 
-        @contextlib.contextmanager
-        def fake_keep_awake():
-            awake.append(True)
-            yield
-            awake.clear()
+    def test_usage_lists_both_flags(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(cli.main(["--help"]), 0)
+        self.assertIn("[--caffeinate | --no-caffeinate]", stdout.getvalue())
+        self.assertIn("--no-caffeinate lets the machine sleep", stdout.getvalue())
 
-        def run(argv, prog, confirm):
-            started.append((argv, prog, bool(awake)))
-            return 0
-
+    def assert_passed_through(self, arguments):
         with (
-            mock.patch.object(keep_awake, "keep_awake", fake_keep_awake),
-            mock.patch.object(loop, "run", run),
+            mock.patch.object(loop, "run", return_value=0) as run,
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
         ):
             self.assertEqual(cli.main(["run", *arguments]), 0)
-        self.assertEqual(len(started), 1)
-        argv, prog, kept_awake = started[0]
-        self.assertEqual(prog, "ralph-kit run")
-        return argv, kept_awake
-
-    def test_flag_wraps_the_run_in_any_position(self):
-        for arguments, passed in (
-            (["--caffeinate", "5"], ["5"]),
-            (["5", "--caffeinate"], ["5"]),
-            (["--review", "--caffeinate", "5"], ["--review", "5"]),
-            (["5", "--caffeinate", "--review"], ["5", "--review"]),
-            (["--no-review", "5", "--caffeinate"], ["--no-review", "5"]),
-            (["--caffeinate", "5", "--no-review"], ["5", "--no-review"]),
-        ):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(self.run_cli(*arguments), (passed, True))
-
-    def test_without_flag_the_machine_may_sleep(self):
-        for arguments in (["5"], ["--review", "5"], ["5", "--no-review"]):
-            with self.subTest(arguments=arguments):
-                self.assertEqual(self.run_cli(*arguments), (arguments, False))
+        run.assert_called_once()
+        self.assertEqual(run.call_args.args[0], arguments)
+        self.assertEqual(run.call_args.kwargs["prog"], "ralph-kit run")
 
 
 if __name__ == "__main__":

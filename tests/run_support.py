@@ -95,12 +95,12 @@ class RunRepository:
             )
         self.base_sha = template.base_sha
 
-    def edit_configuration(self, old, new):
-        """Replace text in `ralph.toml` and commit it, keeping the worktree clean."""
-        path = self.path / "ralph.toml"
-        configuration = path.read_text(encoding="utf-8")
+    def edit_configuration(self, old, new, path="ralph.toml"):
+        """Replace text in the configuration at `path` and commit it, keeping the worktree clean."""
+        configuration_path = self.path / path
+        configuration = configuration_path.read_text(encoding="utf-8")
         assert old in configuration, old
-        path.write_text(configuration.replace(old, new), encoding="utf-8")
+        configuration_path.write_text(configuration.replace(old, new), encoding="utf-8")
         git(self.path, "commit", "-am", "Edit the Ralph configuration")
 
     def head(self):
@@ -685,6 +685,28 @@ class ScriptedEngine:
         return subprocess.CompletedProcess(arguments, session.returncode, stdout, session.stderr)
 
 
+class FakeSleepLock:
+    """Stands in for the sleep lock helper: records how often the run took the sleep lock,
+    and whether it was held when each agent session ran."""
+
+    def __init__(self):
+        self.taken = 0
+        self.held = False
+        self.held_during_sessions = []
+
+    @contextlib.contextmanager
+    def __call__(self):
+        self.taken += 1
+        self.held = True
+        try:
+            yield
+        finally:
+            self.held = False
+
+    def session_started(self):
+        self.held_during_sessions.append(self.held)
+
+
 @dataclass(frozen=True)
 class RunResult:
     exit_code: int
@@ -693,6 +715,7 @@ class RunResult:
     # Every wait the run asked for, in seconds; tests never actually wait, and
     # the run's clock advances by them instead.
     sleeps: list[float]
+    sleep_lock: FakeSleepLock
 
 
 def start_mode_run(mode, repository, github, sessions, *arguments, **options):
@@ -717,14 +740,21 @@ def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
         github.opened_for.append(name)
         return github
 
+    sleep_lock = FakeSleepLock()
+
     def child_cycle_adapters(context):
         def run_session(request):
+            sleep_lock.session_started()
             prompt = loop_core.session_request_prompt(context.state, request)
             return sessions.run_session(request, prompt)
 
         return dataclasses.replace(
             loop_core.real_child_cycle_adapters(context), run_session=run_session
         )
+
+    def run_engine(repository_root, arguments):
+        sleep_lock.session_started()
+        return sessions.run(repository_root, arguments)
 
     sleeps = []
     if isinstance(sessions, ScriptedEngine):
@@ -733,8 +763,9 @@ def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
             child_cycle=loop_core.real_child_cycle_adapters,
             sleep=sleeps.append,
             clock=lambda: sum(sleeps),
-            run_engine=sessions.run,
+            run_engine=run_engine,
             confirm=confirm,
+            keep_awake=sleep_lock,
         )
     else:
         adapters = loop_core.RunAdapters(
@@ -743,6 +774,7 @@ def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
             sleep=sleeps.append,
             clock=lambda: sum(sleeps),
             confirm=confirm,
+            keep_awake=sleep_lock,
         )
     stdout, stderr = io.StringIO(), io.StringIO()
     with (
@@ -754,4 +786,4 @@ def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
             exit_code = loop_core.run(adapters, [str(argument) for argument in arguments])
         except SystemExit as usage_error:
             exit_code = usage_error.code
-    return RunResult(exit_code, stdout.getvalue(), stderr.getvalue(), sleeps)
+    return RunResult(exit_code, stdout.getvalue(), stderr.getvalue(), sleeps, sleep_lock)

@@ -114,6 +114,10 @@ SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] 
         lambda key: key in {"repository", "base_branch", "remote"},
     ),
     "Reviewed runs by default": (lambda config: _on(config.review_by_default), lambda key: key == "review_by_default"),
+    "Keep the machine awake by default": (
+        lambda config: _on(config.caffeinate_by_default),
+        lambda key: key == "caffeinate_by_default",
+    ),
 }
 
 
@@ -125,6 +129,7 @@ def _toml_values(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
         "remote": config.remote,
         "trusted_authors": ", ".join(sorted(config.trusted_authors)),
         "review_by_default": str(config.review_by_default).lower(),
+        "caffeinate_by_default": str(config.caffeinate_by_default).lower(),
         **{f"labels.{key}": value for key, value in config.labels.items()},
     }
     for role, profile in {**config.models, BACKUP_MODEL_KEY: config.backup}.items():
@@ -369,6 +374,23 @@ def _edit_review_by_default(prompter: Prompter, config: RalphConfig, state: Edit
     return dataclasses.replace(config, review_by_default=not enabled)
 
 
+def _edit_caffeinate_by_default(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+    enabled = config.caffeinate_by_default
+    answer = prompter.choice(
+        f"Keep the machine awake by default: {_on(enabled)} — what do you want to do?",
+        [
+            ("Turn off", "runs hold no sleep lock unless started with --caffeinate") if enabled
+            else ("Turn on", "every run holds a sleep lock unless started with --no-caffeinate"),
+            (BACK, ""),
+        ],
+        BACK,
+    )
+    if answer == BACK:
+        return config
+    prompter.say(f"  Keep the machine awake by default {_on(not enabled)}")
+    return dataclasses.replace(config, caffeinate_by_default=not enabled)
+
+
 class GitField(NamedTuple):
     key: str
     question: str
@@ -433,6 +455,7 @@ EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = 
     "Verification": _edit_verification,
     "Git": _edit_git,
     "Reviewed runs by default": _edit_review_by_default,
+    "Keep the machine awake by default": _edit_caffeinate_by_default,
 }
 
 
