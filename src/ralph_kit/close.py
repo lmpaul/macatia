@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import pathlib
 import shlex
 import sys
 from collections.abc import Callable
 from typing import Any
+
+from rich.console import Console
 
 from .commands import RalphError
 from .config import RalphConfig, RalphConfigError, load_config
@@ -170,6 +173,13 @@ def confirm_typed(parent_number: int, type_answer: Callable[[str], str] | None) 
         raise CloseRefused(f"Did not type {parent_number}. Nothing closed.")
 
 
+def checking(parent_number: int) -> contextlib.AbstractContextManager[Any]:
+    """A spinner while the checks read GitHub, which otherwise looks frozen; none off a terminal."""
+    if not sys.stdout.isatty():
+        return contextlib.nullcontext()
+    return Console().status(f"Checking #{parent_number} and its sub-issues before closing…")
+
+
 def close_parent(
     github: Any,
     config: RalphConfig,
@@ -185,21 +195,23 @@ def close_parent(
 
     Under `force`, failed checks are warnings and the confirmation is the typed parent number.
     """
-    try:
-        parent = github.issue(parent_number)
-    except RalphError as error:
-        raise RalphError(f"Cannot read #{parent_number}, nothing closed: {error}") from error
-    if int(parent.get("number", 0)) != parent_number:
-        raise RalphError(f"GitHub returned the wrong issue for #{parent_number}")
+    with checking(parent_number):
+        try:
+            parent = github.issue(parent_number)
+        except RalphError as error:
+            raise RalphError(f"Cannot read #{parent_number}, nothing closed: {error}") from error
+        if int(parent.get("number", 0)) != parent_number:
+            raise RalphError(f"GitHub returned the wrong issue for #{parent_number}")
+        if is_open(parent):
+            children = github.sub_issues(parent_number)
+            # Sub-issue listings carry no comments: each open child's evidence is in its details.
+            open_children = [
+                github.issue(int(child["number"])) for child in children if is_open(child)
+            ]
+            failures, without_evidence = failed_checks(github, config, parent, open_children)
     if not is_open(parent):
         print(f"#{parent_number} is already closed.")
         return
-    children = github.sub_issues(parent_number)
-    # Sub-issue listings carry no comments: each open child's evidence is in its details.
-    open_children = [
-        github.issue(int(child["number"])) for child in children if is_open(child)
-    ]
-    failures, without_evidence = failed_checks(github, config, parent, open_children)
     if not children:
         failures.append(f"#{parent_number} has no sub-issues")
     if failures and not force:

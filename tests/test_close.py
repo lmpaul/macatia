@@ -49,6 +49,11 @@ class ScriptedConfirmer:
         return answer
 
 
+class TerminalOutput(io.StringIO):
+    def isatty(self):
+        return True
+
+
 class CloseTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
@@ -117,6 +122,25 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(self.github.labels(70), {"implemented"})
         self.assertEqual(self.github.labels(PARENT), {"human-review"})
         self.assertIn(f"Closed #{PARENT}", self.stdout)
+
+    def test_a_terminal_sees_the_checks_in_progress(self):
+        self.add_parent()
+        self.add_child(70)
+        terminal = TerminalOutput()
+        with contextlib.redirect_stdout(terminal), contextlib.redirect_stderr(io.StringIO()):
+            code = close.run(
+                ["--yes", str(PARENT)],
+                github=lambda _root, _repository: self.github,
+                repository_root=self.root,
+            )
+        self.assertEqual(code, 0)
+        self.assertIn(f"Checking #{PARENT} and its sub-issues before closing", terminal.getvalue())
+
+    def test_other_output_gets_no_progress(self):
+        self.add_parent()
+        self.add_child(70)
+        self.assertEqual(self.close("--yes", str(PARENT)), 0)
+        self.assertNotIn("Checking", self.stdout)
 
     def test_the_parent_comment_comes_before_the_parent_closes(self):
         self.add_parent()
