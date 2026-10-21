@@ -251,6 +251,18 @@ class CloseTests(unittest.TestCase):
         self.assertIn("#71", comment)
         self.assertNotIn("#70", comment)
 
+    def test_a_rerun_after_the_parent_failed_to_close_does_not_comment_again(self):
+        self.add_parent()
+        self.add_child(70)
+        self.github.close_error = {PARENT: RalphError("command failed (gh issue close 69): HTTP 502")}
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 1)
+        self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.state(PARENT), ("CLOSED", "COMPLETED"))
+        [comment] = self.github.comments(PARENT)
+        self.assertIn("#70", comment)
+
     def test_a_rerun_after_every_child_closed_still_closes_the_parent(self):
         self.add_parent()
         self.add_child(70, state="closed")

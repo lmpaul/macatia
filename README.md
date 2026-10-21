@@ -622,7 +622,8 @@ Yes/No question (No by default); `--yes` skips it. Without a terminal and withou
 `--yes`, it refuses. It then closes the open children, posts one comment on the
 parent listing the children it closed, and closes the parent. Labels are left
 as they are. After a GitHub error partway, rerun the same command: children
-already closed are skipped and the closure finishes.
+already closed are skipped, the comment lists the children this run of `close`
+closed (it is not repeated when only the parent was left open), and the closure finishes.
 
 Exit codes: 0 once closed or already closed; 1 for a refusal, a declined
 confirmation or a GitHub error; 2 for a usage error; 130 for Ctrl-C.

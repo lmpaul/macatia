@@ -87,7 +87,7 @@ class GitHub:
         self._gh("issue", "close", str(number), "--repo", self.repository, "--reason", reason)
 
     def edit_issue_labels(self, number: int, add: str, remove: list[str]) -> None:
-        arguments = ["issue", "edit", str(number), "--add-label", add]
+        arguments = ["issue", "edit", str(number), "--repo", self.repository, "--add-label", add]
         if remove:
             arguments.extend(["--remove-label", ",".join(remove)])
         self._gh(*arguments)

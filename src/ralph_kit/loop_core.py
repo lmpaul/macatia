@@ -1271,10 +1271,13 @@ def issue_details(state: RunState, issue_number: int) -> dict[str, Any]:
     return details
 
 
+def author_login(issue_or_comment: dict[str, Any]) -> Any:
+    author = issue_or_comment.get("author", {})
+    return author.get("login") if isinstance(author, dict) else None
+
+
 def trusted_comment(state: RunState, comment: dict[str, Any]) -> bool:
-    author = comment.get("author", {})
-    login = author.get("login") if isinstance(author, dict) else None
-    return login in state.config.trusted_authors
+    return author_login(comment) in state.config.trusted_authors
 
 
 def parse_implementation_evidence(
@@ -1626,9 +1629,7 @@ def recover_published_child(state: RunState, children: Iterable[dict[str, Any]])
 
 
 def require_trusted_issue(state: RunState, issue: dict[str, Any]) -> None:
-    author = issue.get("author", {})
-    login = author.get("login") if isinstance(author, dict) else None
-    if login not in state.config.trusted_authors:
+    if author_login(issue) not in state.config.trusted_authors:
         raise RalphError(
             f"issue #{issue['number']} must be authored by one of: "
             + ", ".join(f"@{author}" for author in sorted(state.config.trusted_authors))

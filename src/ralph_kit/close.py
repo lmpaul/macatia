@@ -12,10 +12,12 @@ from typing import Any
 from .commands import RalphError
 from .config import RalphConfig, RalphConfigError, load_config
 from .github import GitHub
-from .loop_core import DEFAULT_CONFIG_PATH, labels, positive_integer
+from .loop_core import DEFAULT_CONFIG_PATH, author_login, labels, positive_integer
 
 
 COMPLETED = "completed"
+# Marks the parent's closure comment, so a rerun after the parent failed to close does not repeat it.
+CLOSURE_MARKER = "<!-- ralph-parent-closure -->"
 
 
 class CloseRefused(RalphError):
@@ -42,16 +44,11 @@ def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
     return parser.parse_args(argv)  # Exits with status 2 on usage errors.
 
 
-def author(issue: dict[str, Any]) -> Any:
-    value = issue.get("author", {})
-    return value.get("login") if isinstance(value, dict) else None
-
-
 def is_open(issue: dict[str, Any]) -> bool:
     return str(issue.get("state", "")).upper() == "OPEN"
 
 
-def heading(issue: dict[str, Any]) -> str:
+def issue_reference(issue: dict[str, Any]) -> str:
     return f"#{issue['number']} {issue.get('title', '')}".rstrip()
 
 
@@ -65,15 +62,15 @@ def failed_checks(
     failures = []
     if human_review not in labels(parent):
         failures.append(f"#{parent['number']} is not labelled {human_review}")
-    if author(parent) not in config.trusted_authors:
-        failures.append(f"#{parent['number']} is authored by @{author(parent)}, not one of: {trusted}")
+    if author_login(parent) not in config.trusted_authors:
+        failures.append(f"#{parent['number']} is authored by @{author_login(parent)}, not one of: {trusted}")
     if not children:
         failures.append(f"#{parent['number']} has no sub-issues")
     for child in children:
         if not is_open(child):
             continue
-        if author(child) not in config.trusted_authors:
-            failures.append(f"#{child['number']} is authored by @{author(child)}, not one of: {trusted}")
+        if author_login(child) not in config.trusted_authors:
+            failures.append(f"#{child['number']} is authored by @{author_login(child)}, not one of: {trusted}")
         lifecycle = labels(child) & config.lifecycle_labels
         if lifecycle != {implemented}:
             shown = ", ".join(sorted(lifecycle)) or "none"
@@ -86,9 +83,21 @@ def failed_checks(
 
 def closure_comment(closed: list[dict[str, Any]]) -> str:
     if not closed:
-        return "Ralph closed this parent issue: every child was already closed."
-    lines = "\n".join(f"- {heading(child)}" for child in closed)
-    return f"Ralph closed this parent issue after closing its children as completed:\n\n{lines}"
+        return f"{CLOSURE_MARKER}\nRalph closed this parent issue: every child was already closed."
+    lines = "\n".join(f"- {issue_reference(child)}" for child in closed)
+    return (
+        f"{CLOSURE_MARKER}\nRalph closed this parent issue after closing its children "
+        f"as completed:\n\n{lines}"
+    )
+
+
+def has_closure_comment(config: RalphConfig, parent: dict[str, Any]) -> bool:
+    """Whether the parent's latest trusted comment is a closure comment."""
+    trusted = [
+        comment for comment in parent.get("comments", [])
+        if author_login(comment) in config.trusted_authors
+    ]
+    return bool(trusted) and CLOSURE_MARKER in str(trusted[-1].get("body", ""))
 
 
 def close_parent(
@@ -118,10 +127,10 @@ def close_parent(
             + "\nNothing closed."
         )
     open_children = [child for child in children if is_open(child)]
-    print(f"Parent closure of {heading(parent)}, as completed:")
+    print(f"Parent closure of {issue_reference(parent)}, as completed:")
     for child in open_children:
-        print(f"  close child {heading(child)}")
-    print(f"  then close parent {heading(parent)}")
+        print(f"  close child {issue_reference(child)}")
+    print(f"  then close parent {issue_reference(parent)}")
     if not yes:
         if confirm is None:
             raise CloseRefused(
@@ -139,13 +148,14 @@ def close_parent(
             github.close_issue(int(child["number"]), COMPLETED)
             closed.append(child)
             print(f"Closed #{child['number']}.")
-        github.comment_on_issue(parent_number, closure_comment(closed))
+        if closed or not has_closure_comment(config, parent):
+            github.comment_on_issue(parent_number, closure_comment(closed))
         github.close_issue(parent_number, COMPLETED)
     except RalphError as error:
         done = ", ".join(f"#{child['number']}" for child in closed) or "none"
         raise RalphError(f"{error}\nClosed so far: {done}. Rerun `{rerun}` to finish.") from error
     print(f"Closed #{parent_number}.")
-    print(f"✅ Parent closure of #{parent_number} complete.")
+    print(f"✅ Closed #{parent_number} and its children.")
 
 
 def run(
