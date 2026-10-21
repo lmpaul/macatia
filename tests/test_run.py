@@ -554,7 +554,7 @@ class ScriptedConfirm:
         return self.answer
 
 
-STOP, RESUME = False, True
+STOP, RESUME, CREATE = False, True, True
 
 
 class LeftAgentWorkingTests(RunLevelTestCase):
@@ -1573,7 +1573,6 @@ class StartupTests(StartupRejectionTestCase):
 
 
 RUN_BRANCH = f"ralph-kit/issue-{PARENT}"
-CREATE = True
 
 
 class RunBranchTests(StartupRejectionTestCase):

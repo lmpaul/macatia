@@ -1252,7 +1252,10 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
     if listing.returncode != 0:
         detail = " ".join((listing.stderr or "").split())
         raise RalphError(f"could not reach {remote} to look for {run_branch}: {detail}")
-    on_remote = bool(listing.stdout.strip())
+    # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
+    on_remote = any(
+        line.split("\t")[-1] == f"refs/heads/{run_branch}" for line in listing.stdout.splitlines()
+    )
     local = command(
         state, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{run_branch}"], check=False
     ).returncode == 0
@@ -2951,8 +2954,8 @@ def run_children(
     """Implement the parent's runnable children one at a time, then hand the parent to a human.
 
     Startup has loaded the configuration and quality policy, opened GitHub
-    access, and accepted the branch; the run reaches everything else through
-    its adapters.
+    access, and accepted the branch; a run on the base branch first offers its
+    run branch. The run reaches everything else through its adapters.
     """
     assert state.branch is not None
     with spinner(f"Reading #{parent_issue}…"):
