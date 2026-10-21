@@ -1403,11 +1403,12 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
         ):
             with self.subTest(key=key):
                 self.repository.edit_configuration(f'{key} = "{old}"', f'{key} = "{new}"')
+                try:
+                    result = self.start(loop_core.STANDARD_RUN)
 
-                result = self.start(loop_core.STANDARD_RUN)
-
-                self.assert_rejected_at_startup(result, "configuration.labels values must be unique")
-                self.repository.edit_configuration(f'{key} = "{new}"', f'{key} = "{old}"')
+                    self.assert_rejected_at_startup(result, "configuration.labels values must be unique")
+                finally:
+                    self.repository.edit_configuration(f'{key} = "{new}"', f'{key} = "{old}"')
 
     def test_unknown_engine_is_rejected_before_any_session(self):
         self.repository = RunRepository(self, engines={"implementation": "unknown"})
