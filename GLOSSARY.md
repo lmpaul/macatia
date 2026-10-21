@@ -176,8 +176,12 @@ _Avoid_: Done, closed
 The lifecycle state of a child or parent handed to a human: either because Ralph stopped on it, or because all children are implemented. Ralph never resumes a child in this state.
 _Avoid_: Escalation, stuck
 
+**Work started**:
+The label role marking a parent on which Ralph has started work. It is neither a triage label nor a lifecycle label, and it is informational only: Ralph never reads it to decide anything.
+_Avoid_: Parent in progress, parent agent-working
+
 **Label role**:
-One of Ralph's eight canonical meanings for a label, mapped to a label name in each repository.
+One of Ralph's nine canonical meanings for a label, mapped to a label name in each repository.
 
 **Triage labels**:
 The label roles that say whether a child is ready for an agent: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix. A run also refuses to start on a parent carrying any of them other than ready-for-agent.

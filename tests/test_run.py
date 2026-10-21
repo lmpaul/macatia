@@ -1387,14 +1387,27 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
             result, "configuration.labels is missing keys: agent_working"
         )
 
-    def test_duplicate_label_value_is_rejected_before_any_session(self):
-        self.repository.edit_configuration(
-            'agent_working = "agent-working"', 'agent_working = "implemented"'
-        )
+    def test_missing_work_started_label_is_rejected_before_any_session(self):
+        self.repository.edit_configuration('work_started = "work-started"\n', "")
 
         result = self.start(loop_core.STANDARD_RUN)
 
-        self.assert_rejected_at_startup(result, "configuration.labels values must be unique")
+        self.assert_rejected_at_startup(
+            result, "configuration.labels is missing keys: work_started"
+        )
+
+    def test_duplicate_label_value_is_rejected_before_any_session(self):
+        for key, old, new in (
+            ("agent_working", "agent-working", "implemented"),
+            ("work_started", "work-started", "ready-for-agent"),
+        ):
+            with self.subTest(key=key):
+                self.repository.edit_configuration(f'{key} = "{old}"', f'{key} = "{new}"')
+
+                result = self.start(loop_core.STANDARD_RUN)
+
+                self.assert_rejected_at_startup(result, "configuration.labels values must be unique")
+                self.repository.edit_configuration(f'{key} = "{new}"', f'{key} = "{old}"')
 
     def test_unknown_engine_is_rejected_before_any_session(self):
         self.repository = RunRepository(self, engines={"implementation": "unknown"})
@@ -1829,6 +1842,7 @@ class ConfiguredTrustTests(RunLevelTestCase):
             "agent-working": "r-agent-working",
             "human-review": "r-human-review",
             "implemented": "r-implemented",
+            "work-started": "r-work-started",
         }
         for default, configured in labels.items():
             self.repository.edit_configuration(f'= "{default}"\n', f'= "{configured}"\n')

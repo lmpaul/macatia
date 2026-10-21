@@ -40,6 +40,7 @@ LABELS = {
     "agent_working": "agent-working",
     "human_review": "human-review",
     "implemented": "implemented",
+    "work_started": "work-started",
 }
 # Claude Code has no command listing models; its documented aliases follow the latest version.
 CLAUDE_MODELS = [

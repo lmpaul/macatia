@@ -365,12 +365,15 @@ implementation evidence from either kind of run when its commits are on the bran
 - `caffeinate_by_default` is optional (`false` when missing). `true` makes every
   run hold a sleep lock until it ends; `ralph-kit run --no-caffeinate` overrides
   it for one run.
-- `labels` maps Ralph's eight label roles to labels in the target
+- `labels` maps Ralph's nine label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
-  `ready_for_human`, and `wontfix`, and the lifecycle labels `ready_for_agent`,
-  `agent_working`, `human_review`, and `implemented`. `agent_working`
-  (`agent-working` by default) marks the child a run is working on; only Ralph
-  sets it. `init` and `check` offer to create missing ones (Yes / Later).
+  `ready_for_human`, and `wontfix`, the lifecycle labels `ready_for_agent`,
+  `agent_working`, `human_review`, and `implemented`, and the parent-only
+  `work_started`. `agent_working` (`agent-working` by default) marks the child a
+  run is working on; only Ralph sets it. `work_started` (`work-started` by
+  default) marks a parent on which Ralph has started work; it is informational
+  only, and Ralph never reads it to decide anything. `init` and `check` offer to
+  create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
 - `models.backup` is optional: one more model profile, with the same keys, that

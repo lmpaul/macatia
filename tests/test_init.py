@@ -39,6 +39,7 @@ wontfix = "wontfix"
 agent_working = "agent-working"
 human_review = "human-review"
 implemented = "implemented"
+work_started = "work-started"
 
 [models.implementation]
 engine = "claude"
@@ -95,6 +96,7 @@ wontfix = "won't fix"
 agent_working = "agent: working"
 human_review = "human: review"
 implemented = "done"
+work_started = "agent: started"
 
 [models.implementation]
 engine = "claude"
@@ -408,10 +410,12 @@ class InitTests(unittest.TestCase):
     def test_missing_labels_are_offered_and_created_after_writing(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[{"name": "needs-triage"}]])
         created = []
+        commands = []
 
         def command(*args):
             if args[:3] == ("gh", "label", "create"):
                 self.assertTrue((self.root / "ralph.toml").exists())
+                commands.append(args)
                 created.append(args[3])
                 return ""
             return self.responses.get(args)
@@ -422,11 +426,24 @@ class InitTests(unittest.TestCase):
         self.assertEqual(created, [label for label in init.LABELS.values() if label != "needs-triage"])
         self.assertIn("✓ Label implemented created", self.output.getvalue())
         self.assertIn("✓ Label agent-working created", self.output.getvalue())
+        self.assertIn("✓ Label work-started created", self.output.getvalue())
+        self.assertIn(
+            ("gh", "label", "create", "work-started", "--repo", "acme/widget",
+             "--description", "Ralph has started work on this parent"),
+            commands,
+        )
 
     def test_configuration_declares_the_agent_working_label(self):
         config = self.run_init()
         self.assertEqual(config.labels["agent_working"], "agent-working")
         self.assertIn('agent_working = "agent-working"\n', (self.root / "ralph.toml").read_text())
+
+    def test_configuration_declares_the_work_started_label_outside_triage_and_lifecycle(self):
+        config = self.run_init()
+        self.assertEqual(config.labels["work_started"], "work-started")
+        self.assertIn('work_started = "work-started"\n', (self.root / "ralph.toml").read_text())
+        self.assertNotIn("work-started", config.triage_labels)
+        self.assertNotIn("work-started", config.lifecycle_labels)
 
     def test_labels_are_kept_for_later(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[]])

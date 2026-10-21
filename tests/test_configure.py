@@ -341,9 +341,9 @@ class ConfigureTests(unittest.TestCase):
         self.command = command
         self.assertTrue(self.run_configure(answers=["5", "1", "acme/other", "", "", "8"]))  # Enter keeps "Yes".
         output = self.output.getvalue()
-        self.assertIn("  ℹ Labels missing on acme/other: agent: working, done, human: ready, human: review, triage: info, won't fix", output)
-        self.assertIn("? Create the 6 missing labels?", output)
-        self.assertEqual(created, ["triage: info", "human: ready", "won't fix", "agent: working", "human: review", "done"])
+        self.assertIn("  ℹ Labels missing on acme/other: agent: started, agent: working, done, human: ready, human: review, triage: info, won't fix", output)
+        self.assertIn("? Create the 7 missing labels?", output)
+        self.assertEqual(created, ["triage: info", "human: ready", "won't fix", "agent: working", "human: review", "done", "agent: started"])
         self.assertIn("   ✓ Label won't fix created\n", output)
         self.assertIn("   ✗ Label done not created\n", output)
         self.assertLess(output.index("✅ Wrote"), output.index("✓ Label"))
@@ -360,9 +360,9 @@ class ConfigureTests(unittest.TestCase):
         self.responses[labels_of("acme/other")] = json.dumps([[]])
         self.responses[labels_of("acme/full")] = json.dumps([[{"name": name} for name in init.LABELS.values()]])
         self.run_configure(answers=["5", "1", "acme/other", "2", "", "8"])
-        self.assertIn("? Create the 8 missing labels?", self.output.getvalue())
+        self.assertIn("? Create the 9 missing labels?", self.output.getvalue())
         self.run_configure(answers=["5", "1", "acme/full", "", "8"])
-        self.assertIn("  ✓ Labels: all 8 present", self.output.getvalue())
+        self.assertIn("  ✓ Labels: all 9 present", self.output.getvalue())
         self.assertEqual(created, [])
 
     def test_labels_offered_for_a_replaced_repository_or_without_saving_are_not_created(self):

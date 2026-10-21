@@ -18,6 +18,7 @@ wontfix = "wontfix"
 agent_working = "agent-working"
 human_review = "human-review"
 implemented = "implemented"
+work_started = "work-started"
 
 [models.implementation]
 engine = "claude"
