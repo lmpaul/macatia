@@ -49,7 +49,7 @@ from .config import (
     RalphConfigError,
     load_config,
 )
-from .github import GitHub
+from .github import GitHub, MergedPullRequest
 from .keep_awake import keep_awake
 from .progress import Countdown, Elapsed, duration_text, spinner
 from .sanitize import (
@@ -449,6 +449,11 @@ class RunState:
     parent_work_started: bool = False
     # Warnings that did not stop the run, for the terminal summary.
     warnings: list[str] = field(default_factory=list)
+    # The merged pull requests found for a blocker's verified head, or the exhausted
+    # retries of their lookup, so the stop report repeats neither the lookup nor its retries.
+    blocker_pull_requests: dict[str, list[MergedPullRequest] | InfrastructureRetriesExhausted] = (
+        field(default_factory=dict)
+    )
 
     @property
     def mode(self) -> RunMode:
@@ -747,11 +752,16 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
 
 
 def unsatisfied_blockers(state: RunState, child_number: int) -> str:
-    return ", ".join(
-        f"#{blocker['number']}"
-        for blocker in state.github.blockers(child_number)
-        if not blocker_is_satisfied(state, blocker)
-    )
+    unsatisfied = []
+    for blocker in state.github.blockers(child_number):
+        try:
+            satisfied = blocker_is_satisfied(state, blocker)
+        # The stop reason already reports the failed lookup.
+        except InfrastructureRetriesExhausted:
+            satisfied = False
+        if not satisfied:
+            unsatisfied.append(f"#{blocker['number']}")
+    return ", ".join(unsatisfied)
 
 
 def handoff_comment_url(state: RunState, child_number: int) -> str | None:
@@ -1033,7 +1043,7 @@ class InfrastructureRetryTracker:
         self.infra_retries = 0
 
     def run(self, operation, *, initial_delay_seconds: float):
-        retries = 0
+        """Run the canonical CI check, retrying its infrastructure failures."""
         print(
             "⏳ Waiting "
             f"{initial_delay_seconds:g} seconds for GitHub Actions to start.",
@@ -1042,11 +1052,16 @@ class InfrastructureRetryTracker:
         if initial_delay_seconds:
             with spinner(Countdown("Waiting for GitHub Actions to start", initial_delay_seconds)):
                 self.state.adapters.sleep(initial_delay_seconds)
+        return self.retry(operation, "canonical CI", "Canonical CI is not ready")
+
+    def retry(self, operation, subject: str, not_ready: str):
+        """Run `operation`, retrying its infrastructure failures; `subject` names what it checks."""
+        retries = 0
         while True:
             expected_head = current_head(self.state)
             try:
                 print(
-                    "🔎 Checking canonical CI "
+                    f"🔎 Checking {subject} "
                     f"(attempt {retries + 1}/{self.maximum_retries + 1}).",
                     flush=True,
                 )
@@ -1064,12 +1079,12 @@ class InfrastructureRetryTracker:
                     os.environ.get("RALPH_INFRA_RETRY_SECONDS", "30")
                 )
                 print(
-                    "⚠️ Canonical CI is not ready; the next check is in "
+                    f"⚠️ {not_ready}; the next check is in "
                     f"{retry_seconds:g} seconds.",
                     flush=True,
                 )
                 if retry_seconds:
-                    with spinner(Countdown("Waiting to check canonical CI again", retry_seconds)):
+                    with spinner(Countdown(f"Waiting to check {subject} again", retry_seconds)):
                         self.state.adapters.sleep(retry_seconds)
 
 
@@ -1438,7 +1453,44 @@ def blocker_is_satisfied(state: RunState, blocker: dict[str, Any]) -> bool:
         return False
     details = issue_details(state, int(blocker["number"]))
     heads = verified_implementation_heads(state, details)
-    return heads is not None and heads_are_on_current_branch(state, heads)
+    if heads is None:
+        return False
+    # Ancestry first: a blocker implemented on this branch costs no pull request lookup.
+    return heads_are_on_current_branch(state, heads) or merged_pull_request_is_on_current_branch(
+        state, int(blocker["number"]), heads[-1]
+    )
+
+
+def merged_pull_request_is_on_current_branch(
+    state: RunState, blocker_number: int, verified_head: str
+) -> bool:
+    """Whether a pull request merged into the base branch that GitHub associates with the
+    blocker's verified head has its merge commit on the run's branch: a squash or rebase
+    merge leaves the verified head itself off the branch."""
+    subject = f"the merged pull request lookup of blocker #{blocker_number}"
+
+    def lookup():
+        try:
+            return state.github.merged_pull_requests(state.config.base_branch, verified_head)
+        except RalphError as error:
+            raise InfrastructureFailure(subject, str(error)) from error
+
+    pulls = state.blocker_pull_requests.get(verified_head)
+    if pulls is None:
+        infrastructure = state.summary.infrastructure
+        assert infrastructure is not None
+        try:
+            pulls = infrastructure.retry(lookup, subject, f"GitHub failed {subject}")
+        except InfrastructureRetriesExhausted as error:
+            state.blocker_pull_requests[verified_head] = error
+            raise
+        # A pull request found merged stays merged; one not found yet may be merged later.
+        if pulls:
+            state.blocker_pull_requests[verified_head] = pulls
+    elif isinstance(pulls, InfrastructureRetriesExhausted):
+        raise pulls
+    branch_head = current_head(state)
+    return any(is_ancestor(state, pull.merge_commit, branch_head) for pull in pulls)
 
 
 def set_child_lifecycle(state: RunState, child_number: int, role: str) -> None:

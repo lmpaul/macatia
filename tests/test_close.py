@@ -19,6 +19,7 @@ from ralph_kit.commands import RalphError  # noqa: E402
 from ralph_kit.loop_core import REVIEWED_RUN, STANDARD_RUN  # noqa: E402
 from run_support import (  # noqa: E402
     FIXTURES,
+    CommitPull,
     FakeGitHub,
     implementation_evidence,
     legacy_implementation_evidence,
@@ -371,6 +372,117 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(confirmer.questions, [])
         self.assertNotIn(NO_EVIDENCE, self.stdout)
         self.assertIn(legacy_head, {head for _branch, head in self.github.compared})
+
+    def merge_through_pull_requests(self, verified_head, *pulls):
+        """GitHub associates the verified head, which is not on main, with these pull requests."""
+        self.github.on_branch[verified_head] = False
+        self.github.commit_pulls[verified_head] = list(pulls)
+
+    def test_a_child_merged_through_a_merged_pull_request_is_closed_and_named_with_it(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71)
+        self.merge_through_pull_requests(sha("verified-71-v1"), CommitPull(12, sha("merge-12")))
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.state(71), ("CLOSED", "COMPLETED"))
+        self.assertEqual(self.state(PARENT), ("CLOSED", "COMPLETED"))
+        [comment] = self.github.comments(PARENT)
+        self.assertIn("- #71 Issue 71, merged by PR #12", comment)
+        self.assertIn("- #70 Issue 70\n", comment)
+        self.assertNotIn("PR #", comment.replace("PR #12", ""))
+
+    def test_a_child_merged_by_ancestry_needs_no_pull_request_lookup(self):
+        self.add_parent()
+        self.add_child(70)
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.github.pull_lookups, [])
+        [comment] = self.github.comments(PARENT)
+        self.assertNotIn("PR #", comment)
+
+    def test_a_child_whose_pull_request_was_not_merged_is_refused(self):
+        for pull in (
+            CommitPull(12, sha("test-merge-12"), state="closed"),
+            CommitPull(12, sha("test-merge-12"), state="open"),
+            CommitPull(12, sha("merge-12"), base="release"),
+        ):
+            with self.subTest(pull=pull):
+                self.github = FakeGitHub()
+                self.add_parent()
+                self.add_child(70)
+                self.merge_through_pull_requests(sha("verified-70-v1"), pull)
+
+                self.assertEqual(self.close(str(PARENT), "--yes"), 1)
+
+                self.assertIn(
+                    f"#70 is not merged: its verified head {sha('verified-70-v1')} is not on main",
+                    self.stderr,
+                )
+                self.assertEqual(self.github.pull_lookups, [("main", sha("verified-70-v1"))])
+                self.assert_nothing_written(PARENT, 70)
+
+    def test_a_merged_pull_request_into_the_base_branch_counts_among_others(self):
+        self.add_parent()
+        self.add_child(70)
+        self.merge_through_pull_requests(
+            sha("verified-70-v1"),
+            CommitPull(11, sha("test-merge-11"), state="closed"),
+            CommitPull(12, sha("merge-12"), base="release"),
+            CommitPull(13, sha("merge-13")),
+        )
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
+
+        [comment] = self.github.comments(PARENT)
+        self.assertIn("#70 Issue 70, merged by PR #13", comment)
+
+    def test_every_evidence_format_works_through_a_merged_pull_request(self):
+        self.add_parent()
+        self.add_child(70, comments=[self.evidence(70, mode=STANDARD_RUN)])
+        self.add_child(71, comments=[self.evidence(71, mode=REVIEWED_RUN)])
+        legacy_head = sha("legacy-72")
+        self.add_child(72, comments=[legacy_implementation_evidence(sha("base-72"), legacy_head)])
+        for number, head in ((70, sha("verified-70-v1")), (71, sha("verified-71-v1")), (72, legacy_head)):
+            self.merge_through_pull_requests(head, CommitPull(number + 100, sha(f"merge-{number}")))
+        confirmer = ScriptedConfirmer()
+
+        self.assertEqual(self.close(str(PARENT), "--yes", confirm=confirmer), 0, self.stderr)
+
+        self.assertEqual(confirmer.questions, [])
+        [comment] = self.github.comments(PARENT)
+        for number in (70, 71, 72):
+            self.assertIn(f"#{number} Issue {number}, merged by PR #{number + 100}", comment)
+
+    def test_a_github_error_during_the_pull_request_lookup_writes_nothing(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71)
+        self.github.on_branch[sha("verified-71-v1")] = False
+        self.github.commit_pulls[sha("verified-71-v1")] = RalphError(
+            "command failed (gh api repos/lmpaul/buyr/commits/x/pulls): HTTP 502"
+        )
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 1)
+
+        self.assertIn("HTTP 502", self.stderr)
+        self.assert_nothing_written(PARENT, 70, 71)
+
+    def test_force_still_closes_a_child_merged_neither_way(self):
+        self.add_parent()
+        self.add_child(70)
+        self.merge_through_pull_requests(
+            sha("verified-70-v1"), CommitPull(12, sha("test-merge-12"), state="closed")
+        )
+
+        self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 0, self.stderr)
+
+        self.assertIn("⚠️ #70 is not merged", self.stdout)
+        self.assertEqual(self.state(70), ("CLOSED", "COMPLETED"))
+        [comment] = self.github.comments(PARENT)
+        self.assertNotIn("PR #", comment)
 
     def test_the_latest_trusted_evidence_wins(self):
         self.add_parent()

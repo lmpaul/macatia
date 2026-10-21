@@ -69,10 +69,11 @@ def issue_reference(issue: dict[str, Any]) -> str:
 
 def failed_checks(
     github: Any, config: RalphConfig, parent: dict[str, Any], children: list[dict[str, Any]]
-) -> tuple[list[str], list[dict[str, Any]]]:
-    """Every reason the parent closure cannot proceed, and the open children whose merge
-    is not verified: without trusted implementation evidence. One that is implemented
-    is not a failure; only --force closes the others.
+) -> tuple[list[str], list[dict[str, Any]], dict[int, int]]:
+    """Every reason the parent closure cannot proceed, the open children whose merge
+    is not verified: without trusted implementation evidence, and the number of the
+    merged pull request that proves each child merged by one. A child without evidence
+    that is implemented is not a failure; only --force closes the others.
 
     `children` are the open children's details, comments included.
     """
@@ -81,6 +82,7 @@ def failed_checks(
     trusted = ", ".join(f"@{login}" for login in sorted(config.trusted_authors))
     failures = []
     without_evidence = []
+    merged_by: dict[int, int] = {}
     if human_review not in labels(parent):
         failures.append(f"#{parent['number']} is not labelled {human_review}")
     if author_login(parent) not in config.trusted_authors:
@@ -98,12 +100,17 @@ def failed_checks(
         heads = latest_implementation_heads(child, config.trusted_authors, STANDARD_RUN)
         if heads is None:
             without_evidence.append(child)
+        # Ancestry first: a child merged by ancestry costs no pull request lookup.
         elif not github.commit_is_on_branch(config.base_branch, heads[-1]):
-            failures.append(
-                f"#{child['number']} is not merged: its verified head {heads[-1]} "
-                f"is not on {config.base_branch}"
-            )
-    return failures, without_evidence
+            pulls = github.merged_pull_requests(config.base_branch, heads[-1])
+            if pulls:
+                merged_by[int(child["number"])] = pulls[0].number
+            else:
+                failures.append(
+                    f"#{child['number']} is not merged: its verified head {heads[-1]} "
+                    f"is not on {config.base_branch}, nor in a pull request merged into it"
+                )
+    return failures, without_evidence, merged_by
 
 
 def child_numbers(children: list[dict[str, Any]]) -> str:
@@ -118,9 +125,15 @@ def forced_section(failures: list[str]) -> str:
     )
 
 
+def merged_child_reference(child: dict[str, Any], merged_by: dict[int, int]) -> str:
+    pull = merged_by.get(int(child["number"]))
+    return issue_reference(child) + ("" if pull is None else f", merged by PR #{pull}")
+
+
 def closure_comment(
     closed: list[dict[str, Any]],
     without_evidence: list[dict[str, Any]],
+    merged_by: dict[int, int],
     *,
     has_children: bool,
     forced_failures: list[str] | None,
@@ -132,7 +145,7 @@ def closure_comment(
     if not closed:
         return f"{CLOSURE_MARKER}\nRalph closed this parent issue: every child was already closed.{forced}"
     sections = [
-        heading + "\n".join(f"- {issue_reference(child)}" for child in group)
+        heading + "\n".join(f"- {merged_child_reference(child, merged_by)}" for child in group)
         for heading, group in (
             ("", [child for child in closed if child not in without_evidence]),
             (
@@ -199,7 +212,9 @@ def close_parent(
             open_children = [
                 github.issue(int(child["number"])) for child in children if is_open(child)
             ]
-            failures, without_evidence = failed_checks(github, config, parent, open_children)
+            failures, without_evidence, merged_by = failed_checks(
+                github, config, parent, open_children
+            )
     if not is_open(parent):
         print(f"#{parent_number} is already closed.")
         return
@@ -216,7 +231,7 @@ def close_parent(
     print(f"Parent closure of {issue_reference(parent)}, as completed{', forced' if force else ''}:")
     for child in open_children:
         if child not in without_evidence:
-            print(f"  close child {issue_reference(child)}")
+            print(f"  close child {merged_child_reference(child, merged_by)}")
     if without_evidence:
         print(f"  close children {NO_EVIDENCE}:")
         for child in without_evidence:
@@ -253,6 +268,7 @@ def close_parent(
                 closure_comment(
                     closed,
                     without_evidence,
+                    merged_by,
                     has_children=bool(children),
                     forced_failures=failures if force else None,
                 ),

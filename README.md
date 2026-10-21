@@ -193,8 +193,9 @@ RALPH_LIVE=1 uv run python -m unittest discover -s tests -p test_live.py -v
 
 It makes read-only `gh` calls of each shape a run or `close` parses (repository,
 children, blockers, issue details, open pull requests, check runs, the Actions job,
-job log and check run behind a check, and the compare of the default branch with
-its head) through Ralph's GitHub adapter, against the
+job log and check run behind a check, the compare of the default branch with
+its head, and the merged pull requests of a merged pull request's head commit)
+through Ralph's GitHub adapter, against the
 children of parent issue #5 in this repository (`RALPH_LIVE_PARENT` selects another
 parent issue with children and blockers) and the check runs of its default branch
 head. It then starts one Claude Code and one Codex session in a scratch Git
@@ -362,7 +363,12 @@ trusted implementation evidence with commits on the current branch, is marked
 `implemented` without another session. Existing `implemented` labels
 remain shared, so switching between standard and reviewed runs does not
 revalidate children already implemented. Blocker checks accept trusted
-implementation evidence from either kind of run when its commits are on the branch.
+implementation evidence from either kind of run when its commits are on the branch,
+or, when its verified head is not, when GitHub associates that head with a pull
+request merged into the base branch (squash and rebase merges included) whose
+merge commit is on the branch. A closed blocker is satisfied whatever its
+evidence. A GitHub error during that pull request lookup goes through the
+infrastructure retries, then stops the run.
 
 ## Repository settings
 
@@ -648,11 +654,14 @@ clean worktree or Git remote. Before writing anything it checks that:
 - each open child is authored by a trusted author and has `implemented` as its
   only lifecycle label. Closed children are ignored, whatever their labels;
 - each open child with trusted implementation evidence is merged: its verified
-  head is on the remote base branch. The latest trusted evidence comment counts,
-  whether a standard or a reviewed run wrote it (legacy formats included).
-  `close` asks GitHub's compare API (`base_branch...verified_head` is `behind` or
-  `identical`) and never reads local Git. Work merged by squash or rebase has new
-  commits, so its verified head is not on the base branch and the check fails.
+  head is on the remote base branch, or GitHub associates it with a pull request
+  merged into the base branch, whatever the merge method (squash and rebase
+  merges included). The latest trusted evidence comment counts, whether a
+  standard or a reviewed run wrote it (legacy formats included). `close` asks
+  GitHub's compare API first (`base_branch...verified_head` is `behind` or
+  `identical`), then, only when that fails, the pull requests GitHub lists for
+  the verified head; it never reads local Git. A pull request closed without
+  being merged, or merged into another branch, does not count.
 
 An open child labelled `implemented` without trusted implementation evidence
 (typically work a human did) does not fail a check: `close` lists it apart as
@@ -664,7 +673,8 @@ Yes/No question (No by default); `--yes` skips it, unless a child is implemented
 without evidence: only a human at a terminal confirms closing that one. Without
 a terminal, when the confirmation is required, it refuses. It then closes the
 open children, posts one comment on the parent listing the children it closed
-(those without evidence apart, as confirmed by a human), and closes the parent. Labels are left
+(naming the pull request, as `merged by PR #N`, of each child proven merged by
+one; those without evidence apart, as confirmed by a human), and closes the parent. Labels are left
 as they are. After a GitHub error partway, rerun the same command: children
 already closed are skipped, the comment lists the children this run of `close`
 closed (it is not repeated when only the parent was left open), and the closure finishes.

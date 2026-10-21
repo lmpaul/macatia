@@ -32,6 +32,7 @@ from ralph_kit.github import (  # noqa: E402
     actions_job_command,
     check_run_command,
     job_log_command,
+    merged_pull_requests_into,
 )
 
 
@@ -284,6 +285,29 @@ class PullRequest:
     comments: list[str] = field(default_factory=list)
 
 
+@dataclass(frozen=True)
+class CommitPull:
+    """A pull request GitHub associates with a commit: merged, closed unmerged, or open.
+
+    GitHub reports a merge commit SHA for an unmerged pull request too: its test merge.
+    """
+
+    number: int
+    merge_commit: str
+    base: str = "main"
+    state: str = "merged"
+
+    def listing(self):
+        """The pull request as the commit-to-pull-requests listing returns it."""
+        return {
+            "number": self.number,
+            "state": "open" if self.state == "open" else "closed",
+            "base": {"ref": self.base},
+            "merged_at": "2026-08-29T00:00:00Z" if self.state == "merged" else None,
+            "merge_commit_sha": self.merge_commit,
+        }
+
+
 class FakeGitHub:
     """GitHub as a run sees it, held in memory.
 
@@ -310,6 +334,9 @@ class FakeGitHub:
     the issue number and reason after each close. Reading an unknown issue raises
     as `gh` does for an issue that does not exist. A commit is on a branch when
     `on_branch` maps its SHA to True; `compared` keeps each (branch, SHA) asked.
+    `commit_pulls` maps a commit SHA to the pull requests GitHub associates with
+    it, each a `CommitPull`, or to a `RalphError` its lookup raises;
+    `pull_lookups` keeps each (base, SHA) asked.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     """
 
@@ -350,6 +377,8 @@ class FakeGitHub:
         self.after_close = None
         self.on_branch = {}
         self.compared = []
+        self.commit_pulls = {}
+        self.pull_lookups = []
         self.opened_for = []
 
     # Test setup and observation.
@@ -431,6 +460,13 @@ class FakeGitHub:
     def commit_is_on_branch(self, branch, sha):
         self.compared.append((branch, sha))
         return self.on_branch.get(sha, False)
+
+    def merged_pull_requests(self, base, sha):
+        self.pull_lookups.append((base, sha))
+        pulls = self.commit_pulls.get(sha, [])
+        if isinstance(pulls, RalphError):
+            raise pulls
+        return merged_pull_requests_into(base, [pull.listing() for pull in pulls])
 
     def comment_on_issue(self, number, body):
         created_at = self._touch(number)

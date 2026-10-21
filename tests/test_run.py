@@ -23,6 +23,7 @@ from ralph_kit.commands import RalphError
 from run_support import (
     BRANCH,
     TRUSTED_LOGIN,
+    CommitPull,
     EngineResult,
     FakeGitHub,
     RunInterrupted,
@@ -211,10 +212,10 @@ class RunLevelTestCase(unittest.TestCase):
         git(self.repository.path, "commit", "-m", message)
         return self.repository.head()
 
-    def commit_off_the_branch(self):
-        """A real commit that is not an ancestor of the run's branch."""
-        git(self.repository.path, "checkout", "-b", "elsewhere", "main")
-        head = self.commit_file("elsewhere.txt", "Work on another branch")
+    def commit_off_the_branch(self, branch="elsewhere"):
+        """A real commit that is not an ancestor of the run's branch, made on `branch`."""
+        git(self.repository.path, "checkout", "-b", branch, "main")
+        head = self.commit_file(f"{branch}.txt", "Work on another branch")
         git(self.repository.path, "checkout", BRANCH)
         return head
 
@@ -297,6 +298,79 @@ class BlockerTests(RunLevelTestCase):
 
                 self.assert_completed(result, sessions=1)
                 self.assertEqual(self.session_children(), [DEPENDENT])
+                self.assertEqual(self.github.pull_lookups, [])
+
+    def test_implemented_blocker_satisfies_its_dependent_when_its_merged_pull_request_is_on_the_branch(self):
+        verified_head = self.commit_off_the_branch()
+        self.github.commit_pulls[verified_head] = [CommitPull(43, self.commit_prior_child())]
+        self.add_implemented_blocker_and_dependent(
+            implementation_evidence(loop_core.STANDARD_RUN, verified_head)
+        )
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.session_children(), [DEPENDENT])
+
+    def test_implemented_blocker_whose_merged_pull_request_is_not_on_the_branch_stops_before_any_session(self):
+        verified_head = self.commit_off_the_branch()
+        on_the_branch = self.commit_prior_child()
+        # Only a pull request merged into the base branch counts, whatever its merge commit.
+        self.github.commit_pulls[verified_head] = [
+            CommitPull(41, on_the_branch, state="closed"),
+            CommitPull(42, on_the_branch, state="open"),
+            CommitPull(43, on_the_branch, base="preprod"),
+            CommitPull(44, self.commit_off_the_branch("merged-elsewhere")),
+        ]
+        self.add_implemented_blocker_and_dependent(
+            implementation_evidence(loop_core.STANDARD_RUN, verified_head)
+        )
+
+        result = self.start(loop_core.STANDARD_RUN)
+
+        self.assert_stopped_before_any_session(
+            result, f"parent issue #{PARENT} has children remaining but none is runnable"
+        )
+        self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
+        self.assertEqual(self.github.pull_lookups, [("main", verified_head)])
+
+    def test_github_error_during_the_pull_request_lookup_of_a_blocker_stops_after_the_infrastructure_retries(self):
+        verified_head = self.commit_off_the_branch()
+        self.github.commit_pulls[verified_head] = RalphError("gh api failed: HTTP 503: Service Unavailable")
+        self.add_implemented_blocker_and_dependent(
+            implementation_evidence(loop_core.STANDARD_RUN, verified_head)
+        )
+
+        with mock.patch.dict(os.environ, {"RALPH_INFRA_RETRY_SECONDS": "30"}):
+            result = self.start(loop_core.STANDARD_RUN)
+
+        self.assert_stopped_before_any_session(
+            result,
+            f"infrastructure retries exhausted for the merged pull request lookup of blocker #{BLOCKER} "
+            "after 3 retries: gh api failed: HTTP 503: Service Unavailable",
+        )
+        self.assertNotIn("dependency deadlock", result.stderr)
+        self.assertEqual(self.github.pull_lookups, [("main", verified_head)] * 4)
+        self.assertEqual(result.sleeps[-3:], [30.0] * 3)
+        self.assertIn("- infrastructure retries: 3\n", self.github.comments(PARENT)[-1])
+        self.assertIn(f"- #{DEPENDENT}: waiting on #{BLOCKER}", result.stderr)
+        self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
+
+    def test_closed_blocker_satisfies_its_dependent_whatever_its_evidence(self):
+        verified_head = self.commit_off_the_branch()
+        self.github.add_issue(
+            CLOSED_BLOCKER,
+            parent=PARENT,
+            state="closed",
+            comments=[implementation_evidence(loop_core.STANDARD_RUN, verified_head)],
+        )
+        self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[CLOSED_BLOCKER])
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.session_children(), [DEPENDENT])
+        self.assertEqual(self.github.pull_lookups, [])
 
     def test_blocker_implemented_by_a_reviewed_run_stays_satisfied_in_a_standard_run(self):
         verified_head = self.commit_prior_child()
@@ -2061,21 +2135,29 @@ class ConfiguredTrustTests(RunLevelTestCase):
         )
 
     def test_untrusted_implementation_evidence_never_satisfies_a_blocker(self):
-        verified_head = self.commit_prior_child()
-        evidence = implementation_evidence(loop_core.STANDARD_RUN, verified_head)
-        self.github.add_issue(
-            BLOCKER,
-            parent=PARENT,
-            labels=("implemented",),
-            comments=[evidence | {"author": {"login": "outside-contributor"}}],
-        )
-        self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
+        for proof in ("ancestry", "merged pull request"):
+            with self.subTest(proof):
+                self.new_run()
+                if proof == "ancestry":
+                    verified_head = self.commit_prior_child()
+                else:
+                    verified_head = self.commit_off_the_branch()
+                    self.github.commit_pulls[verified_head] = [CommitPull(43, self.commit_prior_child())]
+                evidence = implementation_evidence(loop_core.STANDARD_RUN, verified_head)
+                self.github.add_issue(
+                    BLOCKER,
+                    parent=PARENT,
+                    labels=("implemented",),
+                    comments=[evidence | {"author": {"login": "outside-contributor"}}],
+                )
+                self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
 
-        result = self.start(loop_core.STANDARD_RUN)
+                result = self.start(loop_core.STANDARD_RUN)
 
-        self.assert_stopped_before_any_session(
-            result, f"parent issue #{PARENT} has children remaining but none is runnable"
-        )
+                self.assert_stopped_before_any_session(
+                    result, f"parent issue #{PARENT} has children remaining but none is runnable"
+                )
+                self.assertEqual(self.github.pull_lookups, [])
 
 
 CANONICAL_CHECK = "Canonical CI"
