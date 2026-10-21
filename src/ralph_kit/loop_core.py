@@ -51,6 +51,7 @@ from .config import (
 )
 from .github import GitHub
 from .keep_awake import keep_awake
+from .progress import Countdown, Elapsed, duration_text, spinner
 from .sanitize import (
     format_findings,
     sanitized_diagnostic,
@@ -544,16 +545,23 @@ def open_pull_request(state: RunState, branch: str) -> dict[str, Any] | None:
     return pulls[0] if pulls else None
 
 
-def report_stop(state: RunState, outcome: str, error: BaseException) -> None:
+def report_stop(
+    state: RunState,
+    outcome: str,
+    error: BaseException,
+    status: str = "Publishing the run summary…",
+) -> None:
     """Publish and print the terminal summary of a stopped, crashed, or interrupted run, with what to do next.
 
-    Stops before the run knows its parent issue stay terminal-only.
+    Stops before the run knows its parent issue stay terminal-only. A terminal sees
+    `status` while the summary is published.
     """
     if state.summary.parent is None:
         return
     summary = f"{terminal_summary(state, outcome)}\n\n{stop_details(state, error)}"
     try:
-        publish_terminal_summary(state, summary)
+        with spinner(status):
+            publish_terminal_summary(state, summary)
     except RalphError as publish_error:
         print(f"Ralph could not publish terminal summary: {publish_error}", file=sys.stderr)
     print(summary, file=sys.stderr)
@@ -802,6 +810,15 @@ def as_interruption(error: KeyboardInterrupt | Interrupted) -> Interrupted:
     return error if isinstance(error, Interrupted) else Interrupted(signal.SIGINT)
 
 
+def interrupted_cleanup_status(state: RunState) -> str:
+    """What a terminal sees while an interrupted run cleans up, so a second Ctrl-C is not
+    mistaken for the way to make it stop."""
+    releasing = (
+        f"releasing #{state.working_child[0]} and " if state.working_child is not None else ""
+    )
+    return f"Interrupted: {releasing}publishing the summary… (Ctrl-C again skips the cleanup)"
+
+
 def release_interrupted_child(state: RunState, interruption: Interrupted) -> None:
     """Release the child the run still holds agent working when it is interrupted.
 
@@ -1017,7 +1034,8 @@ class InfrastructureRetryTracker:
             flush=True,
         )
         if initial_delay_seconds:
-            self.state.adapters.sleep(initial_delay_seconds)
+            with spinner(Countdown("Waiting for GitHub Actions to start", initial_delay_seconds)):
+                self.state.adapters.sleep(initial_delay_seconds)
         while True:
             expected_head = current_head(self.state)
             try:
@@ -1045,7 +1063,8 @@ class InfrastructureRetryTracker:
                     flush=True,
                 )
                 if retry_seconds:
-                    self.state.adapters.sleep(retry_seconds)
+                    with spinner(Countdown("Waiting to check canonical CI again", retry_seconds)):
+                        self.state.adapters.sleep(retry_seconds)
 
 
 def command(
@@ -1783,12 +1802,16 @@ def run_agent(
                 f"#{issue_number}.",
                 flush=True,
             )
-            completed = state.adapters.run_engine(
-                state.repository_root,
-                agent_command(
-                    profile, prompt, state.repository_root, OUTCOME_SCHEMA_PATH, output_path
-                ),
-            )
+            with spinner(Elapsed(
+                f"{engine_label} {session_kind} session ({session_label}) running for child "
+                f"#{issue_number}"
+            )):
+                completed = state.adapters.run_engine(
+                    state.repository_root,
+                    agent_command(
+                        profile, prompt, state.repository_root, OUTCOME_SCHEMA_PATH, output_path
+                    ),
+                )
             record["returncode"] = completed.returncode
             record["structured_result"] = None
             try:
@@ -2011,7 +2034,8 @@ def run_local_gates(
         print(f"🧪 Running local gate: {gate['description']}", flush=True)
         started_at = time.monotonic()
         try:
-            completed = command(state, list(gate["command"]), check=False)
+            with spinner(Elapsed(f"Running local gate: {gate['description']}")):
+                completed = command(state, list(gate["command"]), check=False)
         finally:
             duration_seconds = time.monotonic() - started_at
             if state.diagnostics is not None:
@@ -2085,17 +2109,19 @@ def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_iss
         ["git", "push", "--set-upstream", configuration.remote, branch],
         capture_output=False,
     )
-    pull = open_pull_request(state, branch)
-    if pull is not None:
-        if not pull.get("isDraft"):
-            state.github.mark_pull_request_draft(pull["number"])
-        return
-    state.github.create_draft_pull_request(
-        base=configuration.base_branch,
-        head=branch,
-        title=f"Implement Ralph parent #{parent_issue}",
-        body=f"Cumulative implementation for #{parent_issue}. Human merge required.",
-    )
+    # Not around the push: git writes its own progress to the terminal.
+    with spinner("Preparing the draft pull request…"):
+        pull = open_pull_request(state, branch)
+        if pull is not None:
+            if not pull.get("isDraft"):
+                state.github.mark_pull_request_draft(pull["number"])
+            return
+        state.github.create_draft_pull_request(
+            base=configuration.base_branch,
+            head=branch,
+            title=f"Implement Ralph parent #{parent_issue}",
+            body=f"Cumulative implementation for #{parent_issue}. Human merge required.",
+        )
 
 
 def check_runs_for_head(state: RunState, head_sha: str) -> list[dict[str, Any]]:
@@ -2301,11 +2327,6 @@ def wait_for_exact_sha_ci(
 
 
 CI_PROGRESS_LINE_SECONDS = 300.0
-
-
-def duration_text(seconds: float) -> str:
-    minutes, seconds = divmod(int(seconds), 60)
-    return f"{minutes} min {seconds:02d} s" if minutes else f"{seconds} s"
 
 
 def required_ci_progress(
@@ -2731,7 +2752,8 @@ def main(
         state.repository_root, configuration.repository
     )
     state.diagnostics = DiagnosticRecorder(state.repository_root, mode.diagnostics_label)
-    state.branch = preflight(state)
+    with spinner("Checking the repository and GitHub before the run…"):
+        state.branch = preflight(state)
     quality = None
     manifest = None
     if configuration.verification.needs_quality_policy:
@@ -2760,12 +2782,13 @@ def run_children(
     """
     branch = state.branch
     assert branch is not None
-    require_trusted_issue(state, issue_details(state, parent_issue))
-    infrastructure = InfrastructureRetryTracker(state)
-    siblings = state.github.sub_issues(parent_issue)
-    update_run_summary(state, parent_issue, siblings, None, infrastructure)
-    while recover_published_child(state, siblings):
+    with spinner(f"Reading #{parent_issue} and its sub-issues…"):
+        require_trusted_issue(state, issue_details(state, parent_issue))
+        infrastructure = InfrastructureRetryTracker(state)
         siblings = state.github.sub_issues(parent_issue)
+        update_run_summary(state, parent_issue, siblings, None, infrastructure)
+        while recover_published_child(state, siblings):
+            siblings = state.github.sub_issues(parent_issue)
     if left_agent_working := [
         child for child in siblings if child_is_agent_working(state, child)
     ]:
@@ -2781,40 +2804,43 @@ def run_children(
     )
 
     while True:
-        siblings = state.github.sub_issues(parent_issue)
-        update_run_summary(state, parent_issue, siblings, budget, infrastructure)
-        # Best-effort guard, not a lock: another run can still take a child
-        # between this read and this run's own agent-working write. It precedes
-        # recovery so that another run's published child is left to that run.
-        if agent_working_in_another_run := [
-            child for child in siblings if child_is_agent_working(state, child)
-        ]:
-            raise ChildAgentWorkingInAnotherRun(
-                agent_working_in_another_run, configured_label(state, "agent_working")
-            )
-        if recover_published_child(state, siblings):
-            continue
-        try:
-            selected_child, _blockers, siblings = select_runnable_child(state, parent_issue)
-        except DependencyDeadlock as error:
-            stop_children_for_dependency_deadlock(state, error.children)
-            raise
+        with spinner("Selecting the next runnable child…"):
+            siblings = state.github.sub_issues(parent_issue)
+            update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+            # Best-effort guard, not a lock: another run can still take a child
+            # between this read and this run's own agent-working write. It precedes
+            # recovery so that another run's published child is left to that run.
+            if agent_working_in_another_run := [
+                child for child in siblings if child_is_agent_working(state, child)
+            ]:
+                raise ChildAgentWorkingInAnotherRun(
+                    agent_working_in_another_run, configured_label(state, "agent_working")
+                )
+            if recover_published_child(state, siblings):
+                continue
+            try:
+                selected_child, _blockers, siblings = select_runnable_child(state, parent_issue)
+            except DependencyDeadlock as error:
+                stop_children_for_dependency_deadlock(state, error.children)
+                raise
         if selected_child is None:
-            publish_parent_completion(
-                state,
-                parent_issue,
-                len(siblings),
-                budget.sessions,
-            )
-            publish_terminal_summary(state, terminal_summary(state, "completed"))
-            mark_pull_request_ready(state, branch)
+            with spinner(f"Handing #{parent_issue} to human review…"):
+                publish_parent_completion(
+                    state,
+                    parent_issue,
+                    len(siblings),
+                    budget.sessions,
+                )
+                publish_terminal_summary(state, terminal_summary(state, "completed"))
+                mark_pull_request_ready(state, branch)
             break
 
         child_number = int(selected_child["number"])
         print(f"▶️  Starting child #{child_number}.", flush=True)
-        details = issue_details(state, child_number)
-        require_trusted_issue(state, details)
-        child_base = start_child_cycle(state, child_number, details, siblings)
+        with spinner(f"Marking child #{child_number} agent working…"):
+            details = issue_details(state, child_number)
+            require_trusted_issue(state, details)
+            child_base = start_child_cycle(state, child_number, details, siblings)
         state.diagnostics.child_bases[child_number] = child_base.commit
         cycle = run_child_cycle(
             child_number, child_base.commit, budget, adapters,
@@ -2831,15 +2857,16 @@ def run_children(
             f"{implementation_head}..{verified_head}"
             if implementation_head != verified_head else None
         )
-        publish_success(
-            state,
-            branch,
-            child_number,
-            implementation_range,
-            correction_range,
-            verified_head,
-            child_base.uncovered_sentence(),
-        )
+        with spinner(f"Publishing the implementation evidence of child #{child_number}…"):
+            publish_success(
+                state,
+                branch,
+                child_number,
+                implementation_range,
+                correction_range,
+                verified_head,
+                child_base.uncovered_sentence(),
+            )
         state.working_child = None
         print(f"✅ Completed child #{child_number}", flush=True)
         print("🔄 Selecting the next runnable child.", flush=True)
@@ -2895,15 +2922,17 @@ def run(
             if state.summary.parent is None:
                 print(f"Ralph {interruption}.", file=sys.stderr)
             # A second interruption leaves the cleanup unfinished: the next startup handles it.
+            cleanup = interrupted_cleanup_status(state)
             try:
                 try:
-                    release_interrupted_child(state, interruption)
+                    with spinner(cleanup):
+                        release_interrupted_child(state, interruption)
                 except RalphError as release_error:
                     print(
                         f"Ralph could not release the interrupted child: {release_error}",
                         file=sys.stderr,
                     )
-                report_stop(state, "interrupted", interruption)
+                report_stop(state, "interrupted", interruption, cleanup)
             except (KeyboardInterrupt, Interrupted) as second:
                 print(
                     "Ralph was interrupted again; exiting without finishing the cleanup.",

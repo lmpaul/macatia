@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
 import pathlib
 import re
@@ -10,7 +11,7 @@ import shutil
 import subprocess
 import sys
 from collections.abc import Callable
-from typing import TextIO
+from typing import Any, TextIO
 
 from .check import AGENT_CLIS as ENGINES, create_labels, missing_labels, prerequisites
 from .config import (
@@ -105,14 +106,20 @@ class Prompter:
         read: Callable[[str], str] = input,
         output: TextIO = sys.stdout,
         select: Selector | None = None,
+        spinner: Callable[[str], contextlib.AbstractContextManager[Any]] | None = None,
     ):
         self.interactive = interactive
         self.read = read
         self.output = output
         self.select = select
+        self.spinner = spinner
 
     def say(self, message: str) -> None:
         print(message, file=self.output)
+
+    def working(self, message: str) -> contextlib.AbstractContextManager[Any]:
+        """A spinner showing `message` while gh or git answers, when one was given; never around a question."""
+        return self.spinner(message) if self.spinner else contextlib.nullcontext()
 
     def _read(self, prompt: str) -> str:
         try:
@@ -364,7 +371,8 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
     say = prompter.say
     say("🔎 Detecting from git and gh…")
 
-    repository, base_branch = detect_repository(command)
+    with prompter.working("Detecting the GitHub repository…"):
+        repository, base_branch = detect_repository(command)
     if repository:
         say(f"  ✓ GitHub repository: {repository}")
     else:
@@ -394,7 +402,8 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
     else:
         remote = prompter.text("Remote Ralph pushes to (no Git remote found)", default="origin", validate=git_name_error)
 
-    login = current_login(command)
+    with prompter.working("Reading the current gh account…"):
+        login = current_login(command)
     if login:
         authors = [login]
         say(f"  ✓ Trusted author: {login} (current gh account)")
@@ -456,7 +465,8 @@ def offer_labels(
     if repository == PLACEHOLDERS["repository"]:
         return {}
     try:
-        missing = missing_labels(command, repository, labels.values())
+        with prompter.working(f"Reading the labels of {repository}…"):
+            missing = missing_labels(command, repository, labels.values())
     except (TypeError, KeyError, ValueError):  # gh unavailable or unexpected output: ralph-kit check reports it.
         return {}
     if not missing:
@@ -476,7 +486,8 @@ def offer_labels(
 
 def create_offered_labels(prompter: Prompter, command: CommandRunner, repository: str, labels: dict[str, str]) -> None:
     """Create the labels offer_labels returned, once the configuration is written, reporting each one."""
-    failed = create_labels(command, repository, labels)
+    with prompter.working(f"Creating the labels on {repository}…"):
+        failed = create_labels(command, repository, labels)
     for name in labels.values():
         prompter.say(f"   ✗ Label {name} not created" if name in failed else f"   ✓ Label {name} created")
 
@@ -586,8 +597,9 @@ def run(
     which: Callable[[str], str | None] = shutil.which,
 ) -> pathlib.Path:
     command = command or (lambda *args: run_command(*args, cwd=root))
-    check_prerequisites(command, which)
-    toplevel = command("git", "rev-parse", "--show-toplevel")
+    with prompter.working("Checking the prerequisites…"):
+        check_prerequisites(command, which)
+        toplevel = command("git", "rev-parse", "--show-toplevel")
     if toplevel is None or pathlib.Path(toplevel).resolve() != root:
         raise InitError("run ralph-kit init from the root of a Git repository")
     target = root / config  # An absolute config replaces root.

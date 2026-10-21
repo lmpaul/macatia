@@ -36,13 +36,15 @@ Run every command from the target repository root. Configuration defaults to ./r
 def init(argv: list[str]) -> int:
     from . import init as setup
     from .check import arrow_select
+    from .progress import spinner
 
     parser = argparse.ArgumentParser(prog="ralph-kit init", description="Write a configuration; ask for what cannot be detected.")
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path(setup.CONFIG_NAME), metavar="PATH")
     parser.add_argument("--force", action="store_true", help="overwrite an existing configuration at --config, and only that file")
     args = parser.parse_args(argv)  # Exits with status 2 on unknown arguments.
     interactive = sys.stdin.isatty()
-    prompter = setup.Prompter(interactive=interactive, select=arrow_select if interactive and sys.stdout.isatty() else None)
+    terminal = interactive and sys.stdout.isatty()
+    prompter = setup.Prompter(interactive=interactive, select=arrow_select if terminal else None, spinner=spinner if terminal else None)
     try:
         setup.run(pathlib.Path.cwd().resolve(), prompter, force=args.force, config=args.config)
     except setup.InitAborted as error:
@@ -57,12 +59,14 @@ def init(argv: list[str]) -> int:
 def configure(argv: list[str]) -> int:
     from . import configure as editor, init as setup
     from .check import arrow_select
+    from .progress import spinner
 
     parser = argparse.ArgumentParser(prog="ralph-kit configure", description="Change sections of an existing configuration.")
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path(setup.CONFIG_NAME), metavar="PATH")
     args = parser.parse_args(argv)  # Exits with status 2 on unknown arguments.
     interactive = sys.stdin.isatty()
-    prompter = setup.Prompter(interactive=interactive, select=arrow_select if interactive and sys.stdout.isatty() else None)
+    terminal = interactive and sys.stdout.isatty()
+    prompter = setup.Prompter(interactive=interactive, select=arrow_select if terminal else None, spinner=spinner if terminal else None)
     try:
         editor.run(pathlib.Path.cwd().resolve(), prompter, config=args.config)
     except editor.ConfigureAborted as error:

@@ -3,14 +3,11 @@
 from __future__ import annotations
 
 import argparse
-import contextlib
 import pathlib
 import shlex
 import sys
 from collections.abc import Callable
 from typing import Any
-
-from rich.console import Console
 
 from .commands import RalphError
 from .config import RalphConfig, RalphConfigError, load_config
@@ -23,6 +20,7 @@ from .loop_core import (
     latest_implementation_heads,
     positive_integer,
 )
+from .progress import spinner
 
 
 COMPLETED = "completed"
@@ -173,13 +171,6 @@ def confirm_typed(parent_number: int, type_answer: Callable[[str], str] | None) 
         raise CloseRefused(f"Did not type {parent_number}. Nothing closed.")
 
 
-def checking(parent_number: int) -> contextlib.AbstractContextManager[Any]:
-    """A spinner while the checks read GitHub, which otherwise looks frozen; none off a terminal."""
-    if not sys.stdout.isatty():
-        return contextlib.nullcontext()
-    return Console().status(f"Checking #{parent_number} and its sub-issues before closing…")
-
-
 def close_parent(
     github: Any,
     config: RalphConfig,
@@ -195,7 +186,7 @@ def close_parent(
 
     Under `force`, failed checks are warnings and the confirmation is the typed parent number.
     """
-    with checking(parent_number):
+    with spinner(f"Checking #{parent_number} and its sub-issues before closing…"):
         try:
             parent = github.issue(parent_number)
         except RalphError as error:

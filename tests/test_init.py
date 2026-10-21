@@ -1,5 +1,6 @@
 """`ralph-kit init` without real git, gh, or terminal."""
 
+import contextlib
 import io
 import json
 import os
@@ -168,7 +169,7 @@ class InitTests(unittest.TestCase):
             return completed.stdout.strip() if completed.returncode == 0 else None
         return self.responses.get(args)
 
-    def run_init(self, answers=None, force=False, config=None):
+    def run_init(self, answers=None, force=False, config=None, spinner=None):
         """answers=None simulates a non-interactive stdin; otherwise one answer per prompt."""
         pending = list(answers or [])
         self.prompts = []
@@ -179,7 +180,7 @@ class InitTests(unittest.TestCase):
                 raise EOFError
             return pending.pop(0)
 
-        prompter = init.Prompter(interactive=answers is not None, read=read, output=self.output)
+        prompter = init.Prompter(interactive=answers is not None, read=read, output=self.output, spinner=spinner)
         options = {} if config is None else {"config": config}
         path = init.run(self.root, prompter, force=force, command=self.command, which=lambda name: name if name in self.installed | self.tools else None, **options)
         return load_config(path, self.root)
@@ -205,6 +206,27 @@ class InitTests(unittest.TestCase):
         self.assertFalse(config.verification.local_checks or config.verification.ci_checks)
         self.assertFalse(config.review_by_default)
         self.assertFalse(config.caffeinate_by_default)
+
+    def test_a_terminal_sees_gh_and_git_at_work_never_during_a_question(self):
+        shown = []
+
+        @contextlib.contextmanager
+        def spinner(message):
+            shown.append(message)
+            prompts = len(self.prompts)
+            yield
+            self.assertEqual(len(self.prompts), prompts, f"asked a question under {message!r}")
+
+        self.run_init(answers=[""] * 8, spinner=spinner)
+        self.assertEqual(
+            shown,
+            [
+                "Checking the prerequisites…",
+                "Detecting the GitHub repository…",
+                "Reading the current gh account…",
+                "Reading the labels of acme/widget…",
+            ],
+        )
 
     def test_review_model_question_is_for_every_reviewed_run(self):
         self.run_init(answers=[""] * 8)

@@ -734,6 +734,13 @@ class FakeSleepLock:
         self.held_during_sessions.append(self.held)
 
 
+class TerminalOutput(io.StringIO):
+    """Output that says it is a terminal."""
+
+    def isatty(self):
+        return True
+
+
 @dataclass(frozen=True)
 class RunResult:
     exit_code: int
@@ -751,12 +758,12 @@ def start_mode_run(mode, repository, github, sessions, *arguments, **options):
     return start_run(repository, github, sessions, *review, *arguments, **options)
 
 
-def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
+def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None, terminal=False):
     """Start one run from its command-line `arguments`, with in-memory GitHub and sessions,
     from `cwd` or the repository root.
 
     `confirm` answers the run's startup question, as a terminal would; None runs
-    without a terminal.
+    without a terminal. `terminal` makes the output a terminal, which gets the spinners.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
@@ -803,7 +810,8 @@ def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None):
             confirm=confirm,
             keep_awake=sleep_lock,
         )
-    stdout, stderr = io.StringIO(), io.StringIO()
+    output = TerminalOutput if terminal else io.StringIO
+    stdout, stderr = output(), output()
     with (
         contextlib.chdir(cwd or repository.path),
         contextlib.redirect_stdout(stdout),

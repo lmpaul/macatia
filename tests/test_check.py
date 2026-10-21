@@ -57,6 +57,11 @@ Options:
 """
 
 
+
+class TerminalOutput(io.StringIO):
+    def isatty(self):
+        return True
+
 class ReadinessTests(unittest.TestCase):
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory()
@@ -126,14 +131,25 @@ class ReadinessTests(unittest.TestCase):
         # Only the explicit read-only allowlist, plus label creation, is accepted by the fixture.
         return responses[args]
 
-    def run_check(self, missing=None, confirm=None, with_review=False):
-        output = io.StringIO()
+    def run_check(self, missing=None, confirm=None, with_review=False, terminal=False):
+        output = TerminalOutput() if terminal else io.StringIO()
         with mock.patch.object(pathlib.Path, "cwd", return_value=self.root), mock.patch.object(self.checker.shutil, "which", side_effect=lambda name: None if name == missing else f"/tools/{name}"), contextlib.redirect_stdout(output):
             code = self.checker.run(self.root, self.config, with_review=with_review, confirm=confirm, command=self.command)
         return code, output.getvalue()
 
     def flags(self, local, ci):
         self.config.write_text(self.config.read_text().replace("local_checks = true", f"local_checks = {str(local).lower()}").replace("ci_checks = true", f"ci_checks = {str(ci).lower()}"))
+
+    def test_a_terminal_sees_the_checks_in_progress(self):
+        code, output = self.run_check(terminal=True)
+        self.assertEqual(code, 0, output)
+        self.assertIn("Checking that this repository is ready for Ralph", output)
+        # The spinner is gone before the report.
+        self.assertIn("No blockers", output.rsplit("Checking that this repository", 1)[1])
+
+    def test_other_output_gets_no_progress(self):
+        _, output = self.run_check()
+        self.assertNotIn("Checking that this repository", output)
 
     def test_all_four_combinations(self):
         original = self.config.read_text()
