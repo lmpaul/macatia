@@ -1335,18 +1335,12 @@ def switch_to_run_branch(
         git(state, "switch", "--create", run_branch, "--track", f"{remote}/{run_branch}")
         return remote_head
     git(state, "switch", run_branch)
-
-    def contains(ancestor: str, descendant: str) -> bool:
-        return command(
-            state, ["git", "merge-base", "--is-ancestor", ancestor, descendant], check=False
-        ).returncode == 0
-
-    if contains(remote_head, local_head):
+    if is_ancestor(state, remote_head, local_head):
         return remote_head
-    if not contains(local_head, remote_head):
+    if not is_ancestor(state, local_head, remote_head):
         raise RalphError(
-            f"{run_branch} has diverged from {remote}/{run_branch}; nothing was rewritten: "
-            f"reconcile them, then run `{state.rerun_command}` again"
+            f"{run_branch} has diverged from {remote}/{run_branch}; reconcile them, "
+            f"then run `{state.rerun_command}` again"
         )
     git(state, "merge", "--ff-only", remote_head)
     return remote_head

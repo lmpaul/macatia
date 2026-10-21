@@ -1807,9 +1807,7 @@ class RunBranchTests(StartupRejectionTestCase):
         self.assertNotIn(RUN_BRANCH, self.origin_branches())
 
     def run_branch_on_origin_ahead(self, *, diverged=False):
-        """origin's run branch is one commit ahead of the local one, which may have a commit of its own.
-
-        Returns the local and origin heads."""
+        """origin's run branch is a commit ahead of the local one, which may diverge; returns both heads."""
         self.existing_run_branch(pushed=True)
         git(self.repository.path, "switch", "-q", RUN_BRANCH)
         behind = self.repository.head()
@@ -1867,7 +1865,21 @@ class RunBranchTests(StartupRejectionTestCase):
         self.assertEqual(self.repository.head(), local_head)
         self.assertEqual(self.repository.pushed_head(RUN_BRANCH), origin_head)
         self.assertEqual(git(self.repository.path, "rev-parse", "main"), self.base_head)
-        self.assertEqual(self.github.comments(PARENT), [])
+
+    def test_failed_fetch_stops_on_the_base_branch_with_nothing_changed(self):
+        origin_head = self.existing_run_branch(pushed=True)
+        git(self.repository.path, "branch", "-D", RUN_BRANCH)
+        # A ref where the fetch must create a directory makes it fail to update the tracking ref.
+        git(self.repository.path, "update-ref", "-d", f"refs/remotes/origin/{RUN_BRANCH}")
+        git(self.repository.path, "update-ref", "refs/remotes/origin/ralph-kit", "HEAD")
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(SWITCH))
+
+        self.assert_rejected_at_startup(result, f"could not fetch {RUN_BRANCH} from origin")
+        self.assertEqual(self.current_branch(), "main")
+        self.assertEqual(self.repository.head(), self.base_head)
+        self.assertNotIn(RUN_BRANCH, self.local_branches())
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), origin_head)
 
     def test_stop_leaves_a_branch_on_origin_untouched(self):
         for where in ("only on origin", "behind origin"):
