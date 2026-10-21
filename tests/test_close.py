@@ -345,7 +345,7 @@ class CloseTests(unittest.TestCase):
 
         self.assertEqual(self.close(str(PARENT), "--yes"), 1)
 
-        self.assertIn(f"#70 is not merged: its verified head {sha('verified-70-v1')} is not on main", self.stderr)
+        self.assertIn(f"#70 might not be merged\n    ↳ verified head {sha('verified-70-v1')[:7]} is neither on main", self.stderr)
         self.assertIn("#71 is not implemented", self.stderr)
         self.assertNotIn("#72", self.stderr)
         self.assert_nothing_written(PARENT, 70, 71, 72)
@@ -418,7 +418,7 @@ class CloseTests(unittest.TestCase):
                 self.assertEqual(self.close(str(PARENT), "--yes"), 1)
 
                 self.assertIn(
-                    f"#70 is not merged: its verified head {sha('verified-70-v1')} is not on main",
+                    f"#70 might not be merged\n    ↳ verified head {sha('verified-70-v1')[:7]} is neither on main",
                     self.stderr,
                 )
                 self.assertEqual(self.github.pull_lookups, [("main", sha("verified-70-v1"))])
@@ -479,7 +479,7 @@ class CloseTests(unittest.TestCase):
 
         self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 0, self.stderr)
 
-        self.assertIn("⚠️ #70 is not merged", self.stdout)
+        self.assertIn("⚠️  #70 might not be merged", self.stdout)
         self.assertEqual(self.state(70), ("CLOSED", "COMPLETED"))
         [comment] = self.github.comments(PARENT)
         self.assertNotIn("PR #", comment)
@@ -497,7 +497,7 @@ class CloseTests(unittest.TestCase):
 
         self.assertEqual(self.close(str(PARENT), "--yes"), 1)
 
-        self.assertIn(f"#70 is not merged: its verified head {sha('verified-70-new')}", self.stderr)
+        self.assertIn(f"#70 might not be merged\n    ↳ verified head {sha('verified-70-new')[:7]}", self.stderr)
         self.assertNotIn("#71", self.stderr)
 
     def test_untrusted_evidence_is_ignored(self):
@@ -598,9 +598,9 @@ class CloseTests(unittest.TestCase):
         for failure in (
             f"#{PARENT} is not labelled human-review",
             "#70 is not implemented",
-            "#71 is not merged",
+            "#71 might not be merged",
         ):
-            self.assertIn(f"⚠️ {failure}", self.stdout)
+            self.assertIn(f"⚠️  {failure}", self.stdout)
         for number in (70, 71, 72, PARENT):
             self.assertEqual(self.state(number), ("CLOSED", "COMPLETED"))
         self.assertEqual(self.github.labels(70), {"agent-working"})
@@ -624,7 +624,7 @@ class CloseTests(unittest.TestCase):
         self.assertIn("forced", comment)
         self.assertIn(f"#{PARENT} is not labelled human-review", comment)
         self.assertIn("#70 is not implemented", comment)
-        self.assertIn("#71 is not merged", comment)
+        self.assertIn("#71 might not be merged", comment)
         for number in (70, 71, 72):
             self.assertIn(f"#{number} Issue {number}", comment)
 

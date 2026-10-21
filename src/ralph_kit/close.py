@@ -7,7 +7,7 @@ import pathlib
 import shlex
 import sys
 from collections.abc import Callable
-from typing import Any
+from typing import Any, NamedTuple
 
 from .commands import RalphError
 from .config import RalphConfig, RalphConfigError, load_config
@@ -27,6 +27,19 @@ COMPLETED = "completed"
 NO_EVIDENCE = "implemented without evidence: merge not verified"
 # Marks the parent's closure comment, so a rerun after the parent failed to close does not repeat it.
 CLOSURE_MARKER = "<!-- ralph-parent-closure -->"
+
+
+class Failure(NamedTuple):
+    """A failed check: a short summary, and the detail that explains it, if any."""
+
+    summary: str
+    detail: str = ""
+
+    def terminal(self) -> str:
+        return f"⚠️  {self.summary}" + (f"\n    ↳ {self.detail}" if self.detail else "")
+
+    def markdown(self) -> str:
+        return f"- {self.summary}" + (f": {self.detail}" if self.detail else "")
 
 
 class CloseRefused(RalphError):
@@ -69,7 +82,7 @@ def issue_reference(issue: dict[str, Any]) -> str:
 
 def failed_checks(
     github: Any, config: RalphConfig, parent: dict[str, Any], children: list[dict[str, Any]]
-) -> tuple[list[str], list[dict[str, Any]], dict[int, int]]:
+) -> tuple[list[Failure], list[dict[str, Any]], dict[int, int]]:
     """Every reason the parent closure cannot proceed, the open children whose merge
     is not verified: without trusted implementation evidence, and the number of the
     merged pull request that proves each child merged by one. A child without evidence
@@ -80,23 +93,25 @@ def failed_checks(
     human_review = config.labels["human_review"]
     implemented = config.labels["implemented"]
     trusted = ", ".join(f"@{login}" for login in sorted(config.trusted_authors))
-    failures = []
+    failures: list[Failure] = []
     without_evidence = []
     merged_by: dict[int, int] = {}
     if human_review not in labels(parent):
-        failures.append(f"#{parent['number']} is not labelled {human_review}")
-    if author_login(parent) not in config.trusted_authors:
-        failures.append(f"#{parent['number']} is authored by @{author_login(parent)}, not one of: {trusted}")
+        failures.append(Failure(f"#{parent['number']} is not labelled {human_review}"))
+    for issue in (parent, *children):
+        if author_login(issue) not in config.trusted_authors:
+            failures.append(Failure(
+                f"#{issue['number']} is authored by @{author_login(issue)}",
+                f"trusted authors: {trusted}",
+            ))
     for child in children:
-        if author_login(child) not in config.trusted_authors:
-            failures.append(f"#{child['number']} is authored by @{author_login(child)}, not one of: {trusted}")
         lifecycle = labels(child) & config.lifecycle_labels
         if lifecycle != {implemented}:
             shown = ", ".join(sorted(lifecycle)) or "none"
-            failures.append(
-                f"#{child['number']} is not implemented (lifecycle labels: {shown}; "
-                f"expected only {implemented})"
-            )
+            failures.append(Failure(
+                f"#{child['number']} is not implemented",
+                f"lifecycle labels: {shown} (expected only {implemented})",
+            ))
         heads = latest_implementation_heads(child, config.trusted_authors, STANDARD_RUN)
         if heads is None:
             without_evidence.append(child)
@@ -106,10 +121,11 @@ def failed_checks(
             if pulls:
                 merged_by[int(child["number"])] = pulls[0].number
             else:
-                failures.append(
-                    f"#{child['number']} is not merged: its verified head {heads[-1]} "
-                    f"is not on {config.base_branch}, nor in a pull request merged into it"
-                )
+                failures.append(Failure(
+                    f"#{child['number']} might not be merged",
+                    f"verified head {heads[-1][:7]} is neither on {config.base_branch} "
+                    "nor in a pull request merged into it",
+                ))
     return failures, without_evidence, merged_by
 
 
@@ -117,11 +133,11 @@ def child_numbers(children: list[dict[str, Any]]) -> str:
     return ", ".join(f"#{child['number']}" for child in children)
 
 
-def forced_section(failures: list[str]) -> str:
+def forced_section(failures: list[Failure]) -> str:
     if not failures:
         return "The closure was forced with --force; every check passed."
     return "The closure was forced with --force despite these failed checks:\n\n" + "\n".join(
-        f"- {failure}" for failure in failures
+        failure.markdown() for failure in failures
     )
 
 
@@ -136,7 +152,7 @@ def closure_comment(
     merged_by: dict[int, int],
     *,
     has_children: bool,
-    forced_failures: list[str] | None,
+    forced_failures: list[Failure] | None,
 ) -> str:
     """The parent's closure comment; `forced_failures` is None unless the closure was forced."""
     forced = "" if forced_failures is None else "\n\n" + forced_section(forced_failures)
@@ -219,24 +235,26 @@ def close_parent(
         print(f"#{parent_number} is already closed.")
         return
     if not children:
-        failures.append(f"#{parent_number} has no sub-issues")
+        failures.append(Failure(f"#{parent_number} has no sub-issues"))
     if failures and not force:
         raise CloseRefused(
-            f"Cannot close #{parent_number}:\n"
-            + "\n".join(f"  - {failure}" for failure in failures)
-            + "\nNothing closed."
+            f"Cannot close #{parent_number}:\n\n"
+            + "\n".join(failure.terminal() for failure in failures)
+            + "\n\nNothing closed."
         )
     for failure in failures:
-        print(f"⚠️ {failure}")
-    print(f"Parent closure of {issue_reference(parent)}, as completed{', forced' if force else ''}:")
+        print(failure.terminal())
+    if failures:
+        print()
+    print(f"📋 {'Force-closing' if force else 'Closing'} {issue_reference(parent)}, as completed:")
     for child in open_children:
         if child not in without_evidence:
-            print(f"  close child {merged_child_reference(child, merged_by)}")
+            print(f"   → {merged_child_reference(child, merged_by)}")
     if without_evidence:
-        print(f"  close children {NO_EVIDENCE}:")
+        print(f"   ❓ {NO_EVIDENCE}:")
         for child in without_evidence:
-            print(f"    {issue_reference(child)}")
-    print(f"  then close parent {issue_reference(parent)}")
+            print(f"      → {issue_reference(child)}")
+    print(f"   → then #{parent_number}")
     if force:
         confirm_typed(parent_number, type_answer)
     elif without_evidence or not yes:
@@ -261,7 +279,7 @@ def close_parent(
         for child in open_children:
             github.close_issue(int(child["number"]), COMPLETED)
             closed.append(child)
-            print(f"Closed #{child['number']}.")
+            print(f"   ✓ #{child['number']}")
         if closed or not has_closure_comment(config, parent):
             github.comment_on_issue(
                 parent_number,
@@ -277,8 +295,13 @@ def close_parent(
     except RalphError as error:
         done = child_numbers(closed) or "none"
         raise RalphError(f"{error}\nClosed so far: {done}. Rerun `{rerun}` to finish.") from error
-    print(f"Closed #{parent_number}.")
-    print(f"✅ Closed #{parent_number}{' and its children' if children else ''}.")
+    print(f"   ✓ #{parent_number}")
+    count = len(closed)
+    print(
+        f"✅ Closed #{parent_number}"
+        + (f" and {count} {'child' if count == 1 else 'children'}" if count else "")
+        + "."
+    )
 
 
 
