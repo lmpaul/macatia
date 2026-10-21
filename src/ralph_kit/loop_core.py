@@ -405,9 +405,10 @@ class RunAdapters:
     run_engine: Callable[[pathlib.Path, list[str]], subprocess.CompletedProcess[str]] = (
         functools.partial(run_command, check=False)
     )
-    # Asks the startup choice: question -> True to resume children left agent working.
+    # Asks a startup choice between Stop and an accepting choice:
+    # (question, accepting label, accept_by_default=) -> True on the accepting choice.
     # None when Ralph is not in a terminal, which always stops.
-    confirm: Callable[[str], bool] | None = None
+    confirm: Callable[..., bool] | None = None
     # Holds the sleep lock for the duration of the block, for `--caffeinate` or
     # `caffeinate_by_default`.
     keep_awake: Callable[[], contextlib.AbstractContextManager[None]] = keep_awake
@@ -977,7 +978,7 @@ def resolve_left_agent_working(state: RunState, children: list[dict[str, Any]]) 
         raise ChildLeftAgentWorking(children, label, warning)
     print(f"⚠️  {warning}", flush=True)
     try:
-        resume = confirm(f"Resume {child_numbers(children)}?")
+        resume = confirm(f"Resume {child_numbers(children)}?", "Resume", accept_by_default=False)
     except KeyboardInterrupt:
         resume = False
     if not resume:
@@ -1211,8 +1212,6 @@ def preflight(state: RunState) -> str:
     if branch_result.returncode != 0:
         raise RalphError("detached HEAD is not allowed")
     branch = branch_result.stdout.strip()
-    if branch == configuration.base_branch:
-        raise RalphError(f"{configuration.base_branch} is not a safe Ralph branch")
     require_clean_worktree(state, "at startup")
 
     worktrees = git(state, "worktree", "list", "--porcelain")
@@ -1231,6 +1230,80 @@ def preflight(state: RunState) -> str:
             f"{configuration.repository}, found {repository}"
         )
     return branch
+
+
+RUN_BRANCH_PREFIX = "ralph-kit/issue-"
+
+
+def offer_run_branch(state: RunState, parent_issue: int) -> str:
+    """On the base branch, ask to create the parent's run branch from an up-to-date base branch.
+
+    Create pulls the base branch fast-forward only, creates and switches to the run
+    branch, and pushes it with its upstream; anything else stops with nothing changed.
+    A run branch that already exists, locally or on the remote, stops the run.
+    """
+    configuration = state.config
+    base, remote = configuration.base_branch, configuration.remote
+    run_branch = f"{RUN_BRANCH_PREFIX}{parent_issue}"
+    # Lists the remote's heads without writing any local ref.
+    listing = command(
+        state, ["git", "ls-remote", "--heads", remote, f"refs/heads/{run_branch}"], check=False
+    )
+    if listing.returncode != 0:
+        detail = " ".join((listing.stderr or "").split())
+        raise RalphError(f"could not reach {remote} to look for {run_branch}: {detail}")
+    on_remote = bool(listing.stdout.strip())
+    local = command(
+        state, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{run_branch}"], check=False
+    ).returncode == 0
+    if local or on_remote:
+        where = " and ".join(
+            place for place, found in (("locally", local), (f"on {remote}", on_remote)) if found
+        )
+        raise RalphError(
+            f"{run_branch} already exists {where}; switch to it, then run "
+            f"`{state.rerun_command}` again"
+        )
+    confirm = state.adapters.confirm
+    if confirm is None:
+        raise RalphError(
+            f"{base} is the base branch: create {run_branch} from an up-to-date {base} "
+            f"and push it to {remote}, or run `{state.rerun_command}` in a terminal"
+        )
+    print(f"⚠️  {base} is the base branch: Ralph does not run on it.", flush=True)
+    try:
+        create = confirm(
+            f"Create {run_branch} from an up-to-date {base}?", "Create", accept_by_default=True
+        )
+    except KeyboardInterrupt:
+        create = False
+    if not create:
+        raise RalphError(f"stopped on {base}: {run_branch} was not created")
+
+    print(f"⬇️  Pulling {base} from {remote}.", flush=True)
+    # Not under a spinner: git writes its own progress to the terminal.
+    pulled = command(
+        state,
+        ["git", "pull", "--no-rebase", "--ff-only", remote, base],
+        check=False,
+        capture_output=False,
+    )
+    if pulled.returncode != 0:
+        raise RalphError(
+            f"{base} cannot fast-forward to {remote}/{base}; {run_branch} was not created"
+        )
+    if current_head(state) != git(state, "rev-parse", "FETCH_HEAD"):
+        raise RalphError(
+            f"{base} has commits that are not on {remote}/{base}; {run_branch} was not created"
+        )
+    git(state, "switch", "--create", run_branch)
+    try:
+        push_branch(state, run_branch)
+    except RalphError as error:
+        raise RalphError(
+            f"could not push {run_branch} to {remote}; the local branch is kept: {error}"
+        ) from error
+    return run_branch
 
 
 def labels(issue: dict[str, Any]) -> set[str]:
@@ -2199,15 +2272,17 @@ def stop_children_for_dependency_deadlock(
         )
 
 
+def push_branch(state: RunState, branch: str) -> None:
+    """Push `branch` to the configured remote with its upstream set."""
+    remote = state.config.remote
+    print(f"⬆️  Pushing {branch} to {remote}.", flush=True)
+    # Not under a spinner: git writes its own progress to the terminal.
+    command(state, ["git", "push", "--set-upstream", remote, branch], capture_output=False)
+
+
 def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_issue: int) -> None:
     configuration = state.config
-    print(f"⬆️  Pushing {branch} to {configuration.remote}.", flush=True)
-    command(
-        state,
-        ["git", "push", "--set-upstream", configuration.remote, branch],
-        capture_output=False,
-    )
-    # Not around the push: git writes its own progress to the terminal.
+    push_branch(state, branch)
     with spinner("Preparing the draft pull request…"):
         pull = open_pull_request(state, branch)
         if pull is not None:
@@ -2879,10 +2954,13 @@ def run_children(
     access, and accepted the branch; the run reaches everything else through
     its adapters.
     """
-    branch = state.branch
-    assert branch is not None
-    with spinner(f"Reading #{parent_issue} and its sub-issues…"):
+    assert state.branch is not None
+    with spinner(f"Reading #{parent_issue}…"):
         require_startable_parent(state, issue_details(state, parent_issue))
+    if state.branch == state.config.base_branch:
+        state.branch = offer_run_branch(state, parent_issue)
+    branch = state.branch
+    with spinner(f"Reading the sub-issues of #{parent_issue}…"):
         infrastructure = InfrastructureRetryTracker(state)
         siblings = state.github.sub_issues(parent_issue)
         update_run_summary(state, parent_issue, siblings, None, infrastructure)

@@ -59,7 +59,25 @@ whatever the setting, without the notice. `--caffeinate` together with
 With the setting on, `ralph-kit check` also reports whether this machine can
 provide the sleep lock, as a warning only: a run continues without one.
 
-Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean, dedicated branch (never the base branch).
+Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean, dedicated branch.
+
+A run started on the base branch offers a run branch named
+`ralph-kit/issue-<parent>` once every other startup check has passed, the parent
+included. If that branch exists neither locally nor on the remote (checked with
+`git ls-remote`, which writes no local ref; an unreachable remote stops the run),
+Ralph warns that it is on the base branch and asks "Create ralph-kit/issue-N from
+an up-to-date <base>?":
+
+- **Create** (the default) pulls the base branch fast-forward only from the
+  remote, creates and switches to the run branch, and pushes it with its upstream
+  before any agent session. A base branch with commits that are not on the remote
+  stops the run with no branch created; a failed push stops it and keeps the
+  local branch. The draft PR is still opened at the first publication.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
+Without a terminal the run stops with nothing changed and names the branch to
+create. A run branch that already exists, locally or on the remote, stops the run;
+switch to it and run again. A detached HEAD is refused.
 
 `init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats
@@ -385,7 +403,8 @@ infrastructure retries, then stops the run.
 ## Repository settings
 
 - `repository` is the exact GitHub `owner/name` returned by `gh repo view`.
-- `base_branch` is the protected branch Ralph must never modify directly.
+- `base_branch` is the protected branch Ralph never commits to; it only fast-forwards it
+  from the remote before creating a run branch.
 - `remote` is the Git remote Ralph pushes to.
 - `trusted_authors` is the non-empty allowlist of trusted authors for parent
   issues and children. Include the GitHub account Ralph runs as so a restarted
