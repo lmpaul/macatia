@@ -432,7 +432,8 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
                 current = command("git", "symbolic-ref", "--quiet", "--short", "HEAD")
             except RuntimeError:
                 raise Blocked("detached HEAD, no active branch", "git switch -c <branch-name>") from None
-            require(current != config.base_branch, f"on the base branch {current}", "git switch -c <branch-name>")
+            if current == config.base_branch:
+                return f"{current} (run will offer a ralph-kit/issue-<parent> branch)"
             return f"{current} (base: {config.base_branch})"
         report.check("Branch", branch)
 

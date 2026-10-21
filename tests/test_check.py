@@ -107,7 +107,6 @@ class ReadinessTests(unittest.TestCase):
             ("git", "rev-parse", "--show-toplevel"): str(self.root),
             ("git", "check-ref-format", "--branch", "main"): "",
             ("git", "remote", "get-url", "origin"): "git@github.com:example/project.git",
-            ("git", "symbolic-ref", "--quiet", "--short", "HEAD"): self.branch,
             ("git", "status", "--porcelain"): self.dirty,
             ("gh", "repo", "view", "--json", "nameWithOwner"): json.dumps({"nameWithOwner": self.repo}),
             ("gh", "api", "user"): json.dumps({"login": self.login}),
@@ -123,6 +122,10 @@ class ReadinessTests(unittest.TestCase):
             if not self.diagnostics_ignored:
                 raise RuntimeError("git check-ignore --quiet .ralph/ failed; check access and authentication")
             return ""
+        if args == ("git", "symbolic-ref", "--quiet", "--short", "HEAD"):
+            if self.branch is None:
+                raise RuntimeError("git symbolic-ref --quiet --short HEAD failed")
+            return self.branch
         if args[:3] == ("gh", "label", "create"):
             if args[3] == "broken":
                 raise RuntimeError("gh label create failed")
@@ -195,9 +198,22 @@ class ReadinessTests(unittest.TestCase):
         self.repo = "other/repo"
         self.assertEqual(self.run_check()[0], 1)
 
-    def test_base_branch_blocks(self):
+    def test_base_branch_passes_with_the_run_branch_note(self):
         self.branch = "main"
-        self.assertEqual(self.run_check()[0], 1)
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertIn("main (run will offer a ralph-kit/issue-<parent> branch)", " ".join(output.split()))
+
+    def test_other_branch_names_the_base(self):
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertIn("feature (base: main)", output)
+
+    def test_detached_head_blocks(self):
+        self.branch = None
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("detached HEAD, no active branch", " ".join(output.split()))
 
     def test_dirty_worktree_blocks(self):
         self.dirty = " M file"

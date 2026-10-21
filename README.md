@@ -93,6 +93,8 @@ still opened at the first publication.
 
 Without a terminal the run stops with nothing changed and names the branch to
 create or switch to. A detached HEAD is refused.
+`ralph-kit check` passes on the base branch with a note that the run will offer
+a `ralph-kit/issue-<parent>` branch, and still blocks on a detached HEAD.
 
 `init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats
