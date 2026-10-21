@@ -193,8 +193,9 @@ RALPH_LIVE=1 uv run python -m unittest discover -s tests -p test_live.py -v
 
 It makes read-only `gh` calls of each shape a run or `close` parses (repository,
 children, blockers, issue details, open pull requests, check runs, the Actions job,
-job log and check run behind a check, and the compare of the default branch with
-its head) through Ralph's GitHub adapter, against the
+job log and check run behind a check, the compare of the default branch with
+its head, and the merged pull requests of a merged pull request's head commit)
+through Ralph's GitHub adapter, against the
 children of parent issue #5 in this repository (`RALPH_LIVE_PARENT` selects another
 parent issue with children and blockers) and the check runs of its default branch
 head. It then starts one Claude Code and one Codex session in a scratch Git
