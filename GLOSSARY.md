@@ -24,6 +24,10 @@ _Avoid_: Incomplete child, open child
 A remaining child whose only triage label and only lifecycle label is ready-for-agent, blocked or not.
 _Avoid_: Pending child, queued child
 
+**Satisfied blocker**:
+A blocker that is closed, or implemented with its work present on the run's branch: its verified head is on that branch, or the merge of a pull request into the base branch that contains it is.
+_Avoid_: Done blocker, resolved dependency
+
 **Runnable child**:
 A ready child with no unsatisfied blocker.
 
@@ -196,7 +200,7 @@ _Avoid_: Logs, artifacts
 ## Closing
 
 **Merged child**:
-A child whose verified head is on the base branch.
+A child whose verified head is on the base branch, or belongs to a pull request merged into the base branch, whatever the merge method.
 _Avoid_: Landed child, done child
 
 **Parent closure**:
