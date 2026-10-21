@@ -363,7 +363,12 @@ trusted implementation evidence with commits on the current branch, is marked
 `implemented` without another session. Existing `implemented` labels
 remain shared, so switching between standard and reviewed runs does not
 revalidate children already implemented. Blocker checks accept trusted
-implementation evidence from either kind of run when its commits are on the branch.
+implementation evidence from either kind of run when its commits are on the branch,
+or, when its verified head is not, when GitHub associates that head with a pull
+request merged into the base branch (squash and rebase merges included) whose
+merge commit is on the branch. A closed blocker is satisfied whatever its
+evidence. A GitHub error during that pull request lookup goes through the
+infrastructure retries, then stops the run.
 
 ## Repository settings
 
