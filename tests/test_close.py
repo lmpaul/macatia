@@ -428,7 +428,6 @@ class CloseTests(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(cli.main(["--help"]), 0)
         self.assertIn("close [--yes | --force] [--config PATH] PARENT", stdout.getvalue())
-        self.assertIn("--force", stdout.getvalue().split("close [", 1)[1])
         with (
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
@@ -493,6 +492,22 @@ class CloseTests(unittest.TestCase):
         for number in (70, 71, 72):
             self.assertIn(f"#{number} Issue {number}", comment)
 
+    def test_a_forced_child_without_evidence_is_listed_apart_whatever_its_labels(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71, labels=("agent-working",), comments=[])
+
+        self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 0, self.stderr)
+
+        listing = self.stdout.split(NO_EVIDENCE, 1)
+        self.assertEqual(len(listing), 2, self.stdout)
+        self.assertNotIn("#71 Issue 71", listing[0])
+        self.assertIn("#71 Issue 71", listing[1])
+        [comment] = self.github.comments(PARENT)
+        proven, unproven = comment.split("confirmed by a human without implementation evidence", 1)
+        self.assertNotIn("#71", proven)
+        self.assertIn("#71 Issue 71", unproven)
+
     def test_force_refuses_anything_but_the_parent_number(self):
         for answer in ("", "y", "yes", "70", f"{PARENT}0", EOFError()):
             with self.subTest(answer=answer):
@@ -553,7 +568,7 @@ class CloseTests(unittest.TestCase):
         self.assertNotIn("every child was already closed", comment)
 
     def test_force_still_refuses_a_nonexistent_issue(self):
-        self.assertEqual(self.close("--force", "404", typed=ScriptedConfirmer(str(404))), 1)
+        self.assertEqual(self.close("--force", "404", typed=ScriptedConfirmer("404")), 1)
 
         self.assertIn("#404", self.stderr)
 

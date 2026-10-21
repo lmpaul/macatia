@@ -70,7 +70,8 @@ def failed_checks(
     github: Any, config: RalphConfig, parent: dict[str, Any], children: list[dict[str, Any]]
 ) -> tuple[list[str], list[dict[str, Any]]]:
     """Every reason the parent closure cannot proceed, and the open children whose merge
-    is not verified: implemented, but without trusted implementation evidence.
+    is not verified: without trusted implementation evidence. One that is implemented
+    is not a failure; only --force closes the others.
 
     `children` are the open children's details, comments included.
     """
@@ -95,8 +96,7 @@ def failed_checks(
             )
         heads = latest_implementation_heads(child, config.trusted_authors, STANDARD_RUN)
         if heads is None:
-            if lifecycle == {implemented}:
-                without_evidence.append(child)
+            without_evidence.append(child)
         elif not github.commit_is_on_branch(config.base_branch, heads[-1]):
             failures.append(
                 f"#{child['number']} is not merged: its verified head {heads[-1]} "
@@ -154,6 +154,20 @@ def has_closure_comment(config: RalphConfig, parent: dict[str, Any]) -> bool:
         if author_login(comment) in config.trusted_authors
     ]
     return bool(trusted) and CLOSURE_MARKER in str(trusted[-1].get("body", ""))
+
+
+def confirm_typed(parent_number: int, type_answer: Callable[[str], str] | None) -> None:
+    """Ask a human at a terminal to type the parent number; refuse on anything else."""
+    if type_answer is None:
+        raise CloseRefused("--force needs a human at a terminal to type the parent number. Nothing closed.")
+    try:
+        answer = type_answer(f"Type {parent_number} to force the closure: ")
+    except KeyboardInterrupt:
+        raise CloseCancelled from None
+    except EOFError:
+        answer = ""
+    if answer.strip() != str(parent_number):
+        raise CloseRefused(f"Did not type {parent_number}. Nothing closed.")
 
 
 def close_parent(
@@ -247,19 +261,6 @@ def close_parent(
     print(f"Closed #{parent_number}.")
     print(f"✅ Closed #{parent_number}{' and its children' if children else ''}.")
 
-
-def confirm_typed(parent_number: int, type_answer: Callable[[str], str] | None) -> None:
-    """Ask a human at a terminal to type the parent number; refuse on anything else."""
-    if type_answer is None:
-        raise CloseRefused("--force needs a human at a terminal to type the parent number. Nothing closed.")
-    try:
-        answer = type_answer(f"Type {parent_number} to close despite the failed checks: ")
-    except KeyboardInterrupt:
-        raise CloseCancelled from None
-    except EOFError:
-        answer = ""
-    if answer.strip() != str(parent_number):
-        raise CloseRefused(f"Did not type {parent_number}. Nothing closed.")
 
 
 def run(
