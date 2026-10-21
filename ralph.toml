@@ -18,6 +18,7 @@ wontfix = "wontfix"
 agent_working = "agent-working"
 human_review = "human-review"
 implemented = "implemented"
+work_started = "work-started"
 
 [models.implementation]
 engine = "claude"
@@ -41,9 +42,9 @@ reasoning_effort = "medium"
 # Takes over every session for the rest of a run after an engine failure.
 [models.backup]
 engine = "codex"
-name = "gpt-5.6-sol"
-display_name = "gpt-5.6-sol"
-reasoning_effort = "high"
+name = "gpt-6.1-sol"
+display_name = "gpt-6.1-sol"
+reasoning_effort = "medium"
 
 [verification]
 # Both checks need the quality module and manifest below; disabled checks do not load them.

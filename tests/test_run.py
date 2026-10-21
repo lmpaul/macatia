@@ -1117,15 +1117,38 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
                 )
 
 
-class ParentCompletionTests(RunLevelTestCase):
+class ParentLabelTestCase(RunLevelTestCase):
+    def record_parent_label_edits(self):
+        """Record each label edit on the parent as (added, removed) from now on."""
+        self.parent_edits = []
+
+        def record(number, add, remove):
+            if number == PARENT:
+                self.parent_edits.append((add, sorted(remove)))
+
+        self.github.after_label_edit = record
+
+    def observe_parent_labels(self):
+        """Record the parent's labels as each agent session starts."""
+        self.observed_parent_labels = []
+        self.before_session = lambda request: self.observed_parent_labels.append(
+            self.github.labels(PARENT)
+        )
+
+
+class ParentCompletionTests(ParentLabelTestCase):
     def test_all_children_complete_hands_the_parent_to_human_review_without_sessions(self):
         self.new_run(parent_labels=("ready-for-agent", "implemented", "documentation"))
         self.github.add_issue(CLOSED_BLOCKER, parent=PARENT, state="closed", labels=())
         self.github.add_issue(CHILD, parent=PARENT, labels=("implemented",))
+        self.record_parent_label_edits()
 
         result = self.start(loop_core.STANDARD_RUN)
 
         self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            self.parent_edits, [("human-review", ["implemented", "ready-for-agent"])]
+        )
         self.assertIn("- agent sessions: 0\n- infrastructure retries: 0\n", result.stdout)
         self.assertIn("implemented children this run: 0", result.stdout)
         self.assertEqual(self.github.labels(PARENT), {"human-review", "documentation"})
@@ -1153,6 +1176,155 @@ class ParentCompletionTests(RunLevelTestCase):
                 self.assertEqual(
                     sum(marker in comment for comment in self.github.comments(PARENT)), 1
                 )
+
+    def test_completion_removes_work_started_from_the_parent(self):
+        for parent_labels in (("work-started",), ("human-review", "work-started", "documentation")):
+            with self.subTest(parent_labels=parent_labels):
+                self.new_run(parent_labels=parent_labels)
+                self.github.add_issue(CHILD, parent=PARENT, labels=("implemented",))
+
+                result = self.start(loop_core.STANDARD_RUN)
+
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                self.assertEqual(
+                    self.github.labels(PARENT),
+                    {"human-review"} | (set(parent_labels) - {"work-started"}),
+                )
+
+
+class ParentWorkStartedTests(ParentLabelTestCase):
+    """The first child cycle of a run labels the parent work started instead of ready for agent."""
+
+    def test_first_child_cycle_marks_the_parent_work_started_in_one_edit(self):
+        self.new_run(parent_labels=("ready-for-agent", "documentation", "human-review"))
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.record_parent_label_edits()
+        self.observe_parent_labels()
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            self.observed_parent_labels, [{"work-started", "documentation", "human-review"}]
+        )
+        self.assertEqual(
+            self.parent_edits,
+            [("work-started", ["ready-for-agent"]), ("human-review", ["work-started"])],
+        )
+        self.assertEqual(self.github.labels(PARENT), {"human-review", "documentation"})
+
+    def test_later_children_of_the_same_run_make_no_parent_label_write(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+        self.record_parent_label_edits()
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN) * 2)
+
+        self.assert_completed(result, sessions=2)
+        self.assertEqual(
+            self.parent_edits,
+            [("work-started", ["ready-for-agent"]), ("human-review", ["work-started"])],
+        )
+
+    def test_later_run_on_a_work_started_parent_makes_no_parent_label_write(self):
+        self.new_run(parent_labels=("work-started", "documentation"))
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.record_parent_label_edits()
+        self.observe_parent_labels()
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.observed_parent_labels, [{"work-started", "documentation"}])
+        self.assertEqual(self.parent_edits, [("human-review", ["work-started"])])
+
+    def test_resumed_run_on_a_work_started_parent_makes_no_parent_label_write(self):
+        self.new_run(parent_labels=("work-started",))
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        self.record_parent_label_edits()
+
+        result = self.start(
+            loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN),
+            confirm=ScriptedConfirm(RESUME),
+        )
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.parent_edits, [("human-review", ["work-started"])])
+
+    def test_run_stopped_on_a_child_handed_to_human_review_leaves_the_parent_work_started(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("blocked", "Needs a product decision."))
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.assertEqual(self.github.labels(PARENT), {"work-started"})
+
+    def test_interrupted_run_leaves_the_parent_work_started(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.interrupt_after_comment_on = CHILD
+        self.github.interrupt_after_comment_containing = (
+            loop_core.STANDARD_RUN.implementation_evidence_prefix
+        )
+
+        with self.assertRaises(RunInterrupted):
+            self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assertEqual(self.github.labels(PARENT), {"work-started"})
+
+    def test_run_stopped_before_any_child_cycle_leaves_the_parent_labels_untouched(self):
+        for confirm in (ScriptedConfirm(STOP), None):
+            with self.subTest(confirm=confirm):
+                self.new_run(parent_labels=("ready-for-agent", "documentation"))
+                self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+                self.record_parent_label_edits()
+
+                result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+                self.assert_stopped_before_any_session(result, "labelled agent-working")
+                self.assertEqual(self.parent_edits, [])
+                self.assertEqual(self.github.labels(PARENT), {"ready-for-agent", "documentation"})
+
+    def test_run_stopped_on_another_run_before_any_child_cycle_leaves_the_parent_labels_untouched(self):
+        self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
+        self.record_parent_label_edits()
+        record_parent_edit = self.github.after_label_edit
+
+        def another_run_takes_the_resumed_child(number, add, remove):
+            record_parent_edit(number, add, remove)
+            if number == CHILD and add == "ready-for-agent":
+                self.github.edit_issue_labels(CHILD, add="agent-working", remove=["ready-for-agent"])
+
+        self.github.after_label_edit = another_run_takes_the_resumed_child
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(RESUME))
+
+        self.assert_stopped_before_any_session(result, "another run on this parent is working on it")
+        self.assertEqual(self.parent_edits, [])
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+
+    def test_failed_work_started_write_warns_and_the_run_continues(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+
+        # The parent write is the next label edit after the child is marked agent working.
+        def fail_the_parent_write(number, add, remove):
+            if number == CHILD and add == "agent-working":
+                self.github.label_edit_error = RalphError("gh issue edit failed: HTTP 502")
+
+        self.github.after_label_edit = fail_the_parent_write
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        warning = (
+            f"Ralph could not label parent #{PARENT} work-started: gh issue edit failed: HTTP 502."
+        )
+        self.assertIn(f"⚠️  {warning}", result.stdout)
+        summary = self.github.comments(PARENT)[-1]
+        self.assertIn("- final outcome: completed", summary)
+        for printed in (summary, result.stdout.split("🏁 Ralph summary")[-1]):
+            self.assertIn(f"- warning: {warning}", printed)
 
 
 class RepeatedRunTests(RunLevelTestCase):
@@ -1297,6 +1469,56 @@ class StartupTests(StartupRejectionTestCase):
                 self.assert_rejected_at_startup(result, "must be a positive integer")
 
 
+class ParentTriageTests(StartupRejectionTestCase):
+    """A parent that triage holds back is rejected at startup; children keep their own rules."""
+
+    def start_on_parent(self, parent_labels, *results):
+        self.new_run(parent_labels=parent_labels)
+        self.github.add_issue(CHILD, parent=PARENT)
+        return self.start(loop_core.STANDARD_RUN, *results)
+
+    def assert_parent_rejected(self, result, parent_labels, blocking):
+        self.assert_rejected_at_startup(
+            result, f"parent issue #{PARENT} is held back by triage: {', '.join(blocking)}"
+        )
+        self.assertEqual(self.github.labels(PARENT), set(parent_labels))
+
+    def test_parent_with_a_blocking_triage_label_is_rejected_at_startup(self):
+        for label in ("needs-triage", "needs-info", "wontfix", "ready-for-human"):
+            for parent_labels in ((label,), (label, "ready-for-agent")):
+                with self.subTest(parent_labels=parent_labels):
+                    result = self.start_on_parent(parent_labels)
+
+                    self.assert_parent_rejected(result, parent_labels, [label])
+
+    def test_error_names_every_blocking_triage_label(self):
+        parent_labels = ("wontfix", "ready-for-agent", "needs-info")
+
+        result = self.start_on_parent(parent_labels)
+
+        self.assert_parent_rejected(result, parent_labels, ["needs-info", "wontfix"])
+
+    def test_parent_without_a_blocking_triage_label_starts_normally(self):
+        for parent_labels in ((), ("ready-for-agent",), ("work-started",)):
+            with self.subTest(parent_labels=parent_labels):
+                result = self.start_on_parent(parent_labels, ScriptedResult("committed"))
+
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                self.assertEqual(self.session_children(), [CHILD])
+                self.assertEqual(self.github.labels(CHILD), {"implemented"})
+                self.assertIn("human-review", self.github.labels(PARENT))
+
+    def test_renamed_blocking_triage_label_is_honoured_on_the_parent(self):
+        self.repository.edit_configuration('needs_info = "needs-info"', 'needs_info = "r-needs-info"')
+        self.github = FakeGitHub()
+        self.github.add_issue(PARENT, labels=("r-needs-info",))
+        self.github.add_issue(CHILD, parent=PARENT)
+
+        result = self.start(loop_core.STANDARD_RUN)
+
+        self.assert_parent_rejected(result, ("r-needs-info",), ["r-needs-info"])
+
+
 class ConfigurationRejectionTests(StartupRejectionTestCase):
     def test_verification_flags_that_are_not_toml_booleans_are_rejected_before_any_session(self):
         for key in ("local_checks", "ci_checks"):
@@ -1337,14 +1559,28 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
             result, "configuration.labels is missing keys: agent_working"
         )
 
-    def test_duplicate_label_value_is_rejected_before_any_session(self):
-        self.repository.edit_configuration(
-            'agent_working = "agent-working"', 'agent_working = "implemented"'
-        )
+    def test_missing_work_started_label_is_rejected_before_any_session(self):
+        self.repository.edit_configuration('work_started = "work-started"\n', "")
 
         result = self.start(loop_core.STANDARD_RUN)
 
-        self.assert_rejected_at_startup(result, "configuration.labels values must be unique")
+        self.assert_rejected_at_startup(
+            result, "configuration.labels is missing keys: work_started"
+        )
+
+    def test_duplicate_label_value_is_rejected_before_any_session(self):
+        for key, old, new in (
+            ("agent_working", "agent-working", "implemented"),
+            ("work_started", "work-started", "ready-for-agent"),
+        ):
+            with self.subTest(key=key):
+                self.repository.edit_configuration(f'{key} = "{old}"', f'{key} = "{new}"')
+                try:
+                    result = self.start(loop_core.STANDARD_RUN)
+
+                    self.assert_rejected_at_startup(result, "configuration.labels values must be unique")
+                finally:
+                    self.repository.edit_configuration(f'{key} = "{new}"', f'{key} = "{old}"')
 
     def test_unknown_engine_is_rejected_before_any_session(self):
         self.repository = RunRepository(self, engines={"implementation": "unknown"})
@@ -1779,6 +2015,7 @@ class ConfiguredTrustTests(RunLevelTestCase):
             "agent-working": "r-agent-working",
             "human-review": "r-human-review",
             "implemented": "r-implemented",
+            "work-started": "r-work-started",
         }
         for default, configured in labels.items():
             self.repository.edit_configuration(f'= "{default}"\n', f'= "{configured}"\n')
@@ -2585,7 +2822,7 @@ class RunBudgetTests(VerificationTestCase):
         self.assertIn(f"- agent sessions: {budget}\n", summary)
         self.assertIn("- final outcome: stopped safely", summary)
         self.assertIn(f"- agent sessions: {budget}\n", result.stderr)
-        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+        self.assertEqual(self.github.labels(PARENT), {"work-started"})
         return handoff
 
     def test_default_budget_of_a_reviewed_run_allows_nine_sessions_per_child_across_the_run(self):

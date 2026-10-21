@@ -58,6 +58,7 @@ LABEL_DESCRIPTIONS = {
     "agent_working": "A Ralph agent is working on this child",
     "human_review": "Ralph stopped; a human must review",
     "implemented": "Implemented by Ralph",
+    "work_started": "Ralph has started work on this parent",
 }
 ERRORS = (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, ImportError, SyntaxError)
 # Older gh prints an empty job log, with success, when the run's log archive has no step logs.

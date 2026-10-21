@@ -18,6 +18,7 @@ LABEL_KEYS = {
     "agent_working",
     "human_review",
     "implemented",
+    "work_started",
 }
 # Suggested for unknown keys, which usually come from a newer ralph-kit: the version only
 # changes on release, so a plain upgrade can keep an older build installed from Git.
