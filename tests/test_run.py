@@ -353,6 +353,7 @@ class BlockerTests(RunLevelTestCase):
         self.assertEqual(self.github.pull_lookups, [("main", verified_head)] * 4)
         self.assertEqual(result.sleeps[-3:], [30.0] * 3)
         self.assertIn("- infrastructure retries: 3\n", self.github.comments(PARENT)[-1])
+        self.assertIn(f"- #{DEPENDENT}: waiting on #{BLOCKER}", result.stderr)
         self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
 
     def test_closed_blocker_satisfies_its_dependent_whatever_its_evidence(self):

@@ -752,11 +752,16 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
 
 
 def unsatisfied_blockers(state: RunState, child_number: int) -> str:
-    return ", ".join(
-        f"#{blocker['number']}"
-        for blocker in state.github.blockers(child_number)
-        if not blocker_is_satisfied(state, blocker)
-    )
+    unsatisfied = []
+    for blocker in state.github.blockers(child_number):
+        try:
+            satisfied = blocker_is_satisfied(state, blocker)
+        # The stop reason already reports the failed lookup.
+        except InfrastructureRetriesExhausted:
+            satisfied = False
+        if not satisfied:
+            unsatisfied.append(f"#{blocker['number']}")
+    return ", ".join(unsatisfied)
 
 
 def handoff_comment_url(state: RunState, child_number: int) -> str | None:
@@ -1462,22 +1467,20 @@ def merged_pull_request_is_on_current_branch(
     """Whether a pull request merged into the base branch that GitHub associates with the
     blocker's verified head has its merge commit on the run's branch: a squash or rebase
     merge leaves the verified head itself off the branch."""
-    subject = f"the merged pull requests of blocker #{blocker_number}"
+    subject = f"the merged pull request lookup of blocker #{blocker_number}"
 
     def lookup():
         try:
             return state.github.merged_pull_requests(state.config.base_branch, verified_head)
         except RalphError as error:
-            raise InfrastructureFailure(
-                f"the merged pull request lookup of blocker #{blocker_number}", str(error)
-            ) from error
+            raise InfrastructureFailure(subject, str(error)) from error
 
     pulls = state.blocker_pull_requests.get(verified_head)
     if pulls is None:
         infrastructure = state.summary.infrastructure
         assert infrastructure is not None
         try:
-            pulls = infrastructure.retry(lookup, subject, f"GitHub did not list {subject}")
+            pulls = infrastructure.retry(lookup, subject, f"GitHub failed {subject}")
         except InfrastructureRetriesExhausted as error:
             state.blocker_pull_requests[verified_head] = error
             raise
