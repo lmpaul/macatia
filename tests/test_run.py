@@ -1807,7 +1807,11 @@ class RunBranchTests(StartupRejectionTestCase):
         self.assertNotIn(RUN_BRANCH, self.origin_branches())
 
     def test_remote_only_behind_or_diverged_run_branch_stops_with_nothing_changed(self):
-        for where in ("only on origin", "behind origin", "diverged from origin"):
+        for where, reason in (
+            ("only on origin", "exists only on origin"),
+            ("behind origin", "exists locally but is behind or diverged from origin"),
+            ("diverged from origin", "exists locally but is behind or diverged from origin"),
+        ):
             with self.subTest(where):
                 self.new_run()
                 self.github.add_issue(CHILD, parent=PARENT)
@@ -1833,7 +1837,7 @@ class RunBranchTests(StartupRejectionTestCase):
                 result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
 
                 self.assertNotEqual(result.exit_code, 0)
-                self.assertIn(f"{RUN_BRANCH} already exists", result.stderr)
+                self.assertIn(f"{RUN_BRANCH} {reason}", result.stderr)
                 self.assertEqual(self.sessions.requests, [])
                 self.assertEqual(confirm.questions, [])
                 self.assertEqual(self.current_branch(), "main")

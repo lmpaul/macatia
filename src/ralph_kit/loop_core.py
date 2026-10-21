@@ -1264,10 +1264,10 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
         ),
         None,
     )
-    local = command(
+    local_lookup = command(
         state, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{run_branch}"], check=False
     )
-    local_head = local.stdout.strip() if local.returncode == 0 else None
+    local_head = local_lookup.stdout.strip() if local_lookup.returncode == 0 else None
     if remote_head is not None and (
         local_head is None
         # The remote head must be a commit the local branch already contains.
@@ -1275,9 +1275,12 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
             state, ["git", "merge-base", "--is-ancestor", remote_head, local_head], check=False
         ).returncode != 0
     ):
-        where = f"on {remote}" if local_head is None else f"locally and on {remote}, out of step"
+        where = (
+            f"only on {remote}" if local_head is None
+            else f"locally but is behind or diverged from {remote}"
+        )
         raise RalphError(
-            f"{run_branch} already exists {where}; switch to it and bring it up to date, "
+            f"{run_branch} exists {where}; switch to it and bring it up to date, "
             f"then run `{state.rerun_command}` again"
         )
 
