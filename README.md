@@ -75,11 +75,14 @@ ralph-kit/issue-N from an up-to-date <base>?":
   that are not on the remote stops the run with no branch created.
 - **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
 
-If the branch exists locally, and the remote has either no such branch or one the
-local branch already contains, Ralph asks "Switch to the existing
-ralph-kit/issue-N?":
+If the branch exists locally, on the remote, or both, Ralph asks "Switch to the
+existing ralph-kit/issue-N?":
 
-- **Switch** (the default) moves to the branch. The base branch is not pulled, and
+- **Switch** (the default) moves to the branch and follows the remote one. A
+  branch only on the remote is fetched and checked out tracking it. A local
+  branch behind the remote one is fast-forwarded. A local branch that has
+  diverged from the remote one stops the run, leaving you on the branch with
+  nothing rewritten to reconcile it yourself. The base branch is not pulled, and
   nothing is merged or rebased into the run branch.
 - **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
 
@@ -89,9 +92,7 @@ A failed push stops the run and leaves you on the local branch. The draft PR is
 still opened at the first publication.
 
 Without a terminal the run stops with nothing changed and names the branch to
-create or switch to. A run branch that exists only on the remote, or whose local
-copy is behind or has diverged from the remote, stops the run; switch to it and
-bring it up to date, then run again. A detached HEAD is refused.
+create or switch to. A detached HEAD is refused.
 
 `init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats

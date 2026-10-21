@@ -1239,11 +1239,10 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
     """On the base branch, offer the parent's run branch and return it once it is published.
 
     A run branch that exists nowhere is created from the base branch pulled
-    fast-forward only. A local run branch that is not behind the remote one is
-    switched to without touching the base branch. Either way the run branch is
-    then pushed with its upstream; anything other than the accepting choice
-    stops with nothing changed. A run branch only on the remote, or behind or
-    diverged from it, stops the run.
+    fast-forward only. An existing run branch is switched to without touching
+    the base branch, following the remote one: see `switch_to_run_branch`.
+    Either way the run branch is then pushed with its upstream; anything other
+    than the accepting choice stops with nothing changed.
     """
     configuration = state.config
     base, remote = configuration.base_branch, configuration.remote
@@ -1268,23 +1267,8 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
         state, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{run_branch}"], check=False
     )
     local_head = local_lookup.stdout.strip() if local_lookup.returncode == 0 else None
-    if remote_head is not None and (
-        local_head is None
-        # The remote head must be a commit the local branch already contains.
-        or command(
-            state, ["git", "merge-base", "--is-ancestor", remote_head, local_head], check=False
-        ).returncode != 0
-    ):
-        where = (
-            f"only on {remote}" if local_head is None
-            else f"locally but is behind or diverged from {remote}"
-        )
-        raise RalphError(
-            f"{run_branch} exists {where}; switch to it and bring it up to date, "
-            f"then run `{state.rerun_command}` again"
-        )
 
-    if local_head is None:
+    if local_head is None and remote_head is None:
         question, accept = f"Create {run_branch} from an up-to-date {base}?", "Create"
         not_done, by_hand = "was not created", f"create {run_branch} from an up-to-date {base}"
     else:
@@ -1304,15 +1288,14 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
     if not accepted:
         raise RalphError(f"stopped on {base}: {run_branch} {not_done}")
 
-    if local_head is None:
+    if local_head is None and remote_head is None:
         create_run_branch(state, run_branch)
     else:
-        # The base branch is left alone, and nothing is merged into the run branch.
-        git(state, "switch", run_branch)
+        remote_head = switch_to_run_branch(state, run_branch, local_head, remote_head)
     upstream = command(
         state, ["git", "rev-parse", "--abbrev-ref", f"{run_branch}@{{upstream}}"], check=False
     ).stdout.strip()
-    if upstream != f"{remote}/{run_branch}" or remote_head != local_head:
+    if upstream != f"{remote}/{run_branch}" or remote_head != current_head(state):
         try:
             push_branch(state, run_branch)
         except RalphError as error:
@@ -1320,6 +1303,53 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
                 f"could not push {run_branch} to {remote}; the local branch is kept: {error}"
             ) from error
     return run_branch
+
+
+def switch_to_run_branch(
+    state: RunState, run_branch: str, local_head: str | None, remote_head: str | None
+) -> str | None:
+    """Switch to an existing `run_branch`, following the remote one; return the remote head.
+
+    A branch only on the remote is fetched and checked out tracking it. A local
+    branch behind the remote one is fast-forwarded; one that has diverged from
+    it stops the run on the branch with nothing rewritten. The base branch is
+    left alone, and nothing is merged or rebased into the run branch.
+    """
+    remote = state.config.remote
+    if remote_head is None:
+        git(state, "switch", run_branch)
+        return None
+    tracking = f"refs/remotes/{remote}/{run_branch}"
+    print(f"⬇️  Fetching {run_branch} from {remote}.", flush=True)
+    # Not under a spinner: git writes its own progress to the terminal.
+    fetched = command(
+        state,
+        ["git", "fetch", remote, f"+refs/heads/{run_branch}:{tracking}"],
+        check=False,
+        capture_output=False,
+    )
+    if fetched.returncode != 0:
+        raise RalphError(f"could not fetch {run_branch} from {remote}")
+    remote_head = git(state, "rev-parse", tracking)
+    if local_head is None:
+        git(state, "switch", "--create", run_branch, "--track", f"{remote}/{run_branch}")
+        return remote_head
+    git(state, "switch", run_branch)
+
+    def contains(ancestor: str, descendant: str) -> bool:
+        return command(
+            state, ["git", "merge-base", "--is-ancestor", ancestor, descendant], check=False
+        ).returncode == 0
+
+    if contains(remote_head, local_head):
+        return remote_head
+    if not contains(local_head, remote_head):
+        raise RalphError(
+            f"{run_branch} has diverged from {remote}/{run_branch}; nothing was rewritten: "
+            f"reconcile them, then run `{state.rerun_command}` again"
+        )
+    git(state, "merge", "--ff-only", remote_head)
+    return remote_head
 
 
 def create_run_branch(state: RunState, run_branch: str) -> None:

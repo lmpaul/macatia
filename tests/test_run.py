@@ -1806,45 +1806,95 @@ class RunBranchTests(StartupRejectionTestCase):
         self.assertEqual(self.repository.head(), run_branch_head)
         self.assertNotIn(RUN_BRANCH, self.origin_branches())
 
-    def test_remote_only_behind_or_diverged_run_branch_stops_with_nothing_changed(self):
-        for where, reason in (
-            ("only on origin", "exists only on origin"),
-            ("behind origin", "exists locally but is behind or diverged from origin"),
-            ("diverged from origin", "exists locally but is behind or diverged from origin"),
-        ):
+    def run_branch_on_origin_ahead(self, *, diverged=False):
+        """origin's run branch is one commit ahead of the local one, which may have a commit of its own.
+
+        Returns the local and origin heads."""
+        self.existing_run_branch(pushed=True)
+        git(self.repository.path, "switch", "-q", RUN_BRANCH)
+        behind = self.repository.head()
+        self.commit_locally("published.txt")
+        git(self.repository.path, "push", "-q", "origin", RUN_BRANCH)
+        origin_head = self.repository.head()
+        git(self.repository.path, "reset", "-q", "--hard", behind)
+        if diverged:
+            self.commit_locally("local-only.txt")
+        git(self.repository.path, "switch", "-q", "main")
+        return git(self.repository.path, "rev-parse", RUN_BRANCH), origin_head
+
+    def test_switch_to_a_branch_only_on_origin_tracks_it_and_proceeds(self):
+        origin_head = self.existing_run_branch(pushed=True)
+        git(self.repository.path, "branch", "-D", RUN_BRANCH)
+        at_first_session = []
+        self.before_session = lambda request: at_first_session.append(
+            (self.current_branch(), self.repository.head(), self.upstream())
+        )
+        confirm = ScriptedConfirm(SWITCH)
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=confirm)
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(confirm.questions, [f"Switch to the existing {RUN_BRANCH}?"])
+        self.assertEqual(at_first_session, [(RUN_BRANCH, origin_head, f"origin/{RUN_BRANCH}")])
+        self.assertEqual(git(self.repository.path, "rev-parse", "main"), self.base_head)
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), self.repository.head())
+
+    def test_switch_fast_forwards_a_local_branch_behind_origin_before_any_session(self):
+        _, origin_head = self.run_branch_on_origin_ahead()
+        at_first_session = []
+        self.before_session = lambda request: at_first_session.append(
+            (self.current_branch(), self.repository.head(), self.upstream())
+        )
+
+        result = self.start(
+            loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=ScriptedConfirm(SWITCH)
+        )
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(at_first_session, [(RUN_BRANCH, origin_head, f"origin/{RUN_BRANCH}")])
+        self.assertEqual(git(self.repository.path, "rev-parse", "main"), self.base_head)
+        self.assertEqual(len(self.repository.commits_since(origin_head)), 1)
+
+    def test_switch_to_a_branch_diverged_from_origin_stops_on_it_with_both_sides_intact(self):
+        local_head, origin_head = self.run_branch_on_origin_ahead(diverged=True)
+        confirm = ScriptedConfirm(SWITCH)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_rejected_at_startup(result, f"{RUN_BRANCH} has diverged from origin/{RUN_BRANCH}")
+        self.assertEqual(confirm.questions, [f"Switch to the existing {RUN_BRANCH}?"])
+        self.assertEqual(self.current_branch(), RUN_BRANCH)
+        self.assertEqual(self.repository.head(), local_head)
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), origin_head)
+        self.assertEqual(git(self.repository.path, "rev-parse", "main"), self.base_head)
+        self.assertEqual(self.github.comments(PARENT), [])
+
+    def test_stop_leaves_a_branch_on_origin_untouched(self):
+        for where in ("only on origin", "behind origin"):
             with self.subTest(where):
                 self.new_run()
                 self.github.add_issue(CHILD, parent=PARENT)
                 git(self.repository.path, "checkout", "main")
-                self.existing_run_branch(pushed=True)
                 if where == "only on origin":
+                    self.existing_run_branch(pushed=True)
                     git(self.repository.path, "branch", "-D", RUN_BRANCH)
                 else:
-                    git(self.repository.path, "switch", "-q", RUN_BRANCH)
-                    behind = git(self.repository.path, "rev-parse", "HEAD~1")
-                    self.commit_locally("published.txt")
-                    git(self.repository.path, "push", "-q", "origin", RUN_BRANCH)
-                    git(self.repository.path, "reset", "-q", "--hard", behind)
-                    if where == "diverged from origin":
-                        self.commit_locally("local-only.txt")
-                    git(self.repository.path, "switch", "-q", "main")
-                local, remote = set(self.local_branches()), set(self.origin_branches())
-                local_head = (
-                    git(self.repository.path, "rev-parse", RUN_BRANCH) if RUN_BRANCH in local else None
-                )
-                confirm = ScriptedConfirm(SWITCH)
+                    self.run_branch_on_origin_ahead()
+                local = {
+                    ref: git(self.repository.path, "rev-parse", ref)
+                    for ref in self.local_branches()
+                }
+                origin_head = self.repository.pushed_head(RUN_BRANCH)
 
-                result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+                result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(STOP))
 
-                self.assertNotEqual(result.exit_code, 0)
-                self.assertIn(f"{RUN_BRANCH} {reason}", result.stderr)
-                self.assertEqual(self.sessions.requests, [])
-                self.assertEqual(confirm.questions, [])
+                self.assert_rejected_at_startup(result, RUN_BRANCH)
                 self.assertEqual(self.current_branch(), "main")
-                self.assertEqual((set(self.local_branches()), set(self.origin_branches())), (local, remote))
-                if local_head is not None:
-                    self.assertEqual(git(self.repository.path, "rev-parse", RUN_BRANCH), local_head)
-                self.assertEqual(self.github.comments(PARENT), [])
+                self.assertEqual(
+                    {ref: git(self.repository.path, "rev-parse", ref) for ref in self.local_branches()},
+                    local,
+                )
+                self.assertEqual(self.repository.pushed_head(RUN_BRANCH), origin_head)
 
     def test_a_non_base_branch_runs_with_no_question(self):
         git(self.repository.path, "checkout", BRANCH)
