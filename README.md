@@ -30,6 +30,7 @@ From the repository root:
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
 ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
 ralph-kit configure            # change sections of ./ralph.toml from a menu
+ralph-kit update-labels        # add the label roles ./ralph.toml leaves out, then their GitHub labels
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
 ralph-kit run 123              # standard run: implement the children of parent issue #123
@@ -139,6 +140,15 @@ add); `ralph-kit init --force` would start over and lose its settings.
 Unknown keys usually mean the file was written by a newer ralph-kit (for example
 committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
 
+A newer ralph-kit can add a label role. `ralph-kit update-labels [--config PATH]`
+adds each role the file leaves out under `[labels]`, with its default name, one line
+at the end of the table: the rest of the file and its comments stay as they are. It
+refuses when the default name is already another role's label, or when the labels
+are not in a `[labels]` table, and then writes nothing. It then validates the file
+and, like `check`, offers to create the labels missing on GitHub (Yes / Later; without
+a terminal it only prints the command). Commit the file afterwards: a run needs a
+clean working tree.
+
 For a variant of an existing configuration, copy the file, then change the copy:
 
 ```sh
@@ -174,8 +184,9 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   against outputs recorded from the real CLIs in `tests/fixtures/engines/`.
 - **Readiness check** (including the engine flag check): `tests/test_check.py`,
   with injected executable lookup and command runner. `tests/test_init.py`
-  covers `ralph-kit init` the same way, and `tests/test_configure.py` covers
-  `ralph-kit configure`.
+  covers `ralph-kit init` the same way, `tests/test_configure.py` covers
+  `ralph-kit configure`, and `tests/test_update_labels.py` covers
+  `ralph-kit update-labels`.
 - **Parent closure** (every check, the confirmation, the writes and resuming
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
@@ -396,7 +407,7 @@ infrastructure retries, then stops the run.
   run adds it in place of `ready-for-agent`, parent completion removes it, and
   nothing else cleans it up (see [the loop](#the-loop-run-and-run---review)).
   A `ralph.toml` written before `work_started` existed may leave it out and gets
-  `work-started`. `init` and `check` offer to
+  `work-started`; `check` warns about it, and `ralph-kit update-labels` writes it. `init` and `check` offer to
   create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.

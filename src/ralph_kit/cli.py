@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure and close."""
+"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure, update-labels and close."""
 
 from __future__ import annotations
 
@@ -24,6 +24,9 @@ commands:
       --force overwrites an existing configuration at PATH, and only that file.
   configure [--config PATH]
       Change sections of an existing configuration (default ./ralph.toml) from a menu; saves only what changed.
+  update-labels [--config PATH]
+      Add each label role the configuration leaves out, with its default name, keeping the rest of the file;
+      then offer to create the labels missing on GitHub.
   close [--yes | --force] [--config PATH] PARENT
       Parent closure: once every open child of PARENT is implemented and PARENT is in human review,
       close the open children, then PARENT, as completed, after one confirmation.
@@ -125,6 +128,10 @@ def main(argv: list[str] | None = None) -> int:
         return init(arguments)
     if command == "configure":
         return configure(arguments)
+    if command == "update-labels":
+        from . import update_labels
+
+        return update_labels.main(arguments, prog="ralph-kit update-labels")
     if command == "close":
         from . import close
 

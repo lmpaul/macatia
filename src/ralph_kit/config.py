@@ -95,6 +95,8 @@ class RalphConfig:
     review_by_default: bool = False
     # Makes a run without --caffeinate or --no-caffeinate hold the sleep lock.
     caffeinate_by_default: bool = False
+    # Label roles the file leaves out, which got their default name.
+    defaulted_labels: frozenset[str] = frozenset()
 
     @property
     def triage_labels(self) -> frozenset[str]:
@@ -238,7 +240,8 @@ def load_config(
     ):
         lines = ", ".join(f'{key} = "{DEFAULT_LABELS[key]}"' for key in missing)
         raise RalphConfigError(
-            f"configuration.labels is missing keys: {', '.join(missing)} (add {lines} under [labels])"
+            f"configuration.labels is missing keys: {', '.join(missing)}"
+            f" (add {lines} under [labels], or run ralph-kit update-labels)"
         )
     label_values = _mapping(
         values["labels"],
@@ -246,6 +249,7 @@ def load_config(
         LABEL_KEYS - set(LATER_LABEL_DEFAULTS),
         set(LATER_LABEL_DEFAULTS),
     )
+    defaulted_labels = frozenset(LATER_LABEL_DEFAULTS) - set(label_values)
     label_values = LATER_LABEL_DEFAULTS | label_values
     labels = {
         key: _string(label_values[key], f"configuration.labels.{key}")
@@ -302,6 +306,7 @@ def load_config(
         backup=backup,
         review_by_default=review_by_default,
         caffeinate_by_default=caffeinate_by_default,
+        defaulted_labels=defaulted_labels,
         verification=VerificationConfig(
             local_checks=verification_values["local_checks"],
             ci_checks=verification_values["ci_checks"],

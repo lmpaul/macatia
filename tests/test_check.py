@@ -269,6 +269,13 @@ class ReadinessTests(unittest.TestCase):
         code, output = self.run_check(confirm=lambda question: True)
         self.assertEqual(code, 0, output)
         self.assertIn("✓ work-started created", output)
+        output = " ".join(output.split())  # The report wraps long details.
+        self.assertIn("! Label roles ralph.toml leaves out work_started, so work-started is used", output)
+        self.assertIn("→ ralph-kit update-labels writes it", output)
+
+    def test_complete_labels_get_no_label_roles_warning(self):
+        code, output = self.run_check()
+        self.assertNotIn("Label roles", output)
 
     def test_missing_label_key_names_the_line_to_add_and_keeps_the_file(self):
         text = self.config.read_text().replace('agent_working = "agent-working"\n', "")
@@ -276,7 +283,7 @@ class ReadinessTests(unittest.TestCase):
         code, output = self.run_check()
         output = " ".join(output.split())  # The report wraps long details.
         self.assertEqual(code, 1)
-        self.assertIn('add agent_working = "agent-working" under [labels]', output)
+        self.assertIn('add agent_working = "agent-working" under [labels], or run ralph-kit update-labels', output)
         self.assertIn("edit ralph.toml by hand", output)
         self.assertNotIn("regenerate", output)
         self.assertEqual(self.config.read_text(), text)

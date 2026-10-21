@@ -373,6 +373,15 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
         render(console, report)
         return 1
     report.add("ok", config_path.name, "values filled in")
+    if config.defaulted_labels:
+        roles = sorted(config.defaulted_labels)
+        names = ", ".join(config.labels[role] for role in roles)
+        report.add(
+            "warn",
+            "Label roles",
+            f"{config_path.name} leaves out {', '.join(roles)}, so {names} {'is' if len(roles) == 1 else 'are'} used",
+            "ralph-kit update-labels writes it" if len(roles) == 1 else "ralph-kit update-labels writes them",
+        )
 
     report.section("Tools")
     engines = {profile.engine for profile in profiles}
