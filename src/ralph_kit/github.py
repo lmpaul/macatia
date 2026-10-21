@@ -6,6 +6,7 @@ import json
 import pathlib
 import subprocess
 import urllib.parse
+from dataclasses import dataclass
 from typing import Any
 
 from .commands import RalphError, command
@@ -21,6 +22,25 @@ def flatten_pages(value: Any) -> list[dict[str, Any]]:
 
 # The statuses of GitHub's compare API for `base...head`.
 COMPARE_STATUSES = {"ahead", "behind", "identical", "diverged"}
+
+
+@dataclass(frozen=True)
+class MergedPullRequest:
+    number: int
+    merge_commit: str
+
+
+def merged_pull_requests_into(base: str, pulls: list[dict[str, Any]]) -> list[MergedPullRequest]:
+    """The pull requests of a commit-to-pull-requests listing that were merged into `base`."""
+    merged = []
+    for pull in pulls:
+        if pull.get("merged_at") is None or (pull.get("base") or {}).get("ref") != base:
+            continue
+        number, merge_commit = pull.get("number"), pull.get("merge_commit_sha")
+        if not isinstance(number, int) or not isinstance(merge_commit, str) or not merge_commit:
+            raise RalphError(f"GitHub listed a merged pull request without a number or merge commit: {pull!r}")
+        merged.append(MergedPullRequest(number, merge_commit))
+    return merged
 
 
 # The CI diagnostic records these commands as evidence, so the in-memory GitHub
@@ -89,6 +109,13 @@ class GitHub:
             raise RalphError(f"GitHub compared {branch} with {sha} as {status!r}")
         # `behind` or `identical`: the branch already contains the commit.
         return status in {"behind", "identical"}
+
+    def merged_pull_requests(self, base: str, sha: str) -> list[MergedPullRequest]:
+        """The pull requests merged into `base` that GitHub associates with a commit, whatever
+        the merge method: a squash or rebase merge leaves the commit off `base`."""
+        return merged_pull_requests_into(
+            base, self._list(f"repos/{self.repository}/commits/{sha}/pulls")
+        )
 
     def blockers(self, child: int) -> list[dict[str, Any]]:
         return self._list(

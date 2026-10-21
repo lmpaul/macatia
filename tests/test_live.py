@@ -115,6 +115,21 @@ class LiveGitHubTests(unittest.TestCase):
 
         self.assertIs(self.github.commit_is_on_branch(branch, self.default_branch_head()), True)
 
+    def test_merged_pull_requests_of_a_commit_carry_its_merged_pull_request_and_merge_commit(self):
+        merged_pulls = self.gh_json(
+            "pr", "list", "--state", "merged", "--limit", "1",
+            "--json", "number,baseRefName,headRefOid,mergeCommit",
+        )
+        if not merged_pulls:
+            self.skipTest(f"{self.repository} has no merged pull request")
+        (pull,) = merged_pulls
+
+        merged = self.github.merged_pull_requests(pull["baseRefName"], pull["headRefOid"])
+
+        self.assertIn(pull["number"], {listed.number for listed in merged})
+        (listed,) = (listed for listed in merged if listed.number == pull["number"])
+        self.assertEqual(listed.merge_commit, pull["mergeCommit"]["oid"])
+
     def test_open_pull_requests_list_each_pull_request_with_its_number_draft_state_and_url(self):
         open_pulls = self.gh_json(
             "pr", "list", "--state", "open", "--limit", "1", "--json", "headRefName,baseRefName"
