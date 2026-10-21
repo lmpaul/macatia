@@ -445,6 +445,10 @@ class RunState:
     # The engine failure that ended a regular profile's session with a backup
     # configured; None while no such session ended in one.
     backup_switch: BackupSwitch | None = None
+    # Whether this run has already made sure the parent is labelled work started.
+    parent_work_started: bool = False
+    # Warnings that did not stop the run, for the terminal summary.
+    warnings: list[str] = field(default_factory=list)
 
     @property
     def mode(self) -> RunMode:
@@ -482,6 +486,7 @@ def terminal_summary(state: RunState, outcome: str) -> str:
     if state.backup_switch is not None:
         assert state.config.backup is not None
         backup_line = state.backup_switch.summary_line(state.config.backup)
+    warnings = "".join(f"\n- warning: {warning}" for warning in state.warnings)
     return (
         f"🏁 Ralph summary for parent #{state.summary.parent}:\n"
         f"- implemented children this run: {state.summary.implemented}\n"
@@ -492,6 +497,7 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         f"- total duration: {format_elapsed_duration(elapsed_seconds)}\n"
         f"- phase timings: {phase_summary}\n"
         f"- final outcome: {outcome}"
+        f"{warnings}"
     )
 
 
@@ -1450,6 +1456,31 @@ def mark_child_agent_working(state: RunState, child_number: int) -> None:
         add=configured_label(state, "agent_working"),
         remove=[configured_label(state, "ready_for_agent")],
     )
+
+
+def mark_parent_work_started(state: RunState, parent_number: int) -> None:
+    """Label the parent work started instead of ready for agent, once per run.
+
+    The label is informational, so a failed write warns and the run continues.
+    """
+    if state.parent_work_started:
+        return
+    state.parent_work_started = True
+    work_started = configured_label(state, "work_started")
+    ready_label = configured_label(state, "ready_for_agent")
+    try:
+        parent_labels = labels(issue_details(state, parent_number))
+        if work_started in parent_labels and ready_label not in parent_labels:
+            return
+        state.github.edit_issue_labels(parent_number, add=work_started, remove=[ready_label])
+    except RalphError as error:
+        warning = (
+            f"Ralph could not label parent #{parent_number} {work_started}: "
+            f"{sanitized_text(' '.join(str(error).split()))}. The run continues; add the "
+            "label by hand if you want it."
+        )
+        state.warnings.append(warning)
+        print(f"⚠️  {warning}", flush=True)
 
 
 def latest_child_base_comment(state: RunState, issue: dict[str, Any]) -> str | None:
@@ -2508,6 +2539,7 @@ def publish_parent_completion(
     parent = issue_details(state, parent_number)
     require_trusted_issue(state, parent)
     current_lifecycle = lifecycle_labels(state, parent)
+    work_started = {configured_label(state, "work_started")} & labels(parent)
     body = (
         f"{state.mode.parent_completion_marker}\n"
         f"Ralph observed all {child_count} children complete on cumulative "
@@ -2525,11 +2557,11 @@ def publish_parent_completion(
         state.github.comment_on_issue(parent_number, body)
         if current_head(state) != verified_head:
             raise RalphError("branch advanced while handing parent to human review")
-    if current_lifecycle != {human_review_label}:
+    if current_lifecycle != {human_review_label} or work_started:
         state.github.edit_issue_labels(
             parent_number,
             add=human_review_label,
-            remove=sorted(current_lifecycle - {human_review_label}),
+            remove=sorted((current_lifecycle | work_started) - {human_review_label}),
         )
 
 
@@ -2854,6 +2886,7 @@ def run_children(
             details = issue_details(state, child_number)
             require_trusted_issue(state, details)
             child_base = start_child_cycle(state, child_number, details, siblings)
+            mark_parent_work_started(state, parent_issue)
         state.diagnostics.child_bases[child_number] = child_base.commit
         cycle = run_child_cycle(
             child_number, child_base.commit, budget, adapters,

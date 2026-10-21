@@ -235,6 +235,18 @@ Once a child is selected and its issue trusted, Ralph replaces its
 `ready-for-agent` label with `agent-working` before the first agent session; if
 that label write fails, the run stops before any session. The child keeps `agent-working` throughout its child cycle.
 
+At the first child cycle of a run, right after marking the child
+`agent-working`, Ralph also labels the parent `work-started` and removes its
+`ready-for-agent` in one label edit, keeping its other labels. A parent that
+already has `work-started` and no `ready-for-agent` gets no write, and later
+children in the same run make none. The label is informational only: Ralph
+never reads it to decide anything, and nothing cleans it up. Stops,
+interruptions, crash recovery, the startup choice and the concurrency guard
+leave it in place, so a stopped parent still reads as started. A run that
+stops before any child cycle, or finds every child already complete, never
+adds it. If the write fails, Ralph prints a warning, repeats it in the terminal
+summary, and the run continues. Parent completion removes it.
+
 Ralph then posts a trusted comment on the child naming its child base, the
 commit its implementation evidence, review session diff, and local gate
 selection start from, with a hidden machine-readable marker. Only markers from
@@ -272,8 +284,9 @@ The loop of a standard run is:
    fresh CI correction, rerun local gates, push, and wait for CI again.
 4. Mark the child `implemented` only when the work is complete and verification
    passes, removing every other lifecycle label it carries. Continue with the
-   next runnable child. The parent ultimately goes to human review; only a human
-   merges.
+   next runnable child. The parent ultimately goes to human review, with
+   `human-review` replacing its other lifecycle labels and `work-started`;
+   only a human merges.
 
 The optional final number is the run budget: the total number of agent
 sessions the run may start, shared by all children. The default is
@@ -372,7 +385,10 @@ implementation evidence from either kind of run when its commits are on the bran
   `work_started`. `agent_working` (`agent-working` by default) marks the child a
   run is working on; only Ralph sets it. `work_started` (`work-started` by
   default) marks a parent on which Ralph has started work; it is informational
-  only, and Ralph never reads it to decide anything. `init` and `check` offer to
+  only, and Ralph never reads it to decide anything: the first child cycle of a
+  run adds it in place of `ready-for-agent`, parent completion removes it, and
+  nothing else cleans it up (see [the loop](#the-loop-run-and-run---review)).
+  `init` and `check` offer to
   create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
