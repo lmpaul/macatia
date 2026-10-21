@@ -59,7 +59,7 @@ whatever the setting, without the notice. `--caffeinate` together with
 With the setting on, `ralph-kit check` also reports whether this machine can
 provide the sleep lock, as a warning only: a run continues without one.
 
-Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean, dedicated branch.
+Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean worktree.
 
 A run started on the base branch offers a run branch named
 `ralph-kit/issue-<parent>` once every other startup check has passed, the parent
@@ -750,7 +750,7 @@ ralph-kit check
 ralph-kit check --review
 ```
 
-Commit the prepared files and use a dedicated branch first. The readiness check validates
+Commit the prepared files first. The readiness check validates
 TOML and placeholders, Python and required CLI availability (and the minimum `gh` version), Git branch/remote
 and clean worktree, `.ralph/` ignored by Git (any ignore source counts; the check
 never edits `.gitignore`), GitHub access/repository/trusted account/write permission/labels,

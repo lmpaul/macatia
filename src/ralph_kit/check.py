@@ -24,6 +24,7 @@ from . import __version__, keep_awake
 from .agent import engine_help_command_and_flags
 from .config import (
     DIAGNOSTICS_DIRECTORY,
+    RUN_BRANCH_PREFIX,
     MissingConfigError,
     RalphConfigError,
     load_config,
@@ -433,7 +434,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             except RuntimeError:
                 raise Blocked("detached HEAD, no active branch", "git switch -c <branch-name>") from None
             if current == config.base_branch:
-                return f"{current} (run will offer a ralph-kit/issue-<parent> branch)"
+                return f"{current} (run will offer a {RUN_BRANCH_PREFIX}<parent> branch)"
             return f"{current} (base: {config.base_branch})"
         report.check("Branch", branch)
 

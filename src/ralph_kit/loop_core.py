@@ -44,6 +44,7 @@ from .child_cycle import (
 from .commands import RalphError, command as run_command
 from .config import (
     DIAGNOSTICS_DIRECTORY,
+    RUN_BRANCH_PREFIX,
     AgentProfile,
     RalphConfig,
     RalphConfigError,
@@ -1230,9 +1231,6 @@ def preflight(state: RunState) -> str:
             f"{configuration.repository}, found {repository}"
         )
     return branch
-
-
-RUN_BRANCH_PREFIX = "ralph-kit/issue-"
 
 
 def offer_run_branch(state: RunState, parent_issue: int) -> str:

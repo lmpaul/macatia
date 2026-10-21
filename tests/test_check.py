@@ -207,7 +207,7 @@ class ReadinessTests(unittest.TestCase):
     def test_other_branch_names_the_base(self):
         code, output = self.run_check()
         self.assertEqual(code, 0, output)
-        self.assertIn("feature (base: main)", output)
+        self.assertIn("feature (base: main)", " ".join(output.split()))
 
     def test_detached_head_blocks(self):
         self.branch = None
