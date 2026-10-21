@@ -47,7 +47,13 @@ def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
         default=DEFAULT_CONFIG_PATH,
         help="repository-specific Ralph TOML configuration",
     )
-    parser.add_argument("--yes", action="store_true", help="close without asking for confirmation")
+    confirmation = parser.add_mutually_exclusive_group()
+    confirmation.add_argument("--yes", action="store_true", help="close without asking for confirmation")
+    confirmation.add_argument(
+        "--force",
+        action="store_true",
+        help="close despite failed checks, after typing the parent number at a terminal",
+    )
     parser.add_argument("parent_issue", type=positive_integer)
     return parser.parse_args(argv)  # Exits with status 2 on usage errors.
 
@@ -103,9 +109,27 @@ def child_numbers(children: list[dict[str, Any]]) -> str:
     return ", ".join(f"#{child['number']}" for child in children)
 
 
-def closure_comment(closed: list[dict[str, Any]], without_evidence: list[dict[str, Any]]) -> str:
+def forced_section(failures: list[str]) -> str:
+    if not failures:
+        return "The closure was forced with --force; every check passed."
+    return "The closure was forced with --force despite these failed checks:\n\n" + "\n".join(
+        f"- {failure}" for failure in failures
+    )
+
+
+def closure_comment(
+    closed: list[dict[str, Any]],
+    without_evidence: list[dict[str, Any]],
+    *,
+    has_children: bool,
+    forced_failures: list[str] | None,
+) -> str:
+    """The parent's closure comment; `forced_failures` is None unless the closure was forced."""
+    forced = "" if forced_failures is None else "\n\n" + forced_section(forced_failures)
+    if not has_children:
+        return f"{CLOSURE_MARKER}\nRalph closed this issue, which has no sub-issues.{forced}"
     if not closed:
-        return f"{CLOSURE_MARKER}\nRalph closed this parent issue: every child was already closed."
+        return f"{CLOSURE_MARKER}\nRalph closed this parent issue: every child was already closed.{forced}"
     sections = [
         heading + "\n".join(f"- {issue_reference(child)}" for child in group)
         for heading, group in (
@@ -119,7 +143,7 @@ def closure_comment(closed: list[dict[str, Any]], without_evidence: list[dict[st
     ]
     return (
         f"{CLOSURE_MARKER}\nRalph closed this parent issue after closing its children "
-        f"as completed:\n\n" + "\n\n".join(sections)
+        f"as completed:\n\n" + "\n\n".join(sections) + forced
     )
 
 
@@ -138,10 +162,15 @@ def close_parent(
     parent_number: int,
     *,
     yes: bool,
+    force: bool,
     confirm: Callable[[str], bool] | None,
+    type_answer: Callable[[str], str] | None,
     rerun: str,
 ) -> None:
-    """Check everything, confirm, then close the open children, comment on and close the parent."""
+    """Check everything, confirm, then close the open children, comment on and close the parent.
+
+    Under `force`, failed checks are warnings and the confirmation is the typed parent number.
+    """
     try:
         parent = github.issue(parent_number)
     except RalphError as error:
@@ -159,13 +188,15 @@ def close_parent(
     failures, without_evidence = failed_checks(github, config, parent, open_children)
     if not children:
         failures.append(f"#{parent_number} has no sub-issues")
-    if failures:
+    if failures and not force:
         raise CloseRefused(
             f"Cannot close #{parent_number}:\n"
             + "\n".join(f"  - {failure}" for failure in failures)
             + "\nNothing closed."
         )
-    print(f"Parent closure of {issue_reference(parent)}, as completed:")
+    for failure in failures:
+        print(f"⚠️ {failure}")
+    print(f"Parent closure of {issue_reference(parent)}, as completed{', forced' if force else ''}:")
     for child in open_children:
         if child not in without_evidence:
             print(f"  close child {issue_reference(child)}")
@@ -174,7 +205,9 @@ def close_parent(
         for child in without_evidence:
             print(f"    {issue_reference(child)}")
     print(f"  then close parent {issue_reference(parent)}")
-    if without_evidence or not yes:
+    if force:
+        confirm_typed(parent_number, type_answer)
+    elif without_evidence or not yes:
         if confirm is None:
             raise CloseRefused(
                 (
@@ -198,13 +231,35 @@ def close_parent(
             closed.append(child)
             print(f"Closed #{child['number']}.")
         if closed or not has_closure_comment(config, parent):
-            github.comment_on_issue(parent_number, closure_comment(closed, without_evidence))
+            github.comment_on_issue(
+                parent_number,
+                closure_comment(
+                    closed,
+                    without_evidence,
+                    has_children=bool(children),
+                    forced_failures=failures if force else None,
+                ),
+            )
         github.close_issue(parent_number, COMPLETED)
     except RalphError as error:
         done = child_numbers(closed) or "none"
         raise RalphError(f"{error}\nClosed so far: {done}. Rerun `{rerun}` to finish.") from error
     print(f"Closed #{parent_number}.")
-    print(f"✅ Closed #{parent_number} and its children.")
+    print(f"✅ Closed #{parent_number}{' and its children' if children else ''}.")
+
+
+def confirm_typed(parent_number: int, type_answer: Callable[[str], str] | None) -> None:
+    """Ask a human at a terminal to type the parent number; refuse on anything else."""
+    if type_answer is None:
+        raise CloseRefused("--force needs a human at a terminal to type the parent number. Nothing closed.")
+    try:
+        answer = type_answer(f"Type {parent_number} to close despite the failed checks: ")
+    except KeyboardInterrupt:
+        raise CloseCancelled from None
+    except EOFError:
+        answer = ""
+    if answer.strip() != str(parent_number):
+        raise CloseRefused(f"Did not type {parent_number}. Nothing closed.")
 
 
 def run(
@@ -212,10 +267,12 @@ def run(
     *,
     github: Callable[[pathlib.Path, str], Any] = GitHub,
     confirm: Callable[[str], bool] | None = None,
+    type_answer: Callable[[str], str] | None = None,
     repository_root: pathlib.Path | None = None,
     prog: str = "ralph-kit close",
 ) -> int:
-    """Run `ralph-kit close`; `confirm` asks a Yes/No question and is None without a terminal.
+    """Run `ralph-kit close`; `confirm` asks a Yes/No question and `type_answer` reads a typed
+    answer, both None without a terminal.
 
     Exits 0 once closed or already closed, 1 on a refusal, a declined
     confirmation or a GitHub error, 2 on a usage error, 130 on Ctrl-C.
@@ -225,6 +282,7 @@ def run(
     config_path = arguments.config if arguments.config.is_absolute() else root / arguments.config
     rerun = shlex.join([
         *prog.split(),
+        *(["--force"] if arguments.force else []),
         *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
         str(arguments.parent_issue),
     ])
@@ -235,7 +293,9 @@ def run(
             config,
             arguments.parent_issue,
             yes=arguments.yes,
+            force=arguments.force,
             confirm=confirm,
+            type_answer=type_answer,
             rerun=rerun,
         )
     except CloseCancelled:

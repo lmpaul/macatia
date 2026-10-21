@@ -35,7 +35,7 @@ def sha(name):
 
 
 class ScriptedConfirmer:
-    """Answers each Yes/No question in turn; an answer can be an exception to raise."""
+    """Answers each Yes/No question, or typed prompt, in turn; an answer can be an exception to raise."""
 
     def __init__(self, *answers):
         self.answers = list(answers)
@@ -72,8 +72,8 @@ class CloseTests(unittest.TestCase):
         self.github.on_branch[verified_head] = merged
         return implementation_evidence(mode, sha(f"implementation-{number}-{version}"), verified_head)
 
-    def close(self, *arguments, confirm=None):
-        """Run `ralph-kit close`; confirm=None stands for no terminal."""
+    def close(self, *arguments, confirm=None, typed=None):
+        """Run `ralph-kit close`; confirm=None and typed=None stand for no terminal."""
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
@@ -81,6 +81,7 @@ class CloseTests(unittest.TestCase):
                     list(arguments),
                     github=lambda _root, _repository: self.github,
                     confirm=confirm,
+                    type_answer=typed,
                     repository_root=self.root,
                 )
             except SystemExit as error:  # argparse usage errors.
@@ -426,7 +427,8 @@ class CloseTests(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(cli.main(["--help"]), 0)
-        self.assertIn("close [--yes] [--config PATH] PARENT", stdout.getvalue())
+        self.assertIn("close [--yes | --force] [--config PATH] PARENT", stdout.getvalue())
+        self.assertIn("--force", stdout.getvalue().split("close [", 1)[1])
         with (
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
@@ -439,6 +441,141 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(self.close(), 2)
         self.assertEqual(self.close("not-a-number"), 2)
         self.assertEqual(self.close(str(PARENT), "--unknown"), 2)
+
+    def add_failing_parent(self):
+        """A parent not in human review, with a child that is not implemented and one not merged."""
+        self.add_parent(labels=("ready-for-agent",))
+        self.add_child(70, labels=("agent-working",))
+        self.add_child(71, comments=[self.evidence(71, merged=False)])
+        self.add_child(72)
+
+    def test_force_warns_of_every_failure_then_closes_after_the_typed_parent_number(self):
+        self.add_failing_parent()
+        typed = ScriptedConfirmer(str(PARENT))
+        confirmer = ScriptedConfirmer()
+
+        code = self.close("--force", str(PARENT), confirm=confirmer, typed=typed)
+
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual(confirmer.questions, [])
+        self.assertEqual(len(typed.questions), 1)
+        self.assertIn(str(PARENT), typed.questions[0])
+        for failure in (
+            f"#{PARENT} is not labelled human-review",
+            "#70 is not implemented",
+            "#71 is not merged",
+        ):
+            self.assertIn(f"⚠️ {failure}", self.stdout)
+        for number in (70, 71, 72, PARENT):
+            self.assertEqual(self.state(number), ("CLOSED", "COMPLETED"))
+        self.assertEqual(self.github.labels(70), {"agent-working"})
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+
+    def test_force_closes_children_before_the_parent(self):
+        self.add_failing_parent()
+        closings = []
+        self.github.after_close = lambda number, reason: closings.append((number, reason))
+
+        self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 0, self.stderr)
+
+        self.assertEqual([number for number, _reason in closings], [70, 71, 72, PARENT])
+
+    def test_the_forced_parent_comment_says_so_and_lists_the_failed_checks(self):
+        self.add_failing_parent()
+
+        self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 0, self.stderr)
+
+        [comment] = self.github.comments(PARENT)
+        self.assertIn("forced", comment)
+        self.assertIn(f"#{PARENT} is not labelled human-review", comment)
+        self.assertIn("#70 is not implemented", comment)
+        self.assertIn("#71 is not merged", comment)
+        for number in (70, 71, 72):
+            self.assertIn(f"#{number} Issue {number}", comment)
+
+    def test_force_refuses_anything_but_the_parent_number(self):
+        for answer in ("", "y", "yes", "70", f"{PARENT}0", EOFError()):
+            with self.subTest(answer=answer):
+                self.github = FakeGitHub()
+                self.add_failing_parent()
+
+                code = self.close("--force", str(PARENT), typed=ScriptedConfirmer(answer))
+
+                self.assertNotEqual(code, 0)
+                self.assertIn("Nothing closed", self.stderr)
+                self.assert_nothing_written(PARENT, 70, 71, 72)
+
+    def test_force_accepts_the_parent_number_with_surrounding_spaces(self):
+        self.add_failing_parent()
+
+        self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(f" {PARENT}\n")), 0, self.stderr)
+
+        self.assertEqual(self.state(PARENT), ("CLOSED", "COMPLETED"))
+
+    def test_ctrl_c_at_the_typed_confirmation_exits_130_and_writes_nothing(self):
+        self.add_failing_parent()
+
+        code = self.close("--force", str(PARENT), typed=ScriptedConfirmer(KeyboardInterrupt()))
+
+        self.assertEqual(code, 130)
+        self.assert_nothing_written(PARENT, 70, 71, 72)
+
+    def test_force_without_a_terminal_is_refused(self):
+        self.add_failing_parent()
+
+        self.assertEqual(self.close("--force", str(PARENT)), 1)
+
+        self.assertIn("--force", self.stderr)
+        self.assertIn("terminal", self.stderr)
+        self.assert_nothing_written(PARENT, 70, 71, 72)
+
+    def test_force_with_yes_is_a_usage_error(self):
+        self.add_failing_parent()
+
+        code = self.close("--force", "--yes", str(PARENT), typed=ScriptedConfirmer(str(PARENT)))
+
+        self.assertEqual(code, 2)
+        self.assert_nothing_written(PARENT, 70, 71, 72)
+
+    def test_force_on_an_issue_without_sub_issues_closes_only_that_issue(self):
+        self.add_parent()
+        self.github.add_issue(70, labels=("implemented",))
+
+        self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 0, self.stderr)
+
+        self.assertIn("⚠️", self.stdout)
+        self.assertIn("no sub-issues", self.stdout)
+        self.assertEqual(self.state(PARENT), ("CLOSED", "COMPLETED"))
+        self.assertEqual(self.state(70), ("OPEN", None))
+        [comment] = self.github.comments(PARENT)
+        self.assertIn("forced", comment)
+        self.assertIn("no sub-issues", comment)
+        self.assertNotIn("every child was already closed", comment)
+
+    def test_force_still_refuses_a_nonexistent_issue(self):
+        self.assertEqual(self.close("--force", "404", typed=ScriptedConfirmer(str(404))), 1)
+
+        self.assertIn("#404", self.stderr)
+
+    def test_force_still_reports_a_closed_parent_as_already_closed(self):
+        self.add_parent(state="closed")
+        self.add_child(70, labels=("agent-working",))
+        typed = ScriptedConfirmer()
+
+        self.assertEqual(self.close("--force", str(PARENT), typed=typed), 0)
+
+        self.assertIn("already closed", self.stdout)
+        self.assertEqual(typed.questions, [])
+        self.assertEqual(self.state(70), ("OPEN", None))
+        self.assertEqual(self.github.comments(PARENT), [])
+
+    def test_a_forced_rerun_is_suggested_with_force(self):
+        self.add_failing_parent()
+        self.github.close_error = {71: RalphError("command failed (gh issue close 71): HTTP 502")}
+
+        self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 1)
+
+        self.assertIn(f"ralph-kit close --force {PARENT}", self.stderr)
 
 
 if __name__ == "__main__":

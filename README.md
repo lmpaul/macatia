@@ -40,6 +40,7 @@ ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
 ralph-kit close 123            # parent closure: close #123's children, then #123 (asks first)
 ralph-kit close --yes 123      # same, without the confirmation
+ralph-kit close --force 123    # close despite failed checks, after typing 123
 ```
 
 `--caffeinate` holds a sleep lock for the run, from once the configuration is
@@ -606,6 +607,7 @@ children, then the parent itself, as `completed`:
 ```sh
 ralph-kit close 123
 ralph-kit close --yes --config review.toml 123
+ralph-kit close --force 123
 ```
 
 `close` loads the configuration like the other commands (repository, label
@@ -637,6 +639,15 @@ open children, posts one comment on the parent listing the children it closed
 as they are. After a GitHub error partway, rerun the same command: children
 already closed are skipped, the comment lists the children this run of `close`
 closed (it is not repeated when only the parent was left open), and the closure finishes.
+
+`--force` lets a human at a terminal close despite failed checks. Every check
+still runs and each failure is printed as a warning; instead of the Yes/No
+question, `close` asks you to type the parent number, and anything else closes
+nothing. A forced closure is never unattended: without a terminal `--force` is
+refused, and `--force` with `--yes` is a usage error. On an issue with no
+sub-issues, `--force` closes only that issue. The parent comment says the
+closure was forced and lists the failed checks. A nonexistent issue is still
+refused, and a closed parent still prints `already closed` and exits 0.
 
 Exit codes: 0 once closed or already closed; 1 for a refusal, a declined
 confirmation or a GitHub error; 2 for a usage error; 130 for Ctrl-C.

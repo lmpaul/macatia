@@ -24,10 +24,11 @@ commands:
       --force overwrites an existing configuration at PATH, and only that file.
   configure [--config PATH]
       Change sections of an existing configuration (default ./ralph.toml) from a menu; saves only what changed.
-  close [--yes] [--config PATH] PARENT
+  close [--yes | --force] [--config PATH] PARENT
       Parent closure: once every open child of PARENT is implemented and PARENT is in human review,
       close the open children, then PARENT, as completed, after one confirmation.
       --yes closes without asking; without a terminal, close needs --yes.
+      --force closes despite failed checks, shown as warnings, once you type PARENT at a terminal.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """
@@ -123,7 +124,11 @@ def main(argv: list[str] | None = None) -> int:
     if command == "close":
         from . import close
 
-        confirm = yes_no_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
-        return close.run(arguments, confirm=confirm)
+        terminal = sys.stdin.isatty() and sys.stdout.isatty()
+        return close.run(
+            arguments,
+            confirm=yes_no_with_arrows if terminal else None,
+            type_answer=input if terminal else None,
+        )
     print(f"ralph-kit: unknown command {command!r}\n\n{USAGE}", end="", file=sys.stderr)
     return 2
