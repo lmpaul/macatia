@@ -1297,6 +1297,56 @@ class StartupTests(StartupRejectionTestCase):
                 self.assert_rejected_at_startup(result, "must be a positive integer")
 
 
+class ParentTriageTests(StartupRejectionTestCase):
+    """A parent that triage holds back is rejected at startup; children keep their own rules."""
+
+    def start_on_parent(self, parent_labels, *results):
+        self.new_run(parent_labels=parent_labels)
+        self.github.add_issue(CHILD, parent=PARENT)
+        return self.start(loop_core.STANDARD_RUN, *results)
+
+    def assert_parent_rejected(self, result, parent_labels, blocking):
+        self.assert_rejected_at_startup(
+            result, f"parent issue #{PARENT} is held back by triage: {', '.join(blocking)}"
+        )
+        self.assertEqual(self.github.labels(PARENT), set(parent_labels))
+
+    def test_parent_with_a_blocking_triage_label_is_rejected_at_startup(self):
+        for label in ("needs-triage", "needs-info", "wontfix", "ready-for-human"):
+            for parent_labels in ((label,), (label, "ready-for-agent")):
+                with self.subTest(parent_labels=parent_labels):
+                    result = self.start_on_parent(parent_labels)
+
+                    self.assert_parent_rejected(result, parent_labels, [label])
+
+    def test_error_names_every_blocking_triage_label(self):
+        parent_labels = ("wontfix", "ready-for-agent", "needs-info")
+
+        result = self.start_on_parent(parent_labels)
+
+        self.assert_parent_rejected(result, parent_labels, ["needs-info", "wontfix"])
+
+    def test_parent_without_a_blocking_triage_label_starts_normally(self):
+        for parent_labels in ((), ("ready-for-agent",), ("work-started",)):
+            with self.subTest(parent_labels=parent_labels):
+                result = self.start_on_parent(parent_labels, ScriptedResult("committed"))
+
+                self.assertEqual(result.exit_code, 0, result.stderr)
+                self.assertEqual(self.session_children(), [CHILD])
+                self.assertEqual(self.github.labels(CHILD), {"implemented"})
+                self.assertIn("human-review", self.github.labels(PARENT))
+
+    def test_renamed_blocking_triage_label_is_honoured_on_the_parent(self):
+        self.repository.edit_configuration('needs_info = "needs-info"', 'needs_info = "r-needs-info"')
+        self.github = FakeGitHub()
+        self.github.add_issue(PARENT, labels=("r-needs-info",))
+        self.github.add_issue(CHILD, parent=PARENT)
+
+        result = self.start(loop_core.STANDARD_RUN)
+
+        self.assert_parent_rejected(result, ("r-needs-info",), ["r-needs-info"])
+
+
 class ConfigurationRejectionTests(StartupRejectionTestCase):
     def test_verification_flags_that_are_not_toml_booleans_are_rejected_before_any_session(self):
         for key in ("local_checks", "ci_checks"):
