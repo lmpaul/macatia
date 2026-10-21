@@ -188,3 +188,13 @@ The label roles that track a child's progress through a run: ready-for-agent, ag
 **Run diagnostics**:
 The local, redacted record of a run's prompts, session results, and command output, which later sessions in the same checkout can read.
 _Avoid_: Logs, artifacts
+
+## Closing
+
+**Merged child**:
+A child whose verified head is on the base branch.
+_Avoid_: Landed child, done child
+
+**Parent closure**:
+Closing a parent issue's open children, then the parent itself, once a human has merged their work.
+_Avoid_: Finish, complete, done (completed is a run's outcome)
