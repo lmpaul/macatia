@@ -108,10 +108,10 @@ class ConfigureTests(unittest.TestCase):
             self.run_configure(answers=[])
         self.assertEqual(self.prompts, [])
 
-    def test_an_invalid_configuration_is_refused_with_the_way_to_start_over(self):
+    def test_an_invalid_configuration_is_refused_with_a_fix_by_hand_before_starting_over(self):
         for config, suggestion in (
-            (None, "Fix ralph.toml, or start over with `ralph-kit init --force`."),
-            (pathlib.Path("b.toml"), "Fix b.toml, or start over with `ralph-kit init --config b.toml --force`."),
+            (None, "Fix ralph.toml by hand: `ralph-kit init --force` would start over and lose its settings."),
+            (pathlib.Path("b.toml"), "Fix b.toml by hand: `ralph-kit init --config b.toml --force` would start over and lose its settings."),
         ):
             with self.subTest(config=config):
                 invalid = DEFAULT_CONFIGURATION.replace('remote = "origin"', 'remote = "-x"')

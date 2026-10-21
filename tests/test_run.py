@@ -1287,6 +1287,19 @@ class ParentWorkStartedTests(ParentLabelTestCase):
         )
         self.assertEqual(self.github.labels(PARENT), {"human-review", "documentation"})
 
+    def test_configuration_from_before_work_started_marks_the_parent_with_the_default_label(self):
+        self.repository.edit_configuration('work_started = "work-started"\n', "")
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.record_parent_label_edits()
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(
+            self.parent_edits,
+            [("work-started", ["ready-for-agent"]), ("human-review", ["work-started"])],
+        )
+
     def test_later_children_of_the_same_run_make_no_parent_label_write(self):
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.add_issue(DEPENDENT, parent=PARENT)
@@ -1631,15 +1644,6 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
 
         self.assert_rejected_at_startup(
             result, "configuration.labels is missing keys: agent_working"
-        )
-
-    def test_missing_work_started_label_is_rejected_before_any_session(self):
-        self.repository.edit_configuration('work_started = "work-started"\n', "")
-
-        result = self.start(loop_core.STANDARD_RUN)
-
-        self.assert_rejected_at_startup(
-            result, "configuration.labels is missing keys: work_started"
         )
 
     def test_duplicate_label_value_is_rejected_before_any_session(self):

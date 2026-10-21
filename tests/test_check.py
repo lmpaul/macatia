@@ -262,6 +262,25 @@ class ReadinessTests(unittest.TestCase):
             self.commands,
         )
 
+    def test_configuration_from_before_work_started_gets_the_default_label(self):
+        text = self.config.read_text()
+        self.config.write_text(text.replace('work_started = "work-started"\n', ""))
+        self.labels.remove("work-started")
+        code, output = self.run_check(confirm=lambda question: True)
+        self.assertEqual(code, 0, output)
+        self.assertIn("✓ work-started created", output)
+
+    def test_missing_label_key_names_the_line_to_add_and_keeps_the_file(self):
+        text = self.config.read_text().replace('agent_working = "agent-working"\n', "")
+        self.config.write_text(text)
+        code, output = self.run_check()
+        output = " ".join(output.split())  # The report wraps long details.
+        self.assertEqual(code, 1)
+        self.assertIn('add agent_working = "agent-working" under [labels]', output)
+        self.assertIn("edit ralph.toml by hand", output)
+        self.assertNotIn("regenerate", output)
+        self.assertEqual(self.config.read_text(), text)
+
     def test_labels_are_not_created_later_or_without_terminal(self):
         self.labels.remove("implemented")
         for confirm in (None, lambda question: False):

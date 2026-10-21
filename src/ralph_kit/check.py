@@ -368,7 +368,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
         render(console, report)
         return 1
     except (RalphConfigError, ValueError) as error:
-        report.add("fail", config_path.name, str(error), f"fill in {config_path.name}, or regenerate it with ralph-kit init --force")
+        report.add("fail", config_path.name, str(error), f"edit {config_path.name} by hand (ralph-kit init --force would start over and lose its settings)")
         checked()
         render(console, report)
         return 1

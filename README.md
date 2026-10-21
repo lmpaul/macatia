@@ -134,7 +134,8 @@ suggests committing it, then `ralph-kit check`; Save without changes, Quit witho
 saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
 comments added by hand are dropped (`configure` says so when it opens the file). It
 needs a terminal; without one, edit the TOML directly. An invalid configuration is
-refused with the error: fix the file, or start over with `ralph-kit init --force`.
+refused with the error: fix the file by hand (a missing label key names the line to
+add); `ralph-kit init --force` would start over and lose its settings.
 Unknown keys usually mean the file was written by a newer ralph-kit (for example
 committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
 
@@ -394,7 +395,8 @@ infrastructure retries, then stops the run.
   only, and Ralph never reads it to decide anything: the first child cycle of a
   run adds it in place of `ready-for-agent`, parent completion removes it, and
   nothing else cleans it up (see [the loop](#the-loop-run-and-run---review)).
-  `init` and `check` offer to
+  A `ralph.toml` written before `work_started` existed may leave it out and gets
+  `work-started`. `init` and `check` offer to
   create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.

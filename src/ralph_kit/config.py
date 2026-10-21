@@ -9,17 +9,22 @@ from dataclasses import dataclass
 from typing import Any
 
 
-LABEL_KEYS = {
-    "needs_triage",
-    "needs_info",
-    "ready_for_agent",
-    "ready_for_human",
-    "wontfix",
-    "agent_working",
-    "human_review",
-    "implemented",
-    "work_started",
+# Each label role with the name init gives it, in the order init writes them.
+DEFAULT_LABELS = {
+    "needs_triage": "needs-triage",
+    "needs_info": "needs-info",
+    "ready_for_agent": "ready-for-agent",
+    "ready_for_human": "ready-for-human",
+    "wontfix": "wontfix",
+    "agent_working": "agent-working",
+    "human_review": "human-review",
+    "implemented": "implemented",
+    "work_started": "work-started",
 }
+LABEL_KEYS = set(DEFAULT_LABELS)
+# Label roles added after the first release: a file written before one keeps loading with
+# the default name, which ralph-kit check then offers to create on GitHub.
+LATER_LABEL_DEFAULTS = {key: DEFAULT_LABELS[key] for key in ("work_started",)}
 # Suggested for unknown keys, which usually come from a newer ralph-kit: the version only
 # changes on release, so a plain upgrade can keep an older build installed from Git.
 UPGRADE_COMMAND = "uv tool upgrade ralph-kit --reinstall"
@@ -228,7 +233,20 @@ def load_config(
     if not isinstance(caffeinate_by_default, bool):
         raise RalphConfigError("configuration.caffeinate_by_default must be a boolean")
 
-    label_values = _mapping(values["labels"], "configuration.labels", LABEL_KEYS)
+    if isinstance(values["labels"], dict) and (
+        missing := sorted(LABEL_KEYS - set(LATER_LABEL_DEFAULTS) - set(values["labels"]))
+    ):
+        lines = ", ".join(f'{key} = "{DEFAULT_LABELS[key]}"' for key in missing)
+        raise RalphConfigError(
+            f"configuration.labels is missing keys: {', '.join(missing)} (add {lines} under [labels])"
+        )
+    label_values = _mapping(
+        values["labels"],
+        "configuration.labels",
+        LABEL_KEYS - set(LATER_LABEL_DEFAULTS),
+        set(LATER_LABEL_DEFAULTS),
+    )
+    label_values = LATER_LABEL_DEFAULTS | label_values
     labels = {
         key: _string(label_values[key], f"configuration.labels.{key}")
         for key in LABEL_KEYS

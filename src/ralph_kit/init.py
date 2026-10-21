@@ -17,6 +17,7 @@ from .check import AGENT_CLIS as ENGINES, create_labels, missing_labels, prerequ
 from .config import (
     BACKUP_MODEL_KEY,
     CLAUDE_REASONING_EFFORTS,
+    DEFAULT_LABELS,
     DIAGNOSTICS_DIRECTORY,
     MODEL_ROLES,
     AgentProfile,
@@ -31,17 +32,7 @@ CONFIG_NAME = "ralph.toml"
 GITIGNORE = ".gitignore"
 QUALITY_MODULE = ".github/scripts/quality.py"
 QUALITY_MANIFEST = ".github/quality-gates.json"
-LABELS = {
-    "needs_triage": "needs-triage",
-    "needs_info": "needs-info",
-    "ready_for_agent": "ready-for-agent",
-    "ready_for_human": "ready-for-human",
-    "wontfix": "wontfix",
-    "agent_working": "agent-working",
-    "human_review": "human-review",
-    "implemented": "implemented",
-    "work_started": "work-started",
-}
+LABELS = DEFAULT_LABELS
 # Claude Code has no command listing models; its documented aliases follow the latest version.
 CLAUDE_MODELS = [
     ("fable", "Fable, for the hardest and longest tasks"),

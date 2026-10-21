@@ -498,7 +498,7 @@ def run(
         raise ConfigureError(str(error)) from None
     except RalphConfigError as error:
         raise ConfigureError(
-            f"{error}\n   Fix {display_path}, or start over with `ralph-kit init{option_text} --force`."
+            f"{error}\n   Fix {display_path} by hand: `ralph-kit init{option_text} --force` would start over and lose its settings."
         ) from None
 
     rendered = render(original, root)
