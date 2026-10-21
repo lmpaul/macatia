@@ -55,6 +55,10 @@ _Avoid_: Issue base, starting commit
 One execution of the loop against a parent issue, until no runnable child is left or the run stops.
 _Avoid_: Runner, execution
 
+**Run branch**:
+The branch a run commits to and publishes from. A run started on the base branch offers to switch to `ralph-kit/issue-<parent>`, creating it from an up-to-date base branch unless it already exists.
+_Avoid_: Work branch, feature branch, Ralph branch
+
 **Standard run**:
 A run whose loop has no review session.
 _Avoid_: Implementation-only loop, experimental loop
