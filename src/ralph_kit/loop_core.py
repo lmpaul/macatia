@@ -1280,13 +1280,13 @@ def trusted_comment(state: RunState, comment: dict[str, Any]) -> bool:
     return author_login(comment) in state.config.trusted_authors
 
 
-def parse_implementation_evidence(
-    state: RunState,
-    body: str, *, allow_original: bool = False
+def implementation_evidence_heads(
+    body: str, mode: RunMode, *, allow_original: bool = False
 ) -> list[str] | None:
-    mode = state.mode
-    # The review loop writes the original format, so it always accepts it.
-    allow_original = allow_original or mode.review
+    """The implementation and verified heads of an evidence comment `mode` reads, or None.
+
+    With `allow_original`, the reviewed run's format and the legacy prose format count too.
+    """
     pattern = re.escape(mode.implementation_evidence_prefix) + r"([^\n]+) -->"
     match = re.search(pattern, body)
     head_key = mode.evidence_head_key
@@ -1331,17 +1331,37 @@ def parse_implementation_evidence(
     return heads
 
 
-def verified_implementation_heads(state: RunState, issue: dict[str, Any]) -> list[str] | None:
+def latest_implementation_heads(
+    issue: dict[str, Any], trusted_authors: Iterable[str], mode: RunMode
+) -> list[str] | None:
+    """The heads of the issue's latest trusted implementation evidence, in any format `mode` accepts.
+
+    The standard run accepts every format: its own, the reviewed run's, and the legacy one.
+    """
+    trusted = set(trusted_authors)
     for comment in reversed(issue.get("comments", [])):
-        if not trusted_comment(state, comment):
+        if author_login(comment) not in trusted:
             continue
-        heads = parse_implementation_evidence(
-            state,
-            str(comment.get("body", "")), allow_original=True
+        heads = implementation_evidence_heads(
+            str(comment.get("body", "")), mode, allow_original=True
         )
         if heads is not None:
             return heads
     return None
+
+
+def parse_implementation_evidence(
+    state: RunState,
+    body: str, *, allow_original: bool = False
+) -> list[str] | None:
+    # The review loop writes the original format, so it always accepts it.
+    return implementation_evidence_heads(
+        body, state.mode, allow_original=allow_original or state.mode.review
+    )
+
+
+def verified_implementation_heads(state: RunState, issue: dict[str, Any]) -> list[str] | None:
+    return latest_implementation_heads(issue, state.config.trusted_authors, state.mode)
 
 
 def recoverable_implementation_heads(state: RunState, issue: dict[str, Any]) -> list[str] | None:

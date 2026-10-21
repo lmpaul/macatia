@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import pathlib
 import subprocess
+import urllib.parse
 from typing import Any
 
 from .commands import RalphError, command
@@ -16,6 +17,10 @@ def flatten_pages(value: Any) -> list[dict[str, Any]]:
     if value and isinstance(value[0], list):
         return [item for page in value for item in page]
     return value
+
+
+# The statuses of GitHub's compare API for `base...head`.
+COMPARE_STATUSES = {"ahead", "behind", "identical", "diverged"}
 
 
 # The CI diagnostic records these commands as evidence, so the in-memory GitHub
@@ -73,6 +78,17 @@ class GitHub:
 
     def sub_issues(self, parent: int) -> list[dict[str, Any]]:
         return self._list(f"repos/{self.repository}/issues/{parent}/sub_issues")
+
+    def commit_is_on_branch(self, branch: str, sha: str) -> bool:
+        """Whether a commit is on a remote branch, as GitHub compares them; never local Git."""
+        basehead = f"{urllib.parse.quote(branch, safe='/')}...{sha}"
+        status = self._json(
+            "api", f"repos/{self.repository}/compare/{basehead}", "--jq", "{status}"
+        ).get("status")
+        if status not in COMPARE_STATUSES:
+            raise RalphError(f"GitHub compared {branch} with {sha} as {status!r}")
+        # `behind` or `identical`: the branch already contains the commit.
+        return status in {"behind", "identical"}
 
     def blockers(self, child: int) -> list[dict[str, Any]]:
         return self._list(

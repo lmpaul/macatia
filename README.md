@@ -190,9 +190,10 @@ of the default suite, local gates or CI:
 RALPH_LIVE=1 uv run python -m unittest discover -s tests -p test_live.py -v
 ```
 
-It makes read-only `gh` calls of each shape a run parses (repository, children,
-blockers, issue details, open pull requests, check runs, and the Actions job, job
-log and check run behind a check) through Ralph's GitHub adapter, against the
+It makes read-only `gh` calls of each shape a run or `close` parses (repository,
+children, blockers, issue details, open pull requests, check runs, the Actions job,
+job log and check run behind a check, and the compare of the default branch with
+its head) through Ralph's GitHub adapter, against the
 children of parent issue #5 in this repository (`RALPH_LIVE_PARENT` selects another
 parent issue with children and blockers) and the check runs of its default branch
 head. It then starts one Claude Code and one Codex session in a scratch Git
@@ -614,13 +615,25 @@ clean worktree or Git remote. Before writing anything it checks that:
 - the parent is open (a closed parent prints `already closed` and exits 0);
 - the parent has sub-issues, carries `human-review` and is authored by a trusted author;
 - each open child is authored by a trusted author and has `implemented` as its
-  only lifecycle label. Closed children are ignored, whatever their labels.
+  only lifecycle label. Closed children are ignored, whatever their labels;
+- each open child with trusted implementation evidence is merged: its verified
+  head is on the remote base branch. The latest trusted evidence comment counts,
+  whether a standard or a reviewed run wrote it (legacy formats included).
+  `close` asks GitHub's compare API (`base_branch...verified_head` is `behind` or
+  `identical`) and never reads local Git. Work merged by squash or rebase has new
+  commits, so its verified head is not on the base branch and the check fails.
+
+An open child labelled `implemented` without trusted implementation evidence
+(typically work a human did) does not fail a check: `close` lists it apart as
+`implemented without evidence: merge not verified`.
 
 A refusal lists every failed check at once and closes nothing. When every check
 passes, `close` lists the children and the parent it will close and asks one
-Yes/No question (No by default); `--yes` skips it. Without a terminal and without
-`--yes`, it refuses. It then closes the open children, posts one comment on the
-parent listing the children it closed, and closes the parent. Labels are left
+Yes/No question (No by default); `--yes` skips it, unless a child is implemented
+without evidence: only a human at a terminal confirms closing that one. Without
+a terminal, when the confirmation is required, it refuses. It then closes the
+open children, posts one comment on the parent listing the children it closed
+(those without evidence apart, as confirmed by a human), and closes the parent. Labels are left
 as they are. After a GitHub error partway, rerun the same command: children
 already closed are skipped, the comment lists the children this run of `close`
 closed (it is not repeated when only the parent was left open), and the closure finishes.

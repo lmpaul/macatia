@@ -12,10 +12,18 @@ from typing import Any
 from .commands import RalphError
 from .config import RalphConfig, RalphConfigError, load_config
 from .github import GitHub
-from .loop_core import DEFAULT_CONFIG_PATH, author_login, labels, positive_integer
+from .loop_core import (
+    DEFAULT_CONFIG_PATH,
+    STANDARD_RUN,
+    author_login,
+    labels,
+    latest_implementation_heads,
+    positive_integer,
+)
 
 
 COMPLETED = "completed"
+NO_EVIDENCE = "implemented without evidence: merge not verified"
 # Marks the parent's closure comment, so a rerun after the parent failed to close does not repeat it.
 CLOSURE_MARKER = "<!-- ralph-parent-closure -->"
 
@@ -53,22 +61,23 @@ def issue_reference(issue: dict[str, Any]) -> str:
 
 
 def failed_checks(
-    config: RalphConfig, parent: dict[str, Any], children: list[dict[str, Any]]
-) -> list[str]:
-    """Every reason the parent closure cannot proceed; closed children are ignored."""
+    github: Any, config: RalphConfig, parent: dict[str, Any], children: list[dict[str, Any]]
+) -> tuple[list[str], list[dict[str, Any]]]:
+    """Every reason the parent closure cannot proceed, and the open children whose merge
+    is not verified: implemented, but without trusted implementation evidence.
+
+    `children` are the open children's details, comments included.
+    """
     human_review = config.labels["human_review"]
     implemented = config.labels["implemented"]
     trusted = ", ".join(f"@{login}" for login in sorted(config.trusted_authors))
     failures = []
+    unverified = []
     if human_review not in labels(parent):
         failures.append(f"#{parent['number']} is not labelled {human_review}")
     if author_login(parent) not in config.trusted_authors:
         failures.append(f"#{parent['number']} is authored by @{author_login(parent)}, not one of: {trusted}")
-    if not children:
-        failures.append(f"#{parent['number']} has no sub-issues")
     for child in children:
-        if not is_open(child):
-            continue
         if author_login(child) not in config.trusted_authors:
             failures.append(f"#{child['number']} is authored by @{author_login(child)}, not one of: {trusted}")
         lifecycle = labels(child) & config.lifecycle_labels
@@ -78,16 +87,39 @@ def failed_checks(
                 f"#{child['number']} is not implemented (lifecycle labels: {shown}; "
                 f"expected only {implemented})"
             )
-    return failures
+        # The standard run reads every evidence format, the reviewed run's and legacy ones included.
+        heads = latest_implementation_heads(child, config.trusted_authors, STANDARD_RUN)
+        if heads is None:
+            if lifecycle == {implemented}:
+                unverified.append(child)
+        elif not github.commit_is_on_branch(config.base_branch, heads[-1]):
+            failures.append(
+                f"#{child['number']} is not merged: its verified head {heads[-1]} "
+                f"is not on {config.base_branch}"
+            )
+    return failures, unverified
 
 
-def closure_comment(closed: list[dict[str, Any]]) -> str:
+def child_numbers(children: list[dict[str, Any]]) -> str:
+    return ", ".join(f"#{child['number']}" for child in children)
+
+
+def closure_comment(closed: list[dict[str, Any]], unverified: list[dict[str, Any]]) -> str:
     if not closed:
         return f"{CLOSURE_MARKER}\nRalph closed this parent issue: every child was already closed."
-    lines = "\n".join(f"- {issue_reference(child)}" for child in closed)
+    proven = [child for child in closed if child not in unverified]
+    unproven = [child for child in closed if child in unverified]
+    sections = []
+    if proven:
+        sections.append("\n".join(f"- {issue_reference(child)}" for child in proven))
+    if unproven:
+        sections.append(
+            "Closed as confirmed by a human without implementation evidence:\n\n"
+            + "\n".join(f"- {issue_reference(child)}" for child in unproven)
+        )
     return (
         f"{CLOSURE_MARKER}\nRalph closed this parent issue after closing its children "
-        f"as completed:\n\n{lines}"
+        f"as completed:\n\n" + "\n\n".join(sections)
     )
 
 
@@ -120,21 +152,38 @@ def close_parent(
         print(f"#{parent_number} is already closed.")
         return
     children = github.sub_issues(parent_number)
-    if failures := failed_checks(config, parent, children):
+    # Sub-issue listings carry no comments: each open child's evidence is in its details.
+    open_children = [
+        github.issue(int(child["number"])) for child in children if is_open(child)
+    ]
+    failures, unverified = failed_checks(github, config, parent, open_children)
+    if not children:
+        failures.append(f"#{parent_number} has no sub-issues")
+    if failures:
         raise CloseRefused(
             f"Cannot close #{parent_number}:\n"
             + "\n".join(f"  - {failure}" for failure in failures)
             + "\nNothing closed."
         )
-    open_children = [child for child in children if is_open(child)]
     print(f"Parent closure of {issue_reference(parent)}, as completed:")
     for child in open_children:
-        print(f"  close child {issue_reference(child)}")
+        if child not in unverified:
+            print(f"  close child {issue_reference(child)}")
+    if unverified:
+        print(f"  close children {NO_EVIDENCE}:")
+        for child in unverified:
+            print(f"    {issue_reference(child)}")
     print(f"  then close parent {issue_reference(parent)}")
-    if not yes:
+    if unverified or not yes:
         if confirm is None:
             raise CloseRefused(
-                "Confirmation needs a terminal; rerun with --yes to close without it. Nothing closed."
+                (
+                    f"{child_numbers(unverified)}: {NO_EVIDENCE}; only a human at a terminal "
+                    "can confirm closing them, --yes does not. Nothing closed."
+                )
+                if unverified
+                else "Confirmation needs a terminal; rerun with --yes to close without it. "
+                "Nothing closed."
             )
         try:
             confirmed = confirm(f"Close these {len(open_children) + 1} issues?")
@@ -149,10 +198,10 @@ def close_parent(
             closed.append(child)
             print(f"Closed #{child['number']}.")
         if closed or not has_closure_comment(config, parent):
-            github.comment_on_issue(parent_number, closure_comment(closed))
+            github.comment_on_issue(parent_number, closure_comment(closed, unverified))
         github.close_issue(parent_number, COMPLETED)
     except RalphError as error:
-        done = ", ".join(f"#{child['number']}" for child in closed) or "none"
+        done = child_numbers(closed) or "none"
         raise RalphError(f"{error}\nClosed so far: {done}. Rerun `{rerun}` to finish.") from error
     print(f"Closed #{parent_number}.")
     print(f"✅ Closed #{parent_number} and its children.")

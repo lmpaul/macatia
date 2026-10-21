@@ -1,6 +1,7 @@
 """`ralph-kit close` in memory: the fake GitHub, a scripted confirmer, no Git checkout."""
 
 import contextlib
+import hashlib
 import io
 import pathlib
 import shutil
@@ -15,10 +16,22 @@ sys.path.insert(0, str(TESTS))
 
 from ralph_kit import cli, close  # noqa: E402
 from ralph_kit.commands import RalphError  # noqa: E402
-from run_support import FIXTURES, FakeGitHub  # noqa: E402
+from ralph_kit.loop_core import REVIEWED_RUN, STANDARD_RUN  # noqa: E402
+from run_support import (  # noqa: E402
+    FIXTURES,
+    FakeGitHub,
+    implementation_evidence,
+    legacy_implementation_evidence,
+)
 
 
 PARENT = 69
+NO_EVIDENCE = "implemented without evidence: merge not verified"
+
+
+def sha(name):
+    """A distinct 40-hex commit SHA for a name."""
+    return hashlib.sha1(name.encode()).hexdigest()
 
 
 class ScriptedConfirmer:
@@ -48,8 +61,16 @@ class CloseTests(unittest.TestCase):
     def add_parent(self, *, labels=("human-review",), **options):
         return self.github.add_issue(PARENT, labels=labels, **options)
 
-    def add_child(self, number, *, labels=("implemented",), **options):
-        return self.github.add_issue(number, parent=PARENT, labels=labels, **options)
+    def add_child(self, number, *, labels=("implemented",), comments=None, **options):
+        """A child; by default with standard run evidence whose verified head is merged."""
+        if comments is None:
+            comments = [self.evidence(number)]
+        return self.github.add_issue(number, parent=PARENT, labels=labels, comments=comments, **options)
+
+    def evidence(self, number, *, mode=STANDARD_RUN, merged=True, version="v1"):
+        verified_head = sha(f"verified-{number}-{version}")
+        self.github.on_branch[verified_head] = merged
+        return implementation_evidence(mode, sha(f"implementation-{number}-{version}"), verified_head)
 
     def close(self, *arguments, confirm=None):
         """Run `ralph-kit close`; confirm=None stands for no terminal."""
@@ -289,6 +310,117 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(self.close(str(PARENT), "--config", "missing.toml", "--yes"), 1)
 
         self.assertIn("missing.toml", self.stderr)
+
+    def test_a_child_whose_verified_head_is_not_on_the_base_branch_is_refused(self):
+        self.add_parent()
+        self.add_child(70, comments=[self.evidence(70, merged=False)])
+        self.add_child(71, labels=("ready-for-agent",))
+        self.add_child(72)
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 1)
+
+        self.assertIn(f"#70 is not merged: its verified head {sha('verified-70-v1')} is not on main", self.stderr)
+        self.assertIn("#71 is not implemented", self.stderr)
+        self.assertNotIn("#72", self.stderr)
+        self.assert_nothing_written(PARENT, 70, 71, 72)
+
+    def test_the_merge_check_compares_the_base_branch_with_the_verified_head(self):
+        self.add_parent()
+        self.add_child(70)
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.github.compared, [("main", sha("verified-70-v1"))])
+
+    def test_evidence_from_either_run_and_the_legacy_format_counts(self):
+        self.add_parent()
+        self.add_child(70, comments=[self.evidence(70, mode=STANDARD_RUN)])
+        self.add_child(71, comments=[self.evidence(71, mode=REVIEWED_RUN)])
+        legacy_head = sha("legacy-72")
+        self.github.on_branch[legacy_head] = True
+        self.add_child(72, comments=[legacy_implementation_evidence(sha("base-72"), legacy_head)])
+        confirmer = ScriptedConfirmer()
+
+        self.assertEqual(self.close(str(PARENT), "--yes", confirm=confirmer), 0, self.stderr)
+
+        self.assertEqual(confirmer.questions, [])
+        self.assertNotIn(NO_EVIDENCE, self.stdout)
+        self.assertIn(legacy_head, {head for _branch, head in self.github.compared})
+
+    def test_the_latest_trusted_evidence_wins(self):
+        self.add_parent()
+        self.add_child(70, comments=[
+            self.evidence(70, version="old", merged=True),
+            self.evidence(70, mode=REVIEWED_RUN, version="new", merged=False),
+        ])
+        self.add_child(71, comments=[
+            self.evidence(71, version="old", merged=False),
+            self.evidence(71, version="new", merged=True),
+        ])
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 1)
+
+        self.assertIn(f"#70 is not merged: its verified head {sha('verified-70-new')}", self.stderr)
+        self.assertNotIn("#71", self.stderr)
+
+    def test_untrusted_evidence_is_ignored(self):
+        self.add_parent()
+        untrusted = {**self.evidence(70, version="untrusted", merged=False), "author": {"login": "intruder"}}
+        self.add_child(70, comments=[self.evidence(70), untrusted])
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.github.compared, [("main", sha("verified-70-v1"))])
+
+    def test_an_implemented_child_without_trusted_evidence_is_listed_apart(self):
+        self.add_parent()
+        self.add_child(70)
+        untrusted = {**self.evidence(71), "author": {"login": "intruder"}}
+        self.add_child(71, comments=[untrusted])
+        confirmer = ScriptedConfirmer(True)
+
+        self.assertEqual(self.close(str(PARENT), confirm=confirmer), 0, self.stderr)
+
+        listing = self.stdout.split(NO_EVIDENCE, 1)
+        self.assertEqual(len(listing), 2, self.stdout)
+        self.assertNotIn("#71", listing[0])
+        self.assertIn("#71 Issue 71", listing[1])
+        self.assertEqual(self.github.compared, [("main", sha("verified-70-v1"))])
+        self.assertEqual(self.state(71), ("CLOSED", "COMPLETED"))
+
+    def test_yes_does_not_skip_the_confirmation_of_a_child_without_evidence(self):
+        self.add_parent()
+        self.add_child(70, comments=[])
+        confirmer = ScriptedConfirmer(False)
+
+        self.assertEqual(self.close(str(PARENT), "--yes", confirm=confirmer), 1)
+
+        self.assertEqual(len(confirmer.questions), 1)
+        self.assert_nothing_written(PARENT, 70)
+
+    def test_a_child_without_evidence_without_a_terminal_is_refused_even_with_yes(self):
+        self.add_parent()
+        self.add_child(70, comments=[])
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 1)
+
+        self.assertIn("#70", self.stderr)
+        self.assertIn("terminal", self.stderr)
+        self.assert_nothing_written(PARENT, 70)
+
+    def test_the_parent_comment_lists_children_without_evidence_apart(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71, comments=[])
+
+        self.assertEqual(self.close(str(PARENT), "--yes", confirm=ScriptedConfirmer(True)), 0, self.stderr)
+
+        [comment] = self.github.comments(PARENT)
+        proven, unproven = comment.split("confirmed by a human without implementation evidence", 1)
+        self.assertIn("#70", proven)
+        self.assertNotIn("#71", proven)
+        self.assertIn("#71", unproven)
+        self.assertNotIn("#70", unproven)
 
     def test_the_command_line_lists_and_dispatches_close(self):
         stdout = io.StringIO()

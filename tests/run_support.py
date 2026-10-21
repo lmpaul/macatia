@@ -308,7 +308,8 @@ class FakeGitHub:
     its reason as `stateReason`; `close_error` maps an issue number to the error
     its next close raises instead, and `after_close`, when set, is called with
     the issue number and reason after each close. Reading an unknown issue raises
-    as `gh` does for an issue that does not exist.
+    as `gh` does for an issue that does not exist. A commit is on a branch when
+    `on_branch` maps its SHA to True; `compared` keeps each (branch, SHA) asked.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     """
 
@@ -347,6 +348,8 @@ class FakeGitHub:
         self.label_edit_error = None
         self.close_error = {}
         self.after_close = None
+        self.on_branch = {}
+        self.compared = []
         self.opened_for = []
 
     # Test setup and observation.
@@ -424,6 +427,10 @@ class FakeGitHub:
 
     def blockers(self, child):
         return [self.issue(number) for number in self.blocked_by.get(child, [])]
+
+    def commit_is_on_branch(self, branch, sha):
+        self.compared.append((branch, sha))
+        return self.on_branch.get(sha, False)
 
     def comment_on_issue(self, number, body):
         created_at = self._touch(number)
