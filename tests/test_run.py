@@ -534,23 +534,27 @@ class AgentWorkingTests(RunLevelTestCase):
 
 
 class ScriptedConfirm:
-    """Answers the run's startup question as the person at the terminal would.
+    """Answers the run's startup questions as the person at the terminal would.
 
-    `answer` is True (Resume), False (Stop), or an exception the prompt raises.
+    `answer` is True (the accepting choice, such as Resume), False (Stop), or an
+    exception the prompt raises. `choices` keeps, for each question, the label
+    of its accepting choice and whether that choice is the default.
     """
 
     def __init__(self, answer):
         self.answer = answer
         self.questions = []
+        self.choices = []
 
-    def __call__(self, question):
+    def __call__(self, question, accept, *, accept_by_default):
         self.questions.append(question)
+        self.choices.append((accept, accept_by_default))
         if isinstance(self.answer, BaseException):
             raise self.answer
         return self.answer
 
 
-STOP, RESUME = False, True
+STOP, RESUME, CREATE, SWITCH = False, True, True, True
 
 
 class LeftAgentWorkingTests(RunLevelTestCase):
@@ -589,6 +593,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
 
         self.assert_stopped_on_agent_working(result, CHILD)
         self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
+        self.assertEqual(confirm.choices, [("Resume", False)])
         (question,) = confirm.questions
         self.assert_warning(result.stdout + question, CHILD)
         self.assertIn(
@@ -1172,7 +1177,7 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
         for review in (False, True):
             with self.subTest(review=review):
                 confirm = self.confirm_passed(stdin_tty=True, stdout_tty=True, review=review)
-                self.assertIs(confirm, cli.resume_with_arrows)
+                self.assertIs(confirm, cli.startup_choice_with_arrows)
 
     def test_without_both_terminals_there_is_no_selector(self):
         for stdin_tty, stdout_tty in ((False, True), (True, False), (False, False)):
@@ -1185,9 +1190,27 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
                 self.subTest(choice=choice),
                 mock.patch.object(check, "arrow_select", return_value=choice) as select,
             ):
-                self.assertIs(cli.resume_with_arrows("Resume #193?"), resume)
+                self.assertIs(
+                    cli.startup_choice_with_arrows("Resume #193?", "Resume", accept_by_default=False),
+                    resume,
+                )
                 select.assert_called_once_with(
                     "Resume #193?", [("Stop", ""), ("Resume", "")], "Stop"
+                )
+
+    def test_selector_can_offer_the_accepting_choice_by_default(self):
+        question = "Create ralph-kit/issue-5 from an up-to-date main?"
+        for choice, create in (("Create", True), ("Stop", False)):
+            with (
+                self.subTest(choice=choice),
+                mock.patch.object(check, "arrow_select", return_value=choice) as select,
+            ):
+                self.assertIs(
+                    cli.startup_choice_with_arrows(question, "Create", accept_by_default=True),
+                    create,
+                )
+                select.assert_called_once_with(
+                    question, [("Create", ""), ("Stop", "")], "Create"
                 )
 
 
@@ -1492,13 +1515,6 @@ class StartupRejectionTestCase(RunLevelTestCase):
 
 
 class StartupTests(StartupRejectionTestCase):
-    def test_base_branch_is_rejected_before_any_session(self):
-        git(self.repository.path, "checkout", "main")
-
-        result = self.start(loop_core.STANDARD_RUN)
-
-        self.assert_rejected_at_startup(result, "main is not a safe Ralph branch")
-
     def test_detached_head_is_rejected_before_any_session(self):
         git(self.repository.path, "checkout", "--detach", self.repository.base_sha)
 
@@ -1554,6 +1570,353 @@ class StartupTests(StartupRejectionTestCase):
                 result = start_mode_run(loop_core.STANDARD_RUN, self.repository, self.github, self.sessions, *arguments)
 
                 self.assert_rejected_at_startup(result, "must be a positive integer")
+
+
+RUN_BRANCH = f"ralph-kit/issue-{PARENT}"
+
+
+class RunBranchTests(StartupRejectionTestCase):
+    """A run started on the base branch offers to create the parent's run branch."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.repository.path, "checkout", "main")
+        self.base_head = self.repository.head()
+
+    def push_to_origin_main(self, name):
+        """Another clone pushes a commit to `origin`'s main; returns its sha."""
+        clone = self.repository.path.parent / "other-clone"
+        if not clone.exists():
+            git(self.repository.path.parent, "clone", "-q", "-b", "main", str(self.repository.origin), str(clone))
+            git(clone, "config", "user.email", "other@example.com")
+            git(clone, "config", "user.name", "Other")
+        (clone / name).write_text(f"{name}\n", encoding="utf-8")
+        git(clone, "add", name)
+        git(clone, "commit", "-m", f"Add {name}")
+        git(clone, "push", "-q", "origin", "main")
+        return git(clone, "rev-parse", "HEAD")
+
+    def commit_locally(self, name):
+        (self.repository.path / name).write_text(f"{name}\n", encoding="utf-8")
+        git(self.repository.path, "add", name)
+        git(self.repository.path, "commit", "-m", f"Add {name}")
+        return self.repository.head()
+
+    def current_branch(self):
+        return git(self.repository.path, "branch", "--show-current")
+
+    def origin_branches(self):
+        return git(self.repository.origin, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()
+
+    def local_branches(self):
+        return git(self.repository.path, "for-each-ref", "--format=%(refname:short)", "refs/heads").splitlines()
+
+    def assert_nothing_changed(self, result, reason, *, base_head=None):
+        """The run stopped on the base branch: nothing pulled, created, pushed, or published."""
+        self.assert_rejected_at_startup(result, reason)
+        self.assertEqual(self.current_branch(), "main")
+        self.assertEqual(self.repository.head(), base_head or self.base_head)
+        self.assertNotIn(RUN_BRANCH, self.local_branches())
+        self.assertNotIn(RUN_BRANCH, self.origin_branches())
+
+    def test_create_fast_forwards_the_base_branch_and_pushes_the_run_branch_before_any_session(self):
+        remote_head = self.push_to_origin_main("upstream.txt")
+        pushed_at_first_session = []
+        self.before_session = lambda request: pushed_at_first_session.append(
+            (self.current_branch(), self.repository.pushed_head(RUN_BRANCH),
+             git(self.repository.path, "rev-parse", "--abbrev-ref", "@{upstream}"))
+        )
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=confirm)
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(confirm.questions, [f"Create {RUN_BRANCH} from an up-to-date main?"])
+        self.assertEqual(confirm.choices, [("Create", True)])
+        self.assertIn("main is the base branch", result.stdout)
+        self.assertEqual(pushed_at_first_session, [(RUN_BRANCH, remote_head, f"origin/{RUN_BRANCH}")])
+        self.assertEqual(git(self.repository.path, "rev-parse", "main"), remote_head)
+        self.assertEqual(self.current_branch(), RUN_BRANCH)
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), self.repository.head())
+        pull = self.github.pull_request()
+        self.assertEqual((pull.base, pull.head), ("main", RUN_BRANCH))
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_stop_and_ctrl_c_change_nothing(self):
+        self.push_to_origin_main("upstream.txt")
+        for answer in (STOP, KeyboardInterrupt()):
+            with self.subTest(answer=answer):
+                confirm = ScriptedConfirm(answer)
+
+                result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+                self.assert_nothing_changed(result, RUN_BRANCH)
+                self.assertEqual(len(confirm.questions), 1)
+
+    def test_without_a_terminal_the_run_stops_and_names_the_branch_to_create(self):
+        result = self.start(loop_core.STANDARD_RUN, confirm=None)
+
+        self.assert_nothing_changed(result, f"create {RUN_BRANCH}")
+
+    def test_unstartable_parent_stops_before_any_branch_question(self):
+        self.github.edit_issue_labels(PARENT, "needs-info", ())
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_nothing_changed(result, "held back by triage: needs-info")
+        self.assertEqual(confirm.questions, [])
+
+    def test_dirty_worktree_stops_before_any_branch_question(self):
+        (self.repository.path / "uncommitted.txt").write_text("dirty\n", encoding="utf-8")
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_nothing_changed(result, "worktree is dirty at startup")
+        self.assertEqual(confirm.questions, [])
+
+    def test_unreachable_remote_stops_before_asking(self):
+        git(self.repository.path, "remote", "set-url", "origin", str(self.repository.path.parent / "missing.git"))
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_rejected_at_startup(result, "could not reach origin")
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(self.current_branch(), "main")
+        self.assertNotIn(RUN_BRANCH, self.local_branches())
+
+    def test_base_branch_that_cannot_fast_forward_stops_with_no_branch_created(self):
+        for name, diverge, reason in (
+            ("local commits", False, "main has commits that are not on origin/main"),
+            ("diverged", True, "main cannot fast-forward to origin/main"),
+        ):
+            with self.subTest(name):
+                self.new_run()
+                self.github.add_issue(CHILD, parent=PARENT)
+                git(self.repository.path, "checkout", "main")
+                if diverge:
+                    self.push_to_origin_main("upstream.txt")
+                local_head = self.commit_locally("local.txt")
+
+                result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(CREATE))
+
+                self.assert_nothing_changed(result, reason, base_head=local_head)
+
+    def test_failed_push_stops_and_keeps_the_local_run_branch(self):
+        hook = self.repository.origin / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho 'pushes are refused' >&2\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(CREATE))
+
+        self.assert_rejected_at_startup(result, f"could not push {RUN_BRANCH}")
+        self.assertEqual(self.current_branch(), RUN_BRANCH)
+        self.assertNotIn(RUN_BRANCH, self.origin_branches())
+
+    def existing_run_branch(self, *, pushed=False):
+        """An earlier run left the run branch behind with a commit of its own; returns its head."""
+        git(self.repository.path, "switch", "-q", "--create", RUN_BRANCH)
+        head = self.commit_locally("earlier-run.txt")
+        if pushed:
+            git(self.repository.path, "push", "-q", "--set-upstream", "origin", RUN_BRANCH)
+        git(self.repository.path, "switch", "-q", "main")
+        return head
+
+    def upstream(self):
+        return git(self.repository.path, "rev-parse", "--abbrev-ref", "@{upstream}")
+
+    def test_switch_moves_to_an_existing_local_branch_and_pushes_it_before_any_session(self):
+        run_branch_head = self.existing_run_branch()
+        self.push_to_origin_main("upstream.txt")
+        at_first_session = []
+        self.before_session = lambda request: at_first_session.append(
+            (self.current_branch(), self.repository.head(),
+             self.repository.pushed_head(RUN_BRANCH), self.upstream())
+        )
+        confirm = ScriptedConfirm(SWITCH)
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=confirm)
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(confirm.questions, [f"Switch to the existing {RUN_BRANCH}?"])
+        self.assertEqual(confirm.choices, [("Switch", True)])
+        self.assertIn("main is the base branch", result.stdout)
+        self.assertEqual(
+            at_first_session, [(RUN_BRANCH, run_branch_head, run_branch_head, f"origin/{RUN_BRANCH}")]
+        )
+        self.assertEqual(git(self.repository.path, "rev-parse", "main"), self.base_head)
+        self.assertEqual(self.current_branch(), RUN_BRANCH)
+        self.assertEqual(len(self.repository.commits_since(run_branch_head)), 1)
+        pull = self.github.pull_request()
+        self.assertEqual((pull.base, pull.head), ("main", RUN_BRANCH))
+
+    def test_switch_to_a_branch_already_on_origin_proceeds(self):
+        for name, ahead in (("in step", False), ("ahead of origin", True)):
+            with self.subTest(name):
+                self.new_run()
+                self.github.add_issue(CHILD, parent=PARENT)
+                git(self.repository.path, "checkout", "main")
+                run_branch_head = self.existing_run_branch(pushed=True)
+                if ahead:
+                    git(self.repository.path, "switch", "-q", RUN_BRANCH)
+                    run_branch_head = self.commit_locally("unpushed.txt")
+                    git(self.repository.path, "switch", "-q", "main")
+                at_first_session = []
+                self.before_session = lambda request, seen=at_first_session: seen.append(
+                    (self.repository.head(), self.repository.pushed_head(RUN_BRANCH), self.upstream())
+                )
+
+                result = self.start(
+                    loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=ScriptedConfirm(SWITCH)
+                )
+
+                self.assert_completed(result, sessions=1)
+                self.assertEqual(
+                    at_first_session, [(run_branch_head, run_branch_head, f"origin/{RUN_BRANCH}")]
+                )
+
+    def test_stop_ctrl_c_and_no_terminal_leave_the_existing_branch_untouched(self):
+        run_branch_head = self.existing_run_branch()
+        for answer in (STOP, KeyboardInterrupt(), None):
+            with self.subTest(answer=answer):
+                confirm = None if answer is None else ScriptedConfirm(answer)
+
+                result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+                self.assert_rejected_at_startup(result, RUN_BRANCH)
+                self.assertEqual(self.current_branch(), "main")
+                self.assertEqual(self.repository.head(), self.base_head)
+                self.assertEqual(git(self.repository.path, "rev-parse", RUN_BRANCH), run_branch_head)
+                self.assertNotIn(RUN_BRANCH, self.origin_branches())
+                if answer is None:
+                    self.assertIn(f"switch to {RUN_BRANCH}", result.stderr)
+
+    def test_failed_push_after_switch_stops_on_the_run_branch(self):
+        run_branch_head = self.existing_run_branch()
+        hook = self.repository.origin / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho 'pushes are refused' >&2\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(SWITCH))
+
+        self.assert_rejected_at_startup(result, f"could not push {RUN_BRANCH}")
+        self.assertEqual(self.current_branch(), RUN_BRANCH)
+        self.assertEqual(self.repository.head(), run_branch_head)
+        self.assertNotIn(RUN_BRANCH, self.origin_branches())
+
+    def run_branch_on_origin_ahead(self, *, diverged=False):
+        """origin's run branch is a commit ahead of the local one, which may diverge; returns both heads."""
+        self.existing_run_branch(pushed=True)
+        git(self.repository.path, "switch", "-q", RUN_BRANCH)
+        behind = self.repository.head()
+        self.commit_locally("published.txt")
+        git(self.repository.path, "push", "-q", "origin", RUN_BRANCH)
+        origin_head = self.repository.head()
+        git(self.repository.path, "reset", "-q", "--hard", behind)
+        if diverged:
+            self.commit_locally("local-only.txt")
+        git(self.repository.path, "switch", "-q", "main")
+        return git(self.repository.path, "rev-parse", RUN_BRANCH), origin_head
+
+    def test_switch_to_a_branch_only_on_origin_tracks_it_and_proceeds(self):
+        origin_head = self.existing_run_branch(pushed=True)
+        git(self.repository.path, "branch", "-D", RUN_BRANCH)
+        at_first_session = []
+        self.before_session = lambda request: at_first_session.append(
+            (self.current_branch(), self.repository.head(), self.upstream())
+        )
+        confirm = ScriptedConfirm(SWITCH)
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=confirm)
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(confirm.questions, [f"Switch to the existing {RUN_BRANCH}?"])
+        self.assertEqual(at_first_session, [(RUN_BRANCH, origin_head, f"origin/{RUN_BRANCH}")])
+        self.assertEqual(git(self.repository.path, "rev-parse", "main"), self.base_head)
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), self.repository.head())
+
+    def test_switch_fast_forwards_a_local_branch_behind_origin_before_any_session(self):
+        _, origin_head = self.run_branch_on_origin_ahead()
+        at_first_session = []
+        self.before_session = lambda request: at_first_session.append(
+            (self.current_branch(), self.repository.head(), self.upstream())
+        )
+
+        result = self.start(
+            loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=ScriptedConfirm(SWITCH)
+        )
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(at_first_session, [(RUN_BRANCH, origin_head, f"origin/{RUN_BRANCH}")])
+        self.assertEqual(git(self.repository.path, "rev-parse", "main"), self.base_head)
+        self.assertEqual(len(self.repository.commits_since(origin_head)), 1)
+
+    def test_switch_to_a_branch_diverged_from_origin_stops_on_it_with_both_sides_intact(self):
+        local_head, origin_head = self.run_branch_on_origin_ahead(diverged=True)
+        confirm = ScriptedConfirm(SWITCH)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_rejected_at_startup(result, f"{RUN_BRANCH} has diverged from origin/{RUN_BRANCH}")
+        self.assertEqual(confirm.questions, [f"Switch to the existing {RUN_BRANCH}?"])
+        self.assertEqual(self.current_branch(), RUN_BRANCH)
+        self.assertEqual(self.repository.head(), local_head)
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), origin_head)
+        self.assertEqual(git(self.repository.path, "rev-parse", "main"), self.base_head)
+
+    def test_failed_fetch_stops_on_the_base_branch_with_nothing_changed(self):
+        origin_head = self.existing_run_branch(pushed=True)
+        git(self.repository.path, "branch", "-D", RUN_BRANCH)
+        # A ref where the fetch must create a directory makes it fail to update the tracking ref.
+        git(self.repository.path, "update-ref", "-d", f"refs/remotes/origin/{RUN_BRANCH}")
+        git(self.repository.path, "update-ref", "refs/remotes/origin/ralph-kit", "HEAD")
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(SWITCH))
+
+        self.assert_rejected_at_startup(result, f"could not fetch {RUN_BRANCH} from origin")
+        self.assertEqual(self.current_branch(), "main")
+        self.assertEqual(self.repository.head(), self.base_head)
+        self.assertNotIn(RUN_BRANCH, self.local_branches())
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), origin_head)
+
+    def test_stop_leaves_a_branch_on_origin_untouched(self):
+        for where in ("only on origin", "behind origin"):
+            with self.subTest(where):
+                self.new_run()
+                self.github.add_issue(CHILD, parent=PARENT)
+                git(self.repository.path, "checkout", "main")
+                if where == "only on origin":
+                    self.existing_run_branch(pushed=True)
+                    git(self.repository.path, "branch", "-D", RUN_BRANCH)
+                else:
+                    self.run_branch_on_origin_ahead()
+                local = {
+                    ref: git(self.repository.path, "rev-parse", ref)
+                    for ref in self.local_branches()
+                }
+                origin_head = self.repository.pushed_head(RUN_BRANCH)
+
+                result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(STOP))
+
+                self.assert_rejected_at_startup(result, RUN_BRANCH)
+                self.assertEqual(self.current_branch(), "main")
+                self.assertEqual(
+                    {ref: git(self.repository.path, "rev-parse", ref) for ref in self.local_branches()},
+                    local,
+                )
+                self.assertEqual(self.repository.pushed_head(RUN_BRANCH), origin_head)
+
+    def test_a_non_base_branch_runs_with_no_question(self):
+        git(self.repository.path, "checkout", BRANCH)
+        confirm = ScriptedConfirm(STOP)
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=confirm)
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(confirm.questions, [])
+        self.assertNotIn(RUN_BRANCH, self.origin_branches())
 
 
 class ParentTriageTests(StartupRejectionTestCase):
@@ -3742,7 +4105,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
 
         result = self.start_engine(
-            loop_core.STANDARD_RUN, EngineResult("committed"), confirm=lambda question: True
+            loop_core.STANDARD_RUN, EngineResult("committed"), confirm=ScriptedConfirm(RESUME)
         )
 
         self.assert_implemented(result)

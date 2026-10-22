@@ -46,6 +46,8 @@ ENGINES = {"codex", "claude"}
 CLAUDE_REASONING_EFFORTS = {"low", "medium", "high", "xhigh", "max"}
 # Run diagnostics live in the repository and must stay ignored by Git.
 DIAGNOSTICS_DIRECTORY = ".ralph"
+# A run started on the base branch offers the run branch named this prefix plus the parent.
+RUN_BRANCH_PREFIX = "ralph-kit/issue-"
 
 
 class RalphConfigError(RuntimeError):

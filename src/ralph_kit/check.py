@@ -24,6 +24,7 @@ from . import __version__, keep_awake
 from .agent import engine_help_command_and_flags
 from .config import (
     DIAGNOSTICS_DIRECTORY,
+    RUN_BRANCH_PREFIX,
     MissingConfigError,
     RalphConfigError,
     load_config,
@@ -432,7 +433,8 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
                 current = command("git", "symbolic-ref", "--quiet", "--short", "HEAD")
             except RuntimeError:
                 raise Blocked("detached HEAD, no active branch", "git switch -c <branch-name>") from None
-            require(current != config.base_branch, f"on the base branch {current}", "git switch -c <branch-name>")
+            if current == config.base_branch:
+                return f"{current} (run will offer a {RUN_BRANCH_PREFIX}<parent> branch)"
             return f"{current} (base: {config.base_branch})"
         report.check("Branch", branch)
 

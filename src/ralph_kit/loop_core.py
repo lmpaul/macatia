@@ -44,6 +44,7 @@ from .child_cycle import (
 from .commands import RalphError, command as run_command
 from .config import (
     DIAGNOSTICS_DIRECTORY,
+    RUN_BRANCH_PREFIX,
     AgentProfile,
     RalphConfig,
     RalphConfigError,
@@ -405,9 +406,10 @@ class RunAdapters:
     run_engine: Callable[[pathlib.Path, list[str]], subprocess.CompletedProcess[str]] = (
         functools.partial(run_command, check=False)
     )
-    # Asks the startup choice: question -> True to resume children left agent working.
+    # Asks a startup choice between Stop and an accepting choice:
+    # (question, accepting label, accept_by_default=) -> True on the accepting choice.
     # None when Ralph is not in a terminal, which always stops.
-    confirm: Callable[[str], bool] | None = None
+    confirm: Callable[..., bool] | None = None
     # Holds the sleep lock for the duration of the block, for `--caffeinate` or
     # `caffeinate_by_default`.
     keep_awake: Callable[[], contextlib.AbstractContextManager[None]] = keep_awake
@@ -977,7 +979,7 @@ def resolve_left_agent_working(state: RunState, children: list[dict[str, Any]]) 
         raise ChildLeftAgentWorking(children, label, warning)
     print(f"⚠️  {warning}", flush=True)
     try:
-        resume = confirm(f"Resume {child_numbers(children)}?")
+        resume = confirm(f"Resume {child_numbers(children)}?", "Resume", accept_by_default=False)
     except KeyboardInterrupt:
         resume = False
     if not resume:
@@ -1211,8 +1213,6 @@ def preflight(state: RunState) -> str:
     if branch_result.returncode != 0:
         raise RalphError("detached HEAD is not allowed")
     branch = branch_result.stdout.strip()
-    if branch == configuration.base_branch:
-        raise RalphError(f"{configuration.base_branch} is not a safe Ralph branch")
     require_clean_worktree(state, "at startup")
 
     worktrees = git(state, "worktree", "list", "--porcelain")
@@ -1231,6 +1231,140 @@ def preflight(state: RunState) -> str:
             f"{configuration.repository}, found {repository}"
         )
     return branch
+
+
+def offer_run_branch(state: RunState, parent_issue: int) -> str:
+    """On the base branch, offer the parent's run branch and return it once it is published.
+
+    A run branch that exists nowhere is created from the base branch pulled
+    fast-forward only. An existing run branch is switched to without touching
+    the base branch, following the remote one: see `switch_to_run_branch`.
+    Either way the run branch is then pushed with its upstream; anything other
+    than the accepting choice stops with nothing changed.
+    """
+    configuration = state.config
+    base, remote = configuration.base_branch, configuration.remote
+    run_branch = f"{RUN_BRANCH_PREFIX}{parent_issue}"
+    # Lists the remote's heads without writing any local ref.
+    listing = command(
+        state, ["git", "ls-remote", "--heads", remote, f"refs/heads/{run_branch}"], check=False
+    )
+    if listing.returncode != 0:
+        detail = " ".join((listing.stderr or "").split())
+        raise RalphError(f"could not reach {remote} to look for {run_branch}: {detail}")
+    # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
+    remote_head = next(
+        (
+            line.split("\t")[0]
+            for line in listing.stdout.splitlines()
+            if line.split("\t")[-1] == f"refs/heads/{run_branch}"
+        ),
+        None,
+    )
+    local_lookup = command(
+        state, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{run_branch}"], check=False
+    )
+    local_head = local_lookup.stdout.strip() if local_lookup.returncode == 0 else None
+
+    if local_head is None and remote_head is None:
+        question, accept = f"Create {run_branch} from an up-to-date {base}?", "Create"
+        not_done, by_hand = "was not created", f"create {run_branch} from an up-to-date {base}"
+    else:
+        question, accept = f"Switch to the existing {run_branch}?", "Switch"
+        not_done, by_hand = "was not switched to", f"switch to {run_branch}"
+    confirm = state.adapters.confirm
+    if confirm is None:
+        raise RalphError(
+            f"{base} is the base branch: {by_hand} and push it to {remote}, "
+            f"or run `{state.rerun_command}` in a terminal"
+        )
+    print(f"⚠️  {base} is the base branch: Ralph does not run on it.", flush=True)
+    try:
+        accepted = confirm(question, accept, accept_by_default=True)
+    except KeyboardInterrupt:
+        accepted = False
+    if not accepted:
+        raise RalphError(f"stopped on {base}: {run_branch} {not_done}")
+
+    if local_head is None and remote_head is None:
+        create_run_branch(state, run_branch)
+    else:
+        remote_head = switch_to_run_branch(state, run_branch, local_head, remote_head)
+    upstream = command(
+        state, ["git", "rev-parse", "--abbrev-ref", f"{run_branch}@{{upstream}}"], check=False
+    ).stdout.strip()
+    if upstream != f"{remote}/{run_branch}" or remote_head != current_head(state):
+        try:
+            push_branch(state, run_branch)
+        except RalphError as error:
+            raise RalphError(
+                f"could not push {run_branch} to {remote}; the local branch is kept: {error}"
+            ) from error
+    return run_branch
+
+
+def switch_to_run_branch(
+    state: RunState, run_branch: str, local_head: str | None, remote_head: str | None
+) -> str | None:
+    """Switch to an existing `run_branch`, following the remote one; return the remote head.
+
+    A branch only on the remote is fetched and checked out tracking it. A local
+    branch behind the remote one is fast-forwarded; one that has diverged from
+    it stops the run on the branch with nothing rewritten. The base branch is
+    left alone, and nothing is merged or rebased into the run branch.
+    """
+    remote = state.config.remote
+    if remote_head is None:
+        git(state, "switch", run_branch)
+        return None
+    tracking = f"refs/remotes/{remote}/{run_branch}"
+    print(f"⬇️  Fetching {run_branch} from {remote}.", flush=True)
+    # Not under a spinner: git writes its own progress to the terminal.
+    fetched = command(
+        state,
+        ["git", "fetch", remote, f"+refs/heads/{run_branch}:{tracking}"],
+        check=False,
+        capture_output=False,
+    )
+    if fetched.returncode != 0:
+        raise RalphError(f"could not fetch {run_branch} from {remote}")
+    remote_head = git(state, "rev-parse", tracking)
+    if local_head is None:
+        git(state, "switch", "--create", run_branch, "--track", f"{remote}/{run_branch}")
+        return remote_head
+    git(state, "switch", run_branch)
+    if is_ancestor(state, remote_head, local_head):
+        return remote_head
+    if not is_ancestor(state, local_head, remote_head):
+        raise RalphError(
+            f"{run_branch} has diverged from {remote}/{run_branch}; reconcile them, "
+            f"then run `{state.rerun_command}` again"
+        )
+    git(state, "merge", "--ff-only", remote_head)
+    return remote_head
+
+
+def create_run_branch(state: RunState, run_branch: str) -> None:
+    """Pull the base branch fast-forward only, then create and switch to `run_branch` from it."""
+    configuration = state.config
+    base, remote = configuration.base_branch, configuration.remote
+    print(f"⬇️  Pulling {base} from {remote}.", flush=True)
+    # Not under a spinner: git writes its own progress to the terminal.
+    pulled = command(
+        state,
+        ["git", "pull", "--no-rebase", "--ff-only", remote, base],
+        check=False,
+        capture_output=False,
+    )
+    if pulled.returncode != 0:
+        raise RalphError(
+            f"{base} cannot fast-forward to {remote}/{base}; {run_branch} was not created"
+        )
+    if current_head(state) != git(state, "rev-parse", "FETCH_HEAD"):
+        raise RalphError(
+            f"{base} has commits that are not on {remote}/{base}; {run_branch} was not created"
+        )
+    git(state, "switch", "--create", run_branch)
 
 
 def labels(issue: dict[str, Any]) -> set[str]:
@@ -2199,15 +2333,17 @@ def stop_children_for_dependency_deadlock(
         )
 
 
+def push_branch(state: RunState, branch: str) -> None:
+    """Push `branch` to the configured remote with its upstream set."""
+    remote = state.config.remote
+    print(f"⬆️  Pushing {branch} to {remote}.", flush=True)
+    # Not under a spinner: git writes its own progress to the terminal.
+    command(state, ["git", "push", "--set-upstream", remote, branch], capture_output=False)
+
+
 def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_issue: int) -> None:
     configuration = state.config
-    print(f"⬆️  Pushing {branch} to {configuration.remote}.", flush=True)
-    command(
-        state,
-        ["git", "push", "--set-upstream", configuration.remote, branch],
-        capture_output=False,
-    )
-    # Not around the push: git writes its own progress to the terminal.
+    push_branch(state, branch)
     with spinner("Preparing the draft pull request…"):
         pull = open_pull_request(state, branch)
         if pull is not None:
@@ -2876,13 +3012,16 @@ def run_children(
     """Implement the parent's runnable children one at a time, then hand the parent to a human.
 
     Startup has loaded the configuration and quality policy, opened GitHub
-    access, and accepted the branch; the run reaches everything else through
-    its adapters.
+    access, and accepted the branch; a run on the base branch first offers its
+    run branch. The run reaches everything else through its adapters.
     """
-    branch = state.branch
-    assert branch is not None
-    with spinner(f"Reading #{parent_issue} and its sub-issues…"):
+    assert state.branch is not None
+    with spinner(f"Reading #{parent_issue}…"):
         require_startable_parent(state, issue_details(state, parent_issue))
+    if state.branch == state.config.base_branch:
+        state.branch = offer_run_branch(state, parent_issue)
+    branch = state.branch
+    with spinner(f"Reading the sub-issues of #{parent_issue}…"):
         infrastructure = InfrastructureRetryTracker(state)
         siblings = state.github.sub_issues(parent_issue)
         update_run_summary(state, parent_issue, siblings, None, infrastructure)

@@ -59,7 +59,42 @@ whatever the setting, without the notice. `--caffeinate` together with
 With the setting on, `ralph-kit check` also reports whether this machine can
 provide the sleep lock, as a warning only: a run continues without one.
 
-Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean, dedicated branch (never the base branch).
+Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean worktree.
+
+A run started on the base branch offers a run branch named
+`ralph-kit/issue-<parent>` once every other startup check has passed, the parent
+included. Ralph first looks for that branch locally and on the remote (with
+`git ls-remote`, which writes no local ref; an unreachable remote stops the run)
+and warns that it is on the base branch.
+
+If the branch exists neither locally nor on the remote, Ralph asks "Create
+ralph-kit/issue-N from an up-to-date <base>?":
+
+- **Create** (the default) pulls the base branch fast-forward only from the
+  remote, then creates and switches to the run branch. A base branch with commits
+  that are not on the remote stops the run with no branch created.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
+If the branch exists locally, on the remote, or both, Ralph asks "Switch to the
+existing ralph-kit/issue-N?":
+
+- **Switch** (the default) moves to the branch and follows the remote one. A
+  branch only on the remote is fetched and checked out tracking it. A local
+  branch behind the remote one is fast-forwarded. A local branch that has
+  diverged from the remote one stops the run, leaving you on the branch with
+  nothing rewritten to reconcile it yourself. The base branch is not pulled, and
+  nothing is merged or rebased into the run branch.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
+Once on the run branch, Ralph pushes it with its upstream before any agent
+session unless it is already on the remote at the same commit with that upstream.
+A failed push stops the run and leaves you on the local branch. The draft PR is
+still opened at the first publication.
+
+Without a terminal the run stops with nothing changed and names the branch to
+create or switch to. A detached HEAD is refused.
+`ralph-kit check` passes on the base branch with a note that the run will offer
+a `ralph-kit/issue-<parent>` branch, and still blocks on a detached HEAD.
 
 `init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats
@@ -385,7 +420,8 @@ infrastructure retries, then stops the run.
 ## Repository settings
 
 - `repository` is the exact GitHub `owner/name` returned by `gh repo view`.
-- `base_branch` is the protected branch Ralph must never modify directly.
+- `base_branch` is the protected branch Ralph never commits to; it only fast-forwards it
+  from the remote before creating a run branch, never when switching to an existing one.
 - `remote` is the Git remote Ralph pushes to.
 - `trusted_authors` is the non-empty allowlist of trusted authors for parent
   issues and children. Include the GitHub account Ralph runs as so a restarted
@@ -714,7 +750,7 @@ ralph-kit check
 ralph-kit check --review
 ```
 
-Commit the prepared files and use a dedicated branch first. The readiness check validates
+Commit the prepared files first. The readiness check validates
 TOML and placeholders, Python and required CLI availability (and the minimum `gh` version), Git branch/remote
 and clean worktree, `.ralph/` ignored by Git (any ignore source counts; the check
 never edits `.gitignore`), GitHub access/repository/trusted account/write permission/labels,

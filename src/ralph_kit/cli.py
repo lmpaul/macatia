@@ -84,11 +84,13 @@ def configure(argv: list[str]) -> int:
     return 0
 
 
-def resume_with_arrows(question: str) -> bool:
-    """Stop (the default) or Resume; Ctrl-C raises KeyboardInterrupt, which the run counts as Stop."""
+def startup_choice_with_arrows(question: str, accept: str, *, accept_by_default: bool) -> bool:
+    """Stop or `accept`, the default listed first; Ctrl-C raises KeyboardInterrupt, which the
+    run counts as Stop."""
     from .check import arrow_select
 
-    return arrow_select(question, [("Stop", ""), ("Resume", "")], "Stop") == "Resume"
+    choices = [accept, "Stop"] if accept_by_default else ["Stop", accept]
+    return arrow_select(question, [(choice, "") for choice in choices], choices[0]) == accept
 
 
 def yes_no_with_arrows(question: str) -> bool:
@@ -118,7 +120,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "run":
         from . import loop
 
-        confirm = resume_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
+        confirm = startup_choice_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
         return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
     if command == "check":
         from . import check
