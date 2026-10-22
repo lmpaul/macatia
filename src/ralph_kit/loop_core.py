@@ -1138,8 +1138,8 @@ def positive_integer(value: str) -> int:
 def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namespace:
     """Read the run's arguments; `--review` and `--no-review`, accepted in any position, are
     `review` and `no_review`, and together a usage error. So are `--caffeinate` and
-    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`. The run target `ISSUE` is
-    optional on the command line, but a run without one is still a usage error."""
+    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`. A run without the run
+    target `ISSUE` is a usage error."""
     flags = [flag for flag in ("--review", "--no-review") if flag in argv]
     sleep_lock_flags = [flag for flag in ("--caffeinate", "--no-caffeinate") if flag in argv]
     read = {*flags, *sleep_lock_flags}
@@ -1147,6 +1147,7 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
     parser = argparse.ArgumentParser(
         prog=None if prog is None else " ".join([prog, *flags]),
         description=(REVIEWED_RUN if "--review" in flags else STANDARD_RUN).description,
+        usage="%(prog)s [-h] [--config CONFIG] [ISSUE [RUN_BUDGET]]",
     )
     parser.add_argument(
         "--config",

@@ -1165,7 +1165,7 @@ class RunUsageCommandLineTests(unittest.TestCase):
 
     def test_run_usage_names_the_issue_and_run_budget(self):
         error = self.usage_error("abc")
-        self.assertIn("[ISSUE] [RUN_BUDGET]", error)
+        self.assertIn("usage: ralph-kit run [-h] [--config CONFIG] [ISSUE [RUN_BUDGET]]\n", error)
         self.assertIn("argument ISSUE: must be a positive integer", error)
 
     def test_review_and_no_review_together_are_a_usage_error(self):
