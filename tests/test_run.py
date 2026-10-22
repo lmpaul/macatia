@@ -2536,6 +2536,7 @@ class ConfiguredTrustTests(RunLevelTestCase):
             "human-review": "r-human-review",
             "implemented": "r-implemented",
             "work-started": "r-work-started",
+            "standalone": "r-standalone",
         }
         for default, configured in labels.items():
             self.repository.edit_configuration(f'= "{default}"\n', f'= "{configured}"\n')

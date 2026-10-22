@@ -40,6 +40,7 @@ agent_working = "agent-working"
 human_review = "human-review"
 implemented = "implemented"
 work_started = "work-started"
+standalone = "standalone"
 
 [models.implementation]
 engine = "claude"
@@ -97,6 +98,7 @@ agent_working = "agent: working"
 human_review = "human: review"
 implemented = "done"
 work_started = "agent: started"
+standalone = "agent: standalone"
 
 [models.implementation]
 engine = "claude"
@@ -427,11 +429,18 @@ class InitTests(unittest.TestCase):
         self.assertIn("✓ Label implemented created", self.output.getvalue())
         self.assertIn("✓ Label agent-working created", self.output.getvalue())
         self.assertIn("✓ Label work-started created", self.output.getvalue())
+        self.assertIn("✓ Label standalone created", self.output.getvalue())
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "acme/widget",
              "--description", "Ralph has started work on this parent"),
             commands,
         )
+
+    def test_configuration_declares_all_ten_label_roles(self):
+        config = self.run_init()
+        self.assertEqual(len(config.labels), 10)
+        self.assertEqual(config.labels["standalone"], "standalone")
+        self.assertIn('work_started = "work-started"\nstandalone = "standalone"\n', (self.root / "ralph.toml").read_text())
 
     def test_configuration_declares_the_agent_working_label(self):
         config = self.run_init()

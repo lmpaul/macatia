@@ -19,7 +19,7 @@ from ralph_kit import cli, update_labels
 
 ALL_LABELS = [
     "needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix",
-    "agent-working", "human-review", "implemented", "work-started",
+    "agent-working", "human-review", "implemented", "work-started", "standalone",
 ]
 
 
@@ -63,11 +63,27 @@ class UpdateLabelsTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(
             self.config.read_text(),
-            text.replace('implemented = "implemented"\n', 'implemented = "implemented"\nwork_started = "work-started"\n'),
+            text.replace('standalone = "standalone"\n', 'standalone = "standalone"\nwork_started = "work-started"\n'),
         )
         self.assertIn('✓ ralph.toml: added work_started = "work-started"', output)
-        self.assertIn("✓ all 9 labels present on lmpaul/buyr", output)
+        self.assertIn("✓ all 10 labels present on lmpaul/buyr", output)
         self.assertIn("Commit ralph.toml", output)
+
+    def test_a_configuration_without_standalone_gets_it_and_its_github_label(self):
+        self.remove_line('standalone = "standalone"\n')
+        self.labels.remove("standalone")
+
+        code, output = self.run_update(confirm=lambda question: True)
+
+        self.assertEqual(code, 0, output)
+        self.assertIn('work_started = "work-started"\nstandalone = "standalone"\n', self.config.read_text())
+        self.assertIn('✓ ralph.toml: added standalone = "standalone"', output)
+        self.assertIn(
+            ("gh", "label", "create", "standalone", "--repo", "lmpaul/buyr",
+             "--description", "Ralph ran on this issue as a standalone issue"),
+            self.commands,
+        )
+        self.assertIn("✓ standalone created", output)
 
     def test_a_configuration_refused_for_missing_label_keys_is_completed(self):
         self.remove_line('agent_working = "agent-working"\n')
@@ -76,7 +92,7 @@ class UpdateLabelsTests(unittest.TestCase):
         code, output = self.run_update()
 
         self.assertEqual(code, 0, output)
-        self.assertIn('implemented = "implemented"\nagent_working = "agent-working"\nwork_started = "work-started"\n\n[models', self.config.read_text())
+        self.assertIn('standalone = "standalone"\nagent_working = "agent-working"\nwork_started = "work-started"\n\n[models', self.config.read_text())
 
     def test_labels_missing_on_github_are_created_once_confirmed(self):
         self.labels.remove("work-started")
@@ -112,7 +128,7 @@ class UpdateLabelsTests(unittest.TestCase):
 
         self.assertEqual(code, 0, output)
         self.assertEqual(self.config.read_text(), original)
-        self.assertIn("✓ ralph.toml declares all 9 label roles", output)
+        self.assertIn("✓ ralph.toml declares all 10 label roles", output)
 
     def test_a_default_name_another_role_uses_is_refused(self):
         self.remove_line('work_started = "work-started"\n')

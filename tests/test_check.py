@@ -94,7 +94,7 @@ class ReadinessTests(unittest.TestCase):
         self.login = "reader"
         self.permission = True
         self.gh_version = "gh version 2.70.0 (2025-04-15)\nhttps://github.com/cli/cli/releases/tag/v2.70.0"
-        self.labels = ["needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix", "agent-working", "human-review", "implemented", "work-started"]
+        self.labels = ["needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix", "agent-working", "human-review", "implemented", "work-started", "standalone"]
         self.commands = []
         self.help = {
             ("codex", "exec", "--help"): CODEX_HELP,
@@ -288,6 +288,25 @@ class ReadinessTests(unittest.TestCase):
         output = " ".join(output.split())  # The report wraps long details.
         self.assertIn("! Label roles ralph.toml leaves out work_started, so work-started is used", output)
         self.assertIn("→ ralph-kit update-labels writes it", output)
+
+    def test_missing_standalone_label_is_reported_and_created_once_confirmed(self):
+        self.labels.remove("standalone")
+        self.assertEqual(self.run_check()[0], 1)
+        code, output = self.run_check(confirm=lambda question: True)
+        self.assertEqual(code, 0)
+        self.assertIn("✓ standalone created", output)
+        self.assertIn(
+            ("gh", "label", "create", "standalone", "--repo", "example/project",
+             "--description", "Ralph ran on this issue as a standalone issue"),
+            self.commands,
+        )
+
+    def test_configuration_from_before_standalone_gets_the_default_label(self):
+        text = self.config.read_text()
+        self.config.write_text(text.replace('standalone = "standalone"\n', ""))
+        code, output = self.run_check()
+        output = " ".join(output.split())  # The report wraps long details.
+        self.assertIn("! Label roles ralph.toml leaves out standalone, so standalone is used", output)
 
     def test_complete_labels_get_no_label_roles_warning(self):
         code, output = self.run_check()

@@ -443,18 +443,23 @@ infrastructure retries, then stops the run.
 - `caffeinate_by_default` is optional (`false` when missing). `true` makes every
   run hold a sleep lock until it ends; `ralph-kit run --no-caffeinate` overrides
   it for one run.
-- `labels` maps Ralph's nine label roles to labels in the target
+- `labels` maps Ralph's ten label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, the lifecycle labels `ready_for_agent`,
-  `agent_working`, `human_review`, and `implemented`, and the parent-only
-  `work_started`. `agent_working` (`agent-working` by default) marks the child a
+  `agent_working`, `human_review`, and `implemented`, the parent-only
+  `work_started`, and `standalone`. `agent_working` (`agent-working` by default) marks the child a
   run is working on; only Ralph sets it. `work_started` (`work-started` by
   default) marks a parent on which Ralph has started work; it is informational
   only, and Ralph never reads it to decide anything: the first child cycle of a
   run adds it in place of `ready-for-agent`, parent completion removes it, and
   nothing else cleans it up (see [the loop](#the-loop-run-and-run---review)).
-  A `ralph.toml` written before `work_started` existed may leave it out and gets
-  `work-started`; `check` warns about it, and `ralph-kit update-labels` writes it. `init` and `check` offer to
+  `standalone` (`standalone` by default) is the standalone marker: it marks a
+  standalone issue, one with no parent and no sub-issues, on which a run has
+  started. Like `work_started`, it is neither a triage label nor a lifecycle
+  label, Ralph never reads it to decide anything, and nothing removes it.
+  A `ralph.toml` written before `work_started` or `standalone` existed may leave
+  them out and gets their default names; `check` warns about it, and
+  `ralph-kit update-labels` writes them. `init` and `check` offer to
   create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
