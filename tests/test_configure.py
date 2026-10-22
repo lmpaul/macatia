@@ -613,7 +613,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
     def test_child_session_limits_change_with_the_loading_validation_and_save_only_what_changed(self):
-        self.assertTrue(self.run_configure(answers=["8", "1", "three", "0", "3", "2", "1", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["8", "1", "three", "5_0", "0", "3", "2", "1", "", "", "9"]))
         output = self.output.getvalue()
         self.assertIn(
             "? Child session limits: which limit do you want to change?\n"
@@ -621,7 +621,7 @@ class ConfigureTests(unittest.TestCase):
             "  2) Reviewed runs  (9 agent sessions per child)\n  3) Back\n",
             output,
         )
-        self.assertIn("  must be an integer\n", output)
+        self.assertEqual(output.count("  must be an integer\n"), 2)
         self.assertIn("  must be at least 1\n", output)
         self.assertIn("  must be at least 2\n", output)  # Reviewed: refused 1, then kept 9 on Enter.
         self.assertIn("  ✓ Standard runs: 3 agent sessions per child\n", output)

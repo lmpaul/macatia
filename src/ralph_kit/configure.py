@@ -5,6 +5,7 @@ from __future__ import annotations
 import dataclasses
 import functools
 import pathlib
+import re
 import shlex
 import shutil
 from collections.abc import Callable
@@ -403,13 +404,10 @@ def _edit_caffeinate_by_default(prompter: Prompter, config: RalphConfig, state: 
     return dataclasses.replace(config, caffeinate_by_default=not enabled)
 
 
-def _limit_error(key: str, value: str) -> str | None:
-    """The loading validation, for an answer that should be an integer."""
-    try:
-        limit: int | str = int(value)
-    except ValueError:
-        limit = value
-    return child_session_limit_error(key, limit)
+def _child_session_limit_error(key: str, value: str) -> str | None:
+    """Why the answer cannot be key's child session limit, as loading the file would say."""
+    # Digits only, as TOML writes an integer: int() would also take "+5" or "5_0".
+    return child_session_limit_error(key, int(value) if re.fullmatch(r"[0-9]+", value) else value)
 
 
 def _edit_child_session_limits(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
@@ -431,7 +429,7 @@ def _edit_child_session_limits(prompter: Prompter, config: RalphConfig, state: E
         value = int(prompter.text(
             f"Most agent sessions one child may receive in a {key} run",
             default=str(current),
-            validate=functools.partial(_limit_error, key),
+            validate=functools.partial(_child_session_limit_error, key),
         ))
         if value == current:
             continue
