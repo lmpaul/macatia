@@ -4869,6 +4869,7 @@ class RunTargetPickerTests(RunLevelTestCase):
             ("ralph-kit/issue-202", None),
             ("ralph-kit/issue-203", None),
             ("ralph-kit/issue-999", None),
+            ("ralph-kit/issue-0200", None),
             ("codex/issue-200", None),
         ):
             with self.subTest(branch=branch):

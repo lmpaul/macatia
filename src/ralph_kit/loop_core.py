@@ -3215,7 +3215,9 @@ def startable_run_targets(state: RunState) -> list[StartableRunTarget]:
 
 def choose_run_target(state: RunState) -> int | None:
     """The run target the person at the terminal picks among the startable run targets, or
-    None when there is none to offer. Ctrl-C in the picker stops the run as Stop does."""
+    None when there is none to offer. On the run branch of a listed issue, the picker
+    preselects that issue, and otherwise its first entry. Ctrl-C in the picker stops the
+    run as Stop does."""
     choose = state.adapters.choose_run_target
     assert choose is not None
     # The blocker checks of a standalone issue may retry their pull request lookups.
@@ -3224,14 +3226,9 @@ def choose_run_target(state: RunState) -> int | None:
         targets = startable_run_targets(state)
     if not targets:
         return None
-    # On the run branch of a listed issue, that issue is preselected; otherwise the first one is.
     numbers = {target.number for target in targets}
-    branch = state.branch or ""
-    suffix = branch.removeprefix(RUN_BRANCH_PREFIX)
-    preselected = (
-        int(suffix)
-        if branch.startswith(RUN_BRANCH_PREFIX) and suffix.isdecimal() and int(suffix) in numbers
-        else None
+    preselected = next(
+        (number for number in numbers if state.branch == f"{RUN_BRANCH_PREFIX}{number}"), None
     )
     try:
         chosen = choose(targets, preselected)
