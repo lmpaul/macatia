@@ -823,8 +823,8 @@ def start_run(
     """Start one run from its command-line `arguments`, with in-memory GitHub and sessions,
     from `cwd` or the repository root.
 
-    `confirm` answers the run's startup question, and `choose_run_target` picks among the
-    startable run targets, as a terminal would; None runs without a terminal. `terminal` makes the output a terminal, which gets the spinners.
+    `confirm` answers the run's startup question, and `choose_run_target` picks among
+    the startable run targets, as a terminal would; None runs without a terminal. `terminal` makes the output a terminal, which gets the spinners.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.

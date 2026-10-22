@@ -5,6 +5,11 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from .loop_core import StartableRunTarget
 
 
 USAGE = """usage: ralph-kit <command> [options]
@@ -96,7 +101,7 @@ def startup_choice_with_arrows(question: str, accept: str, *, accept_by_default:
     return arrow_select(question, [(choice, "") for choice in choices], choices[0]) == accept
 
 
-def run_target_with_arrows(targets, preselected: int | None) -> int:
+def run_target_with_arrows(targets: list[StartableRunTarget], preselected: int | None) -> int:
     """The number of the startable run target picked, `preselected` or the first one listed
     by default; Ctrl-C raises KeyboardInterrupt, which the run counts as Stop."""
     from .check import arrow_select

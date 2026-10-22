@@ -1638,7 +1638,7 @@ class StartupTests(StartupRejectionTestCase):
 
                 self.assert_rejected_at_startup(result, "must be a positive integer")
 
-    def test_without_a_run_target_or_a_terminal_the_run_asks_for_the_issue_before_reading_github(self):
+    def test_without_a_run_target_or_its_picker_the_run_asks_for_the_issue_before_reading_github(self):
         for name, confirm, terminal in (
             ("without a terminal", None, False),
             # Only the run target picker lets a run start without its run target.
@@ -4840,6 +4840,7 @@ class RunTargetPickerTests(RunLevelTestCase):
         github.add_issue(212, labels=("ready-for-human",))
         github.add_issue(213, blocked_by=[214])
         github.add_issue(214)
+        github.add_issue(217, blocked_by=[202])
         github.add_issue(200)
         github.issues[200]["title"] = "Add a cart"
         choose = ScriptedChoice(KeyboardInterrupt())
@@ -4853,6 +4854,7 @@ class RunTargetPickerTests(RunLevelTestCase):
             "#210  Issue 210  (parent · 0 ready children)",
             "#214  Issue 214  (standalone)",
             "#215  Issue 215  (standalone)",
+            "#217  Issue 217  (standalone)",
         ]])
         self.assertEqual(choose.preselected, [None])
 
