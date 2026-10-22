@@ -22,6 +22,7 @@ from ralph_kit import check, cli, loop, loop_core
 from ralph_kit.commands import RalphError
 from run_support import (
     BRANCH,
+    REPOSITORY,
     TRUSTED_LOGIN,
     CommitPull,
     EngineResult,
@@ -1162,6 +1163,10 @@ class RunUsageCommandLineTests(unittest.TestCase):
             "[ISSUE [RUN_BUDGET]]\n",
             stdout.getvalue(),
         )
+        self.assertIn(
+            "Without ISSUE, at a terminal, offers the startable run targets to choose from.\n",
+            stdout.getvalue(),
+        )
 
     def test_run_usage_names_the_issue_and_run_budget(self):
         error = self.usage_error("abc")
@@ -1178,7 +1183,8 @@ class RunUsageCommandLineTests(unittest.TestCase):
 class StartupChoiceCommandLineTests(unittest.TestCase):
     """`ralph-kit run` asks the startup question with the arrow keys only in a terminal."""
 
-    def confirm_passed(self, *, stdin_tty, stdout_tty, review=False):
+    def adapters_passed(self, *, stdin_tty, stdout_tty, review=False):
+        """The startup choice and run target picker `ralph-kit run` passes to the run."""
         with (
             mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
             mock.patch.object(sys.stdout, "isatty", return_value=stdout_tty),
@@ -1186,18 +1192,51 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
         ):
             self.assertEqual(cli.main(["run", *(["--review"] if review else []), "5"]), 0)
-        return run.call_args.kwargs["confirm"]
+        return run.call_args.kwargs["confirm"], run.call_args.kwargs["choose_run_target"]
 
     def test_both_terminals_get_the_arrow_key_selector(self):
         for review in (False, True):
             with self.subTest(review=review):
-                confirm = self.confirm_passed(stdin_tty=True, stdout_tty=True, review=review)
-                self.assertIs(confirm, cli.startup_choice_with_arrows)
+                self.assertEqual(
+                    self.adapters_passed(stdin_tty=True, stdout_tty=True, review=review),
+                    (cli.startup_choice_with_arrows, cli.run_target_with_arrows),
+                )
 
     def test_without_both_terminals_there_is_no_selector(self):
         for stdin_tty, stdout_tty in ((False, True), (True, False), (False, False)):
             with self.subTest(stdin_tty=stdin_tty, stdout_tty=stdout_tty):
-                self.assertIsNone(self.confirm_passed(stdin_tty=stdin_tty, stdout_tty=stdout_tty))
+                self.assertEqual(
+                    self.adapters_passed(stdin_tty=stdin_tty, stdout_tty=stdout_tty), (None, None)
+                )
+
+    def test_run_target_selector_offers_the_entries_and_returns_the_picked_number(self):
+        targets = [
+            loop_core.StartableRunTarget(12, "Add a cart", 3),
+            loop_core.StartableRunTarget(20, "Fix login", None),
+        ]
+        for preselected, default in ((None, "#12  Add a cart  (parent · 3 ready children)"),
+                                     (20, "#20  Fix login  (standalone)")):
+            with (
+                self.subTest(preselected=preselected),
+                mock.patch.object(
+                    check, "arrow_select", return_value="#20  Fix login  (standalone)"
+                ) as select,
+            ):
+                self.assertEqual(cli.run_target_with_arrows(targets, preselected), 20)
+                select.assert_called_once_with(
+                    "Which run target should Ralph run?",
+                    [("#12  Add a cart  (parent · 3 ready children)", ""),
+                     ("#20  Fix login  (standalone)", "")],
+                    default,
+                )
+
+    def test_ctrl_c_in_the_run_target_selector_reaches_the_run(self):
+        targets = [loop_core.StartableRunTarget(12, "Add a cart", 1)]
+        with (
+            mock.patch.object(check, "arrow_select", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            cli.run_target_with_arrows(targets, None)
 
     def test_selector_offers_stop_by_default_and_resumes_only_on_resume(self):
         for choice, resume in (("Stop", False), ("Resume", True)):
@@ -1599,11 +1638,11 @@ class StartupTests(StartupRejectionTestCase):
 
                 self.assert_rejected_at_startup(result, "must be a positive integer")
 
-    def test_without_a_run_target_the_run_asks_for_the_issue_before_reading_github(self):
+    def test_without_a_run_target_or_a_terminal_the_run_asks_for_the_issue_before_reading_github(self):
         for name, confirm, terminal in (
             ("without a terminal", None, False),
-            # Until the run offers its startable run targets, a terminal changes nothing.
-            ("at a terminal", ScriptedConfirm(RESUME), True),
+            # Only the run target picker lets a run start without its run target.
+            ("without a run target picker", ScriptedConfirm(RESUME), True),
         ):
             for flags in ((), ("--review",), ("--no-review", "--caffeinate")):
                 with self.subTest(name, flags=flags):
@@ -4733,6 +4772,216 @@ class StandaloneRunBranchTests(BaseBranchTestCase):
         self.assertIn("is not ready for an agent: labelled needs-info", result.stderr)
         self.assertEqual(confirm.questions, [])
         self.assertEqual(self.current_branch(), "main")
+
+
+class ScriptedChoice:
+    """Picks among the startable run targets as the person at the terminal would.
+
+    `answer` is the issue number picked, or an exception the picker raises. `offered`
+    keeps the entries shown each time the picker opened, and `preselected` its preselection.
+    """
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.offered = []
+        self.preselected = []
+
+    def __call__(self, targets, preselected):
+        self.offered.append([target.label for target in targets])
+        self.preselected.append(preselected)
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
+DEADLOCKED_PARENT = 207
+UNTRUSTED_AUTHOR = "someone-else"
+
+
+class RunTargetPickerTests(RunLevelTestCase):
+    """A run started without a run target at a terminal offers the startable run targets."""
+
+    def start_without_run_target(self, choose, *results, flags=(), confirm=None):
+        self.sessions = ScriptedSessions(self.repository, *results)
+        self.sessions.before_session = self.before_session
+        return start_run(
+            self.repository, self.github, self.sessions, *flags,
+            confirm=confirm, choose_run_target=choose, terminal=True,
+        )
+
+    def add_deadlocked_parent(self, parent, first, second):
+        """A parent whose two ready children each wait on the other."""
+        self.github.add_issue(parent)
+        self.github.add_issue(first, parent=parent, blocked_by=[second])
+        self.github.add_issue(second, parent=parent, blocked_by=[first])
+
+    def assert_nothing_changed(self, result):
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(self.github.comments(PARENT), [])
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+        self.assertIsNone(self.github.pull_request())
+        with self.assertRaises(subprocess.CalledProcessError):
+            self.repository.pushed_head()
+
+    def test_offers_only_the_startable_run_targets_by_ascending_number(self):
+        github = self.github
+        github.add_issue(215, labels=("agent-working",))
+        github.add_issue(CHILD, parent=PARENT)
+        github.add_issue(201, author=UNTRUSTED_AUTHOR)
+        github.add_issue(202, state="closed")
+        github.add_issue(203, labels=("needs-info",))
+        github.add_issue(204, parent=203)
+        github.add_issue(205)
+        github.add_issue(206, parent=205, labels=("implemented",))
+        github.add_issue(216, parent=205, state="closed", labels=())
+        self.add_deadlocked_parent(DEADLOCKED_PARENT, 208, 209)
+        github.add_issue(210)
+        github.add_issue(211, parent=210, labels=("agent-working",))
+        github.add_issue(212, labels=("ready-for-human",))
+        github.add_issue(213, blocked_by=[214])
+        github.add_issue(214)
+        github.add_issue(200)
+        github.issues[200]["title"] = "Add a cart"
+        choose = ScriptedChoice(KeyboardInterrupt())
+
+        self.start_without_run_target(choose)
+
+        self.assertEqual(choose.offered, [[
+            f"#{PARENT}  Issue {PARENT}  (parent · 1 ready children)",
+            "#200  Add a cart  (standalone)",
+            f"#{DEADLOCKED_PARENT}  Issue {DEADLOCKED_PARENT}  (parent · 2 ready children)",
+            "#210  Issue 210  (parent · 0 ready children)",
+            "#214  Issue 214  (standalone)",
+            "#215  Issue 215  (standalone)",
+        ]])
+        self.assertEqual(choose.preselected, [None])
+
+    def test_picking_an_issue_runs_it_as_if_it_was_passed(self):
+        git(self.repository.path, "checkout", "main")
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(200, labels=("ready-for-human",))
+        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
+        confirm = ScriptedConfirm(CREATE)
+        choose = ScriptedChoice(PARENT)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+
+        result = self.start_without_run_target(
+            choose, *worst_case_child_results(loop_core.STANDARD_RUN), findings,
+            flags=("--no-caffeinate",), confirm=confirm,
+        )
+
+        self.assertEqual(choose.offered, [[f"#{PARENT}  Issue {PARENT}  (parent · 1 ready children)"]])
+        self.assertEqual(confirm.questions, [f"Create {RUN_BRANCH} from an up-to-date main?"])
+        self.assertEqual(git(self.repository.path, "branch", "--show-current"), RUN_BRANCH)
+        self.assertEqual(result.exit_code, 1)
+        # The default run budget counts the ready children, as for `ralph-kit run 191`.
+        self.assertEqual(self.session_children(), [CHILD] * 4 + [READY_FOR_HUMAN_CHILD])
+        self.assertIn("run budget exhausted before issue correction", result.stderr)
+        self.assertIn(
+            f"then run `ralph-kit run --no-caffeinate {PARENT}` again; "
+            "each run starts with a fresh run budget.",
+            self.github.comments(PARENT)[-1],
+        )
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_a_parent_in_dependency_deadlock_is_offered_then_reported_as_a_deadlock(self):
+        reported = {}
+        for name in ("explicit", "picked"):
+            with self.subTest(name):
+                self.github = FakeGitHub()
+                self.add_deadlocked_parent(DEADLOCKED_PARENT, 208, 209)
+                choose = ScriptedChoice(DEADLOCKED_PARENT)
+                self.sessions = ScriptedSessions(self.repository)
+
+                result = start_run(
+                    self.repository, self.github, self.sessions,
+                    *([DEADLOCKED_PARENT] if name == "explicit" else []),
+                    choose_run_target=choose, terminal=True,
+                )
+
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn("Stop reason: parent issue has a dependency deadlock", result.stderr)
+                self.assertEqual(self.sessions.requests, [])
+                reported[name] = (
+                    result.stderr[result.stderr.index("Stop reason:"):],
+                    {child: self.github.labels(child) for child in (208, 209)},
+                )
+                if name == "picked":
+                    self.assertEqual(choose.offered, [[
+                        f"#{DEADLOCKED_PARENT}  Issue {DEADLOCKED_PARENT}  (parent · 2 ready children)"
+                    ]])
+        self.assertEqual(reported["picked"], reported["explicit"])
+
+    def test_ctrl_c_in_the_picker_stops_with_nothing_changed(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        choose = ScriptedChoice(KeyboardInterrupt())
+
+        result = self.start_without_run_target(choose)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Ralph stopped: no run target was chosen", result.stderr)
+        self.assertEqual(len(choose.offered), 1)
+        self.assert_nothing_changed(result)
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+
+    def test_without_a_startable_run_target_the_run_says_so_without_the_picker(self):
+        # The parent has nothing left to do, and the standalone issue is held back by triage.
+        self.github.add_issue(CHILD, parent=PARENT, state="closed", labels=())
+        self.github.add_issue(200, labels=("needs-info",))
+        choose = ScriptedChoice(PARENT)
+
+        result = self.start_without_run_target(choose)
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertIn(f"No run target in {REPOSITORY} is ready for an agent.", result.stdout)
+        self.assertEqual(choose.offered, [])
+        self.assert_nothing_changed(result)
+
+    def test_a_github_failure_during_the_listing_stops_the_run_with_its_reason(self):
+        for name, fail, reason in (
+            ("listing", lambda: setattr(
+                self.github, "open_issues_error", RalphError("command failed (gh api): HTTP 502")
+            ), "command failed (gh api): HTTP 502"),
+            ("parent lookup", lambda: self.github.parent_error.update(
+                {PARENT: RalphError("command failed (gh api parent): HTTP 500")}
+            ), "command failed (gh api parent): HTTP 500"),
+        ):
+            with self.subTest(name):
+                self.new_run()
+                self.github.add_issue(CHILD, parent=PARENT)
+                fail()
+                choose = ScriptedChoice(PARENT)
+
+                result = self.start_without_run_target(choose)
+
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn(f"Ralph stopped: {reason}", result.stderr)
+                self.assertEqual(choose.offered, [])
+                self.assert_nothing_changed(result)
+
+    def test_an_explicit_run_target_never_opens_the_picker(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        for issue, reason in (
+            (CHILD, f"issue #{CHILD} is a sub-issue of #{PARENT}: run #{PARENT} instead"),
+            (PARENT, None),
+        ):
+            with self.subTest(issue=issue):
+                choose = ScriptedChoice(PARENT)
+                self.sessions = ScriptedSessions(
+                    self.repository, *passing_child_results(loop_core.STANDARD_RUN)
+                )
+
+                result = start_run(
+                    self.repository, self.github, self.sessions, issue,
+                    choose_run_target=choose, terminal=True,
+                )
+
+                self.assertEqual(choose.offered, [])
+                if reason is None:
+                    self.assert_completed(result, sessions=1)
+                else:
+                    self.assertEqual(result.exit_code, 1)
+                    self.assertIn(f"Ralph stopped: {reason}", result.stderr)
 
 
 if __name__ == "__main__":

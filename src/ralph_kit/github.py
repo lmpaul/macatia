@@ -43,6 +43,29 @@ def merged_pull_requests_into(base: str, pulls: list[dict[str, Any]]) -> list[Me
     return merged
 
 
+def open_issues_from_listing(items: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The issues of a REST issue listing, pull requests left out, read as `GitHub.issue`
+    reads an issue: number, title, state, labels, and author."""
+    issues = []
+    for item in items:
+        if "pull_request" in item:
+            continue
+        number = item.get("number")
+        if not isinstance(number, int):
+            raise RalphError(f"GitHub listed an issue without a number: {item!r}")
+        issues.append({
+            "number": number,
+            "title": str(item.get("title", "")),
+            "state": str(item.get("state", "")).upper(),
+            "labels": [
+                {"name": label.get("name") if isinstance(label, dict) else label}
+                for label in item.get("labels", [])
+            ],
+            "author": {"login": (item.get("user") or {}).get("login")},
+        })
+    return issues
+
+
 # GitHub's answer to a parent lookup of an issue that is not a sub-issue.
 NO_PARENT_MESSAGE = "No parent issue found"
 
@@ -119,6 +142,12 @@ class GitHub:
             self.repository,
             "--json",
             "number,title,body,state,labels,author,comments,updatedAt",
+        )
+
+    def open_issues(self) -> list[dict[str, Any]]:
+        """Every open issue of the repository, without pull requests, across all pages."""
+        return open_issues_from_listing(
+            self._list(f"repos/{self.repository}/issues?state=open&per_page=100")
         )
 
     def sub_issues(self, parent: int) -> list[dict[str, Any]]:

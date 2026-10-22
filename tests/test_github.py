@@ -5,12 +5,13 @@ import pathlib
 import subprocess
 import sys
 import unittest
+from unittest import mock
 
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from ralph_kit.commands import RalphError  # noqa: E402
-from ralph_kit.github import parent_from_lookup  # noqa: E402
+from ralph_kit.github import GitHub, parent_from_lookup  # noqa: E402
 
 
 ARGUMENTS = ["gh", "api", "repos/lmpaul/ralph-kit/issues/90/parent"]
@@ -58,6 +59,65 @@ class ParentLookupTests(unittest.TestCase):
         for body in ("not json", {"message": "ok"}, [], None):
             with self.subTest(body=body), self.assertRaises(RalphError):
                 parent_from_lookup(answer(0, body))
+
+
+def listed_issue(number, *, login="lmpaul", labels=("ready-for-agent",), **fields):
+    """An issue as GitHub's REST issue listing returns it."""
+    return {
+        "number": number,
+        "title": f"Issue {number}",
+        "state": "open",
+        "labels": [{"name": label, "color": "ededed"} for label in labels],
+        "user": {"login": login},
+        "body": "Unread.",
+        **fields,
+    }
+
+
+class OpenIssuesTests(unittest.TestCase):
+    def open_issues(self, pages):
+        github = GitHub(pathlib.Path("/repository"), "lmpaul/ralph-kit")
+        with mock.patch("ralph_kit.github.command") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, json.dumps(pages), "")
+            issues = github.open_issues()
+        command.assert_called_once_with(
+            pathlib.Path("/repository"),
+            [
+                "gh", "api", "repos/lmpaul/ralph-kit/issues?state=open&per_page=100",
+                "--paginate", "--slurp",
+            ],
+            check=True,
+        )
+        return issues
+
+    def test_every_page_of_open_issues_is_read_without_pull_requests(self):
+        pages = [
+            [listed_issue(12), listed_issue(13, pull_request={"url": "https://api.github.com/pulls/13"})],
+            [listed_issue(14, login="someone", labels=("needs-info", "agent-working"))],
+        ]
+
+        self.assertEqual(
+            self.open_issues(pages),
+            [
+                {
+                    "number": 12, "title": "Issue 12", "state": "OPEN",
+                    "labels": [{"name": "ready-for-agent"}], "author": {"login": "lmpaul"},
+                },
+                {
+                    "number": 14, "title": "Issue 14", "state": "OPEN",
+                    "labels": [{"name": "needs-info"}, {"name": "agent-working"}],
+                    "author": {"login": "someone"},
+                },
+            ],
+        )
+
+    def test_no_open_issue_is_an_empty_list(self):
+        self.assertEqual(self.open_issues([[]]), [])
+
+    def test_an_issue_without_a_number_is_an_error(self):
+        for issue in ({"title": "No number"}, listed_issue("12")):
+            with self.subTest(issue=issue), self.assertRaises(RalphError):
+                self.open_issues([[issue]])
 
 
 if __name__ == "__main__":
