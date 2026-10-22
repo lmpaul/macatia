@@ -454,6 +454,11 @@ class InitTests(unittest.TestCase):
         self.assertNotIn("work-started", config.triage_labels)
         self.assertNotIn("work-started", config.lifecycle_labels)
 
+    def test_configuration_declares_the_standalone_marker_outside_triage_and_lifecycle(self):
+        config = self.run_init()
+        self.assertNotIn("standalone", config.triage_labels)
+        self.assertNotIn("standalone", config.lifecycle_labels)
+
     def test_labels_are_kept_for_later(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[]])
         self.run_init(answers=[""] * 8 + ["2"])

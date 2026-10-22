@@ -60,7 +60,7 @@ LABEL_DESCRIPTIONS = {
     "human_review": "Ralph stopped; a human must review",
     "implemented": "Implemented by Ralph",
     "work_started": "Ralph has started work on this parent",
-    "standalone": "Ralph ran on this issue as a standalone issue",
+    "standalone": "Ralph has started work on this standalone issue",
 }
 ERRORS = (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, ImportError, SyntaxError)
 # Older gh prints an empty job log, with success, when the run's log archive has no step logs.

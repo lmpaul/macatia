@@ -447,9 +447,10 @@ infrastructure retries, then stops the run.
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, the lifecycle labels `ready_for_agent`,
   `agent_working`, `human_review`, and `implemented`, the parent-only
-  `work_started`, and `standalone`. `agent_working` (`agent-working` by default) marks the child a
-  run is working on; only Ralph sets it. `work_started` (`work-started` by
-  default) marks a parent on which Ralph has started work; it is informational
+  `work_started`, and the standalone marker `standalone`. `agent_working`
+  (`agent-working` by default) marks the child a run is working on; only Ralph
+  sets it. `work_started` (`work-started` by default) marks a parent on which
+  Ralph has started work; it is informational
   only, and Ralph never reads it to decide anything: the first child cycle of a
   run adds it in place of `ready-for-agent`, parent completion removes it, and
   nothing else cleans it up (see [the loop](#the-loop-run-and-run---review)).

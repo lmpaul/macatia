@@ -80,7 +80,7 @@ class UpdateLabelsTests(unittest.TestCase):
         self.assertIn('✓ ralph.toml: added standalone = "standalone"', output)
         self.assertIn(
             ("gh", "label", "create", "standalone", "--repo", "lmpaul/buyr",
-             "--description", "Ralph ran on this issue as a standalone issue"),
+             "--description", "Ralph has started work on this standalone issue"),
             self.commands,
         )
         self.assertIn("✓ standalone created", output)

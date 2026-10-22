@@ -289,7 +289,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("! Label roles ralph.toml leaves out work_started, so work-started is used", output)
         self.assertIn("→ ralph-kit update-labels writes it", output)
 
-    def test_missing_standalone_label_is_reported_and_created_once_confirmed(self):
+    def test_missing_standalone_marker_is_reported_and_created_once_confirmed(self):
         self.labels.remove("standalone")
         self.assertEqual(self.run_check()[0], 1)
         code, output = self.run_check(confirm=lambda question: True)
@@ -297,7 +297,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ standalone created", output)
         self.assertIn(
             ("gh", "label", "create", "standalone", "--repo", "example/project",
-             "--description", "Ralph ran on this issue as a standalone issue"),
+             "--description", "Ralph has started work on this standalone issue"),
             self.commands,
         )
 
