@@ -389,6 +389,24 @@ class ChildCycleContext:
 
 
 @dataclass(frozen=True)
+class StartableRunTarget:
+    """A startable run target as the run target picker offers it."""
+
+    number: int
+    title: str
+    # The ready children of a parent issue; None for a standalone issue.
+    ready_children: int | None
+
+    @property
+    def label(self) -> str:
+        kind = (
+            "standalone" if self.ready_children is None
+            else f"parent · {self.ready_children} ready children"
+        )
+        return f"#{self.number}  {self.title}  ({kind})"
+
+
+@dataclass(frozen=True)
 class RunAdapters:
     """Everything a run reaches outside its process, except Git.
 
@@ -411,6 +429,11 @@ class RunAdapters:
     # (question, accepting label, accept_by_default=) -> True on the accepting choice.
     # None when Ralph is not in a terminal, which always stops.
     confirm: Callable[..., bool] | None = None
+    # Picks the run target of a run started without one:
+    # (startable run targets by ascending number, preselected number or None) -> the
+    # chosen number. Ctrl-C raises KeyboardInterrupt, which the run counts as Stop.
+    # None when Ralph is not in a terminal: the run then needs its run target.
+    choose_run_target: Callable[[list[StartableRunTarget], int | None], int] | None = None
     # Holds the sleep lock for the duration of the block, for `--caffeinate` or
     # `caffeinate_by_default`.
     keep_awake: Callable[[], contextlib.AbstractContextManager[None]] = keep_awake
@@ -1135,10 +1158,13 @@ def positive_integer(value: str) -> int:
     return parsed
 
 
-def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namespace:
+def parse_arguments(
+    argv: list[str], prog: str | None = None, *, issue_required: bool = True
+) -> argparse.Namespace:
     """Read the run's arguments; `--review` and `--no-review`, accepted in any position, are
     `review` and `no_review`, and together a usage error. So are `--caffeinate` and
-    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`."""
+    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`. Without the run target
+    `ISSUE`, `parent_issue` is None, a usage error when `issue_required`."""
     flags = [flag for flag in ("--review", "--no-review") if flag in argv]
     sleep_lock_flags = [flag for flag in ("--caffeinate", "--no-caffeinate") if flag in argv]
     read = {*flags, *sleep_lock_flags}
@@ -1146,6 +1172,7 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
     parser = argparse.ArgumentParser(
         prog=None if prog is None else " ".join([prog, *flags]),
         description=(REVIEWED_RUN if "--review" in flags else STANDARD_RUN).description,
+        usage="%(prog)s [-h] [--config CONFIG] [ISSUE [RUN_BUDGET]]",
     )
     parser.add_argument(
         "--config",
@@ -1153,13 +1180,14 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
         default=DEFAULT_CONFIG_PATH,
         help="repository-specific Ralph TOML configuration",
     )
-    parser.add_argument("parent_issue", type=positive_integer)
-    parser.add_argument("run_budget", nargs="?", type=positive_integer)
+    # A single number is always the run target: a run budget needs an explicit run target.
+    parser.add_argument("parent_issue", nargs="?", type=positive_integer, metavar="ISSUE")
+    parser.add_argument("run_budget", nargs="?", type=positive_integer, metavar="RUN_BUDGET")
     if len(flags) == 2:
         parser.error("argument --no-review: not allowed with argument --review")
     if len(sleep_lock_flags) == 2:
         parser.error("argument --no-caffeinate: not allowed with argument --caffeinate")
-    return parser.parse_args(
+    arguments = parser.parse_args(
         argv,
         argparse.Namespace(
             review="--review" in flags,
@@ -1168,6 +1196,9 @@ def parse_arguments(argv: list[str], prog: str | None = None) -> argparse.Namesp
             no_caffeinate="--no-caffeinate" in sleep_lock_flags,
         ),
     )
+    if arguments.parent_issue is None and issue_required:
+        parser.error("pass the issue to run: ralph-kit run ISSUE")
+    return arguments
 
 
 def load_quality_module(path: pathlib.Path):
@@ -1939,31 +1970,45 @@ def recover_published_child(state: RunState, children: Iterable[dict[str, Any]])
     return False
 
 
+def trusted_issue_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
+    if author_login(issue) in state.config.trusted_authors:
+        return None
+    return f"issue #{issue['number']} must be authored by one of: " + ", ".join(
+        f"@{author}" for author in sorted(state.config.trusted_authors)
+    )
+
+
 def require_trusted_issue(state: RunState, issue: dict[str, Any]) -> None:
-    if author_login(issue) not in state.config.trusted_authors:
-        raise RalphError(
-            f"issue #{issue['number']} must be authored by one of: "
-            + ", ".join(f"@{author}" for author in sorted(state.config.trusted_authors))
-        )
+    if refusal := trusted_issue_refusal(state, issue):
+        raise RalphError(refusal)
+
+
+def run_target_refusal(state: RunState, issue_number: int) -> str | None:
+    """Why the issue is not a run target: it is a sub-issue of another issue, whatever that
+    issue's state. A failed lookup raises."""
+    parent = state.github.parent(issue_number)
+    if parent is None:
+        return None
+    return (
+        f"issue #{issue_number} is a sub-issue of #{parent['number']}: "
+        f"run #{parent['number']} instead"
+    )
 
 
 def require_run_target(state: RunState, issue_number: int) -> None:
-    """The issue is not a sub-issue of another issue, whatever that issue's state."""
-    parent = state.github.parent(issue_number)
-    if parent is not None:
-        raise RalphError(
-            f"issue #{issue_number} is a sub-issue of #{parent['number']}: "
-            f"run #{parent['number']} instead"
-        )
+    if refusal := run_target_refusal(state, issue_number):
+        raise RalphError(refusal)
 
 
-def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None:
-    """The standalone issue is trusted, open, ready for an agent or left agent working by an
-    earlier run, and waits on no unsatisfied blocker, as its child cycle would require."""
-    require_trusted_issue(state, issue)
+def standalone_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
+    """Why a run would not start on the standalone issue: it must be trusted, open, ready for
+    an agent or left agent working by an earlier run, and wait on no unsatisfied blocker, as
+    its child cycle would require. A failed lookup raises."""
+    if refusal := trusted_issue_refusal(state, issue):
+        return refusal
     number = int(issue["number"])
     if str(issue.get("state", "")).upper() != "OPEN":
-        raise RalphError(f"standalone issue #{number} is closed")
+        return f"standalone issue #{number} is closed"
     if not (child_is_ready(state, issue) or child_is_agent_working(state, issue)):
         ready_label = configured_label(state, "ready_for_agent")
         other_labels = sorted(
@@ -1974,30 +2019,43 @@ def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None
             f"labelled {', '.join(other_labels)}" if other_labels
             else f"not labelled {ready_label}"
         )
-        raise RalphError(f"standalone issue #{number} is not ready for an agent: {reason}")
+        return f"standalone issue #{number} is not ready for an agent: {reason}"
     # A failed lookup stops the run with its own reason, not as an unsatisfied blocker.
     if unsatisfied := [
         f"#{blocker['number']}"
         for blocker in state.github.blockers(number)
         if not blocker_is_satisfied(state, blocker)
     ]:
-        raise RalphError(
+        return (
             f"standalone issue #{number} waits on {', '.join(unsatisfied)}, neither closed "
             "nor implemented on this branch"
         )
+    return None
 
 
-def require_startable_parent(state: RunState, parent: dict[str, Any]) -> None:
-    """The parent is trusted and carries no triage label other than ready-for-agent."""
-    require_trusted_issue(state, parent)
+def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None:
+    if refusal := standalone_refusal(state, issue):
+        raise RalphError(refusal)
+
+
+def parent_refusal(state: RunState, parent: dict[str, Any]) -> str | None:
+    """Why a run would not start on the parent: it must be trusted and carry no triage label
+    other than ready-for-agent."""
+    if refusal := trusted_issue_refusal(state, parent):
+        return refusal
     blocking = labels(parent) & (
         state.config.triage_labels - {configured_label(state, "ready_for_agent")}
     )
     if blocking:
-        raise RalphError(
-            f"parent issue #{parent['number']} is held back by triage: "
-            + ", ".join(sorted(blocking))
+        return f"parent issue #{parent['number']} is held back by triage: " + ", ".join(
+            sorted(blocking)
         )
+    return None
+
+
+def require_startable_parent(state: RunState, parent: dict[str, Any]) -> None:
+    if refusal := parent_refusal(state, parent):
+        raise RalphError(refusal)
 
 
 def parse_agent_result(path: pathlib.Path) -> dict[str, Any]:
@@ -3030,10 +3088,18 @@ def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
     )
 
 
-def real_run_adapters(confirm: Callable[[str], bool] | None = None) -> RunAdapters:
+def real_run_adapters(
+    confirm: Callable[..., bool] | None = None,
+    choose_run_target: Callable[[list[StartableRunTarget], int | None], int] | None = None,
+) -> RunAdapters:
     """The run adapters `ralph-kit run` uses: the `gh` CLI, the real child cycle adapters, and
-    the command line's confirm, None outside a terminal."""
-    return RunAdapters(github=GitHub, child_cycle=real_child_cycle_adapters, confirm=confirm)
+    the command line's confirm and run target picker, None outside a terminal."""
+    return RunAdapters(
+        github=GitHub,
+        child_cycle=real_child_cycle_adapters,
+        confirm=confirm,
+        choose_run_target=choose_run_target,
+    )
 
 
 def main(
@@ -3041,18 +3107,12 @@ def main(
 ) -> int:
     """Start the run: read its arguments and configuration, take the sleep lock it asks for,
     select its mode, read its quality policy, then run its children."""
-    arguments = parse_arguments(sys.argv[1:] if argv is None else argv, prog)
-    # The run budget is left out: each run starts with a fresh one.
-    state.rerun_command = shlex.join([
-        "ralph-kit",
-        "run",
-        *(["--review"] if arguments.review else []),
-        *(["--no-review"] if arguments.no_review else []),
-        *(["--caffeinate"] if arguments.caffeinate else []),
-        *(["--no-caffeinate"] if arguments.no_caffeinate else []),
-        *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
-        str(arguments.parent_issue),
-    ])
+    arguments = parse_arguments(
+        sys.argv[1:] if argv is None else argv,
+        prog,
+        issue_required=state.adapters.choose_run_target is None,
+    )
+    state.rerun_command = rerun_command(arguments, arguments.parent_issue)
     require_repository_root(state)
     config_path = arguments.config
     if not config_path.is_absolute():
@@ -3100,7 +3160,83 @@ def main(
             raise RalphError(f"invalid Ralph quality policy: {error}") from error
     if not configuration.verification.has_automated_verification:
         print(mode.unverified_warning, flush=True)
-    return run_children(state, arguments.parent_issue, arguments.run_budget, quality, manifest)
+    parent_issue = arguments.parent_issue
+    if parent_issue is None:
+        parent_issue = choose_run_target(state)
+        if parent_issue is None:
+            print(f"No run target in {configuration.repository} is ready for an agent.", flush=True)
+            return 0
+        state.rerun_command = rerun_command(arguments, parent_issue)
+    return run_children(state, parent_issue, arguments.run_budget, quality, manifest)
+
+
+def rerun_command(arguments: argparse.Namespace, parent_issue: int | None) -> str:
+    """How to start the run again on `parent_issue`; the run budget is left out, since each
+    run starts with a fresh one."""
+    return shlex.join([
+        "ralph-kit",
+        "run",
+        *(["--review"] if arguments.review else []),
+        *(["--no-review"] if arguments.no_review else []),
+        *(["--caffeinate"] if arguments.caffeinate else []),
+        *(["--no-caffeinate"] if arguments.no_caffeinate else []),
+        *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
+        *([str(parent_issue)] if parent_issue is not None else []),
+    ])
+
+
+def startable_run_targets(state: RunState) -> list[StartableRunTarget]:
+    """The startable run targets of the repository, by ascending number.
+
+    They pass the refusals of the run's startup checks; a refused issue is left out
+    without an error, but a failed GitHub lookup raises. Open issues are narrowed to
+    trusted ones before any lookup of their own.
+    """
+    targets = []
+    for issue in sorted(state.github.open_issues(), key=lambda issue: int(issue["number"])):
+        number = int(issue["number"])
+        if (
+            str(issue.get("state", "")).upper() != "OPEN"
+            or trusted_issue_refusal(state, issue)
+            or run_target_refusal(state, number)
+        ):
+            continue
+        title = str(issue.get("title", ""))
+        if children := state.github.sub_issues(number):
+            ready = sum(child_is_ready(state, child) for child in children)
+            if parent_refusal(state, issue) is None and (
+                ready or any(child_is_agent_working(state, child) for child in children)
+            ):
+                targets.append(StartableRunTarget(number, title, ready))
+        elif standalone_refusal(state, issue) is None:
+            targets.append(StartableRunTarget(number, title, None))
+    return targets
+
+
+def choose_run_target(state: RunState) -> int | None:
+    """The run target the person at the terminal picks among the startable run targets, or
+    None when there is none to offer. On the run branch of a listed issue, the picker
+    preselects that issue, and otherwise its first entry. Ctrl-C in the picker stops the
+    run as Stop does."""
+    choose = state.adapters.choose_run_target
+    assert choose is not None
+    # The blocker checks of a standalone issue may retry their pull request lookups.
+    state.summary = RunSummary(infrastructure=InfrastructureRetryTracker(state))
+    with spinner("Reading the startable run targets…"):
+        targets = startable_run_targets(state)
+    if not targets:
+        return None
+    numbers = {target.number for target in targets}
+    preselected = next(
+        (number for number in numbers if state.branch == f"{RUN_BRANCH_PREFIX}{number}"), None
+    )
+    try:
+        chosen = choose(targets, preselected)
+    except KeyboardInterrupt:
+        raise RalphError("no run target was chosen") from None
+    if chosen not in numbers:
+        raise RalphError(f"#{chosen} is not one of the startable run targets")
+    return chosen
 
 
 def run_children(

@@ -5,13 +5,20 @@ from __future__ import annotations
 import argparse
 import pathlib
 import sys
+from typing import TYPE_CHECKING
+
+
+if TYPE_CHECKING:
+    from .loop_core import StartableRunTarget
 
 
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] PARENT_ISSUE [RUN_BUDGET]
-      Standard run: implement the children of PARENT_ISSUE, with at most RUN_BUDGET agent sessions.
+  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] [ISSUE [RUN_BUDGET]]
+      Standard run: implement the children of a parent ISSUE, or a standalone ISSUE,
+      with at most RUN_BUDGET agent sessions; a RUN_BUDGET needs an ISSUE before it.
+      Without ISSUE, at a terminal, offers the startable run targets to choose from.
       --review starts a reviewed run, which adds an independent review session per child.
       --no-review starts a standard run, even when review_by_default = true in the configuration.
       --caffeinate keeps the machine from idle-sleeping until the run ends.
@@ -94,6 +101,19 @@ def startup_choice_with_arrows(question: str, accept: str, *, accept_by_default:
     return arrow_select(question, [(choice, "") for choice in choices], choices[0]) == accept
 
 
+def run_target_with_arrows(targets: list[StartableRunTarget], preselected: int | None) -> int:
+    """The number of the startable run target picked, `preselected` or the first one listed
+    by default; Ctrl-C raises KeyboardInterrupt, which the run counts as Stop."""
+    from .check import arrow_select
+
+    numbers = {target.label: target.number for target in targets}
+    default = next(
+        (target.label for target in targets if target.number == preselected), targets[0].label
+    )
+    picked = arrow_select("Which run target should Ralph run?", [(label, "") for label in numbers], default)
+    return numbers[picked]
+
+
 def yes_no_with_arrows(question: str) -> bool:
     """No (the default) or Yes; Ctrl-C raises KeyboardInterrupt."""
     from .check import arrow_select
@@ -121,8 +141,13 @@ def main(argv: list[str] | None = None) -> int:
     if command == "run":
         from . import loop
 
-        confirm = startup_choice_with_arrows if sys.stdin.isatty() and sys.stdout.isatty() else None
-        return loop.run(arguments, prog="ralph-kit run", confirm=confirm)
+        terminal = sys.stdin.isatty() and sys.stdout.isatty()
+        return loop.run(
+            arguments,
+            prog="ralph-kit run",
+            confirm=startup_choice_with_arrows if terminal else None,
+            choose_run_target=run_target_with_arrows if terminal else None,
+        )
     if command == "check":
         from . import check
 

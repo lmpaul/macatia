@@ -34,6 +34,7 @@ ralph-kit configure            # change sections of ./ralph.toml from a menu
 ralph-kit update-labels        # add the label roles ./ralph.toml leaves out, then their GitHub labels
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
+ralph-kit run                  # at a terminal, pick among the startable run targets
 ralph-kit run 123              # standard run: implement the children of parent issue #123
 ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
 ralph-kit run --review 123     # reviewed run: adds an independent review session per child

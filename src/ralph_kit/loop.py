@@ -10,6 +10,7 @@ from . import loop_core
 def run(
     argv: list[str] | None = None,
     prog: str | None = None,
-    confirm: Callable[[str], bool] | None = None,
+    confirm: Callable[..., bool] | None = None,
+    choose_run_target: Callable[[list[loop_core.StartableRunTarget], int | None], int] | None = None,
 ) -> int:
-    return loop_core.run(loop_core.real_run_adapters(confirm), argv, prog)
+    return loop_core.run(loop_core.real_run_adapters(confirm, choose_run_target), argv, prog)

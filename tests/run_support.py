@@ -340,6 +340,8 @@ class FakeGitHub:
     it, each a `CommitPull`, or to a `RalphError` its lookup raises;
     `pull_lookups` keeps each (base, SHA) asked.
     `opened_for` keeps the configured repository each run opened GitHub access for.
+    The open issues listing answers every open issue in the order they were added,
+    or raises `open_issues_error` when set.
     """
 
     def __init__(
@@ -383,6 +385,7 @@ class FakeGitHub:
         self.commit_pulls = {}
         self.pull_lookups = []
         self.opened_for = []
+        self.open_issues_error = None
 
     # Test setup and observation.
 
@@ -453,6 +456,13 @@ class FakeGitHub:
                 f"GraphQL: Could not resolve to an issue or pull request with the number of {number}."
             )
         return copy.deepcopy(self.issues[number])
+
+    def open_issues(self):
+        if self.open_issues_error is not None:
+            raise self.open_issues_error
+        return [
+            self.issue(number) for number, issue in self.issues.items() if issue["state"] == "OPEN"
+        ]
 
     def sub_issues(self, parent):
         return [self.issue(number) for number in self.children.get(parent, [])]
@@ -806,12 +816,15 @@ def start_mode_run(mode, repository, github, sessions, *arguments, **options):
     return start_run(repository, github, sessions, *review, *arguments, **options)
 
 
-def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None, terminal=False):
+def start_run(
+    repository, github, sessions, *arguments, cwd=None, confirm=None, choose_run_target=None,
+    terminal=False,
+):
     """Start one run from its command-line `arguments`, with in-memory GitHub and sessions,
     from `cwd` or the repository root.
 
-    `confirm` answers the run's startup question, as a terminal would; None runs
-    without a terminal. `terminal` makes the output a terminal, which gets the spinners.
+    `confirm` answers the run's startup question, and `choose_run_target` picks among
+    the startable run targets, as a terminal would; None runs without a terminal. `terminal` makes the output a terminal, which gets the spinners.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
@@ -847,6 +860,7 @@ def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None, 
             clock=lambda: sum(sleeps),
             run_engine=run_engine,
             confirm=confirm,
+            choose_run_target=choose_run_target,
             keep_awake=sleep_lock,
         )
     else:
@@ -856,6 +870,7 @@ def start_run(repository, github, sessions, *arguments, cwd=None, confirm=None, 
             sleep=sleeps.append,
             clock=lambda: sum(sleeps),
             confirm=confirm,
+            choose_run_target=choose_run_target,
             keep_awake=sleep_lock,
         )
     output = TerminalOutput if terminal else io.StringIO
