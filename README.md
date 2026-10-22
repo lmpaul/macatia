@@ -1,9 +1,10 @@
 # ralph-kit
 
 Ralph runs a loop of coding agents (Codex or Claude Code) over a parent GitHub
-issue, one runnable child (a GitHub sub-issue) at a time: implement, verify,
-correct, publish a draft PR. A human reviews and merges. The project vocabulary is
-defined in [GLOSSARY.md](GLOSSARY.md).
+issue, one runnable child (a GitHub sub-issue) at a time, or over a standalone
+issue on its own: implement, verify, correct, publish a draft PR. A human
+reviews and merges. The project vocabulary is defined in
+[GLOSSARY.md](GLOSSARY.md).
 
 `ralph-kit` is installed once per machine and run from any repository. Each
 repository only keeps its own `ralph.toml` (plus, when verification is enabled,
@@ -39,7 +40,7 @@ ralph-kit run --review 123     # reviewed run: adds an independent review sessio
 ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
-ralph-kit close 123            # parent closure: close #123's children, then #123 (asks first)
+ralph-kit close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
 ralph-kit close --yes 123      # same, without the confirmation
 ralph-kit close --force 123    # close despite failed checks, after typing 123
 ```
@@ -222,7 +223,7 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   covers `ralph-kit init` the same way, `tests/test_configure.py` covers
   `ralph-kit configure`, and `tests/test_update_labels.py` covers
   `ralph-kit update-labels`.
-- **Parent closure** (every check, the confirmation, the writes and resuming
+- **Closure** (every check, the confirmation, the writes and resuming
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
@@ -264,11 +265,57 @@ RALPH_LIVE=1 RALPH_LIVE_REFRESH=1 uv run python -m unittest discover -s tests -p
 
 ## The loop: `run` and `run --review`
 
-Each run executes the loop over the parent issue's runnable children.
+Each run executes the loop over the runnable children of its run target: a
+parent issue's sub-issues, or a standalone issue itself.
 `ralph-kit run` starts a standard run, with no review session.
 `ralph-kit run --review` starts a reviewed run: the same loop, plus a review
 session for each child once its local gates pass, repeated after every
 correction session that follows a review (issue, local gate, or CI).
+
+A run starts on a run target: an issue that is not a sub-issue of another
+issue, as GitHub's native sub-issue relationship records it. A run target with
+sub-issues is a parent issue, and its sub-issues are the children the run works
+through. At startup, before the run branch is offered and before anything is
+written on GitHub, Ralph asks GitHub for the issue's parent: an issue that has
+one is refused, whether or not it has sub-issues of its own and whatever the
+state of its parent, and the error names the parent to run instead
+(`issue #124 is a sub-issue of #123: run #123 instead`). Only GitHub's "No
+parent issue found" answer means the issue has no parent; any other failure of
+that lookup stops the run as an error.
+
+A run target without sub-issues is a standalone issue: the run's only child is
+the issue itself, and it goes through the same loop as any child (child cycle,
+corrections, review session in a reviewed run, implementation evidence,
+cumulative draft PR). At startup, before the run branch is offered and before
+anything is written on GitHub, a standalone issue must be authored by a trusted
+author, open, and a ready child: its only triage label and only lifecycle label
+`ready-for-agent`. An issue left `agent-working` by an interrupted run is also
+accepted and gets the same resume-or-stop choice, or recovery when its
+implementation evidence is already published, as a child. Every blocker must be
+satisfied as for a child: closed, or implemented with its work on the run's
+branch. Otherwise the run is refused with the reason, such as
+`standalone issue #42 is not ready for an agent: labelled needs-info` or
+`standalone issue #42 waits on #41, neither closed nor implemented on this branch`.
+A run on the base branch offers `ralph-kit/issue-<N>` as for a parent, and the
+default run budget counts the issue as one ready child (five sessions in a
+standard run, nine in a reviewed run). The draft PR is titled `Implement Ralph
+issue #N`, still requires a human merge and carries no closing keyword. Once
+the issue is implemented, it carries only the `implemented` lifecycle label and
+its implementation evidence, the PR is marked ready, and the terminal summary is
+published on the issue and the PR. Once the PR is merged, `ralph-kit close <N>`
+closes the issue (see [Closure](#closure-close)). There is no parent completion: no completion
+comment, no `human-review` handoff of the run target, and never `work-started`.
+A stop hands the issue to human review as it would a child; relabelled
+`ready-for-agent`, it resumes on the next run.
+
+Right after marking a standalone issue `agent-working`, once every start check
+has passed, Ralph also labels it with the standalone marker `standalone`, unless it already carries the
+label. The label is informational only: Ralph never reads it to decide
+anything, nothing removes it, and adding or removing it by hand changes nothing
+about a run. A refused issue never receives it, and an implemented issue or one
+handed to human review keeps it. Parent issues and their children never
+receive it. If the write fails, Ralph prints a warning, repeats it in the
+terminal summary, and the run continues.
 
 At startup, before anything is commented, labelled, pushed or run, the parent
 must be authored by a trusted author and must not be held back by triage: a
@@ -432,18 +479,24 @@ infrastructure retries, then stops the run.
 - `caffeinate_by_default` is optional (`false` when missing). `true` makes every
   run hold a sleep lock until it ends; `ralph-kit run --no-caffeinate` overrides
   it for one run.
-- `labels` maps Ralph's nine label roles to labels in the target
+- `labels` maps Ralph's ten label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, the lifecycle labels `ready_for_agent`,
-  `agent_working`, `human_review`, and `implemented`, and the parent-only
-  `work_started`. `agent_working` (`agent-working` by default) marks the child a
-  run is working on; only Ralph sets it. `work_started` (`work-started` by
-  default) marks a parent on which Ralph has started work; it is informational
+  `agent_working`, `human_review`, and `implemented`, the parent-only
+  `work_started`, and the standalone marker `standalone`. `agent_working`
+  (`agent-working` by default) marks the child a run is working on; only Ralph
+  sets it. `work_started` (`work-started` by default) marks a parent on which
+  Ralph has started work; it is informational
   only, and Ralph never reads it to decide anything: the first child cycle of a
   run adds it in place of `ready-for-agent`, parent completion removes it, and
   nothing else cleans it up (see [the loop](#the-loop-run-and-run---review)).
-  A `ralph.toml` written before `work_started` existed may leave it out and gets
-  `work-started`; `check` warns about it, and `ralph-kit update-labels` writes it. `init` and `check` offer to
+  `standalone` (`standalone` by default) is the standalone marker: it marks a
+  standalone issue, one with no parent and no sub-issues, on which a run has
+  started. Like `work_started`, it is neither a triage label nor a lifecycle
+  label, Ralph never reads it to decide anything, and nothing removes it.
+  A `ralph.toml` written before `work_started` or `standalone` existed may leave
+  them out and gets their default names; `check` warns about it, and
+  `ralph-kit update-labels` writes them. `init` and `check` offer to
   create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
@@ -682,11 +735,12 @@ leaving the labels as they are, so the next run asks about a child still
 caught: they release nothing and publish no interrupted summary. A signal
 ignored at launch, such as SIGHUP under `nohup`, stays ignored.
 
-## Parent closure: `close`
+## Closure: `close`
 
 Merging the cumulative draft PR closes nothing: its body carries no closing
-keyword. Once the work is merged, a parent closure closes the parent's open
-children, then the parent itself, as `completed`:
+keyword. Once the work is merged, a closure closes the run target as
+`completed`: a parent issue's open children, then the parent itself, or a
+standalone issue alone:
 
 ```sh
 ralph-kit close 123
@@ -698,8 +752,13 @@ ralph-kit close --force 123
 names, trusted authors) and needs nothing else from the checkout: no branch,
 clean worktree or Git remote. Before writing anything it checks that:
 
-- the parent is open (a closed parent prints `already closed` and exits 0);
-- the parent has sub-issues, carries `human-review` and is authored by a trusted author;
+- the issue is open (a closed issue prints `already closed` and exits 0);
+- the issue is a run target: an issue with a parent fails a check naming it
+  (`#124 is a sub-issue of #123`, `close #123 instead`), whatever the parent's
+  state and whether or not the issue has sub-issues of its own. As for a run,
+  only GitHub's "No parent issue found" answer means no parent; any other
+  failure of that lookup refuses and closes nothing;
+- a parent issue carries `human-review` and is authored by a trusted author;
 - each open child is authored by a trusted author and has `implemented` as its
   only lifecycle label. Closed children are ignored, whatever their labels;
 - each open child with trusted implementation evidence is merged: its verified
@@ -716,6 +775,17 @@ An open child labelled `implemented` without trusted implementation evidence
 (typically work a human did) does not fail a check: `close` lists it apart as
 `implemented without evidence: merge not verified`.
 
+A standalone issue, one with no parent and no sub-issues, is checked as the
+run's only child: authored by a trusted author, `implemented` as its only
+lifecycle label, and merged as proven by its trusted implementation evidence.
+It needs no `human-review` label, and its `standalone` marker is ignored.
+Unlike a child, it fails a check without trusted implementation evidence
+(`#N has no implementation evidence`), so an unmerged, unimplemented or
+unevidenced standalone issue is refused and only `--force` closes it. Once every
+check passes, `close` lists it, asks `Close #N?` (`--yes` skips it) and closes
+it alone, with one comment saying Ralph closed the standalone issue (and the
+pull request that merged it, if one proved it).
+
 A refusal lists every failed check at once and closes nothing. When every check
 passes, `close` lists the children and the parent it will close and asks one
 Yes/No question (No by default); `--yes` skips it, unless a child is implemented
@@ -730,12 +800,13 @@ closed (it is not repeated when only the parent was left open), and the closure 
 
 `--force` lets a human at a terminal close despite failed checks. Every check
 still runs and each failure is printed as a warning; instead of the Yes/No
-question, `close` asks you to type the parent number, and anything else closes
+question, `close` asks you to type the issue number, and anything else closes
 nothing. A forced closure is never unattended: without a terminal `--force` is
-refused, and `--force` with `--yes` is a usage error. On an issue with no
-sub-issues, `--force` closes only that issue. The parent comment says the
-closure was forced and lists the failed checks. A nonexistent issue is still
-refused, and a closed parent still prints `already closed` and exits 0.
+refused, and `--force` with `--yes` is a usage error. On a sub-issue with no
+sub-issues of its own, or a standalone issue, `--force` closes only that issue.
+The closure comment says the closure was forced and lists the failed checks. A
+nonexistent issue is still refused, and a closed issue still prints `already
+closed` and exits 0.
 
 Exit codes: 0 once closed or already closed; 1 for a refusal, a declined
 confirmation or a GitHub error; 2 for a usage error; 130 for Ctrl-C.

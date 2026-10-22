@@ -86,6 +86,12 @@ class LiveGitHubTests(unittest.TestCase):
         for blocker in blockers:
             self.assert_issue_summary(blocker)
 
+    def test_parent_lookup_finds_the_parent_of_a_child_and_none_for_the_parent(self):
+        child = self.github.sub_issues(PARENT)[0]["number"]
+
+        self.assertEqual(self.github.parent(child)["number"], PARENT)
+        self.assertIsNone(self.github.parent(PARENT))
+
     def test_issue_details_carry_the_trusted_author_labels_and_comment_authors(self):
         child = self.github.sub_issues(PARENT)[0]["number"]
 

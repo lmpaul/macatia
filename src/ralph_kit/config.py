@@ -20,11 +20,12 @@ DEFAULT_LABELS = {
     "human_review": "human-review",
     "implemented": "implemented",
     "work_started": "work-started",
+    "standalone": "standalone",
 }
 LABEL_KEYS = set(DEFAULT_LABELS)
 # Label roles added after the first release: a file written before one keeps loading with
 # the default name, which ralph-kit check then offers to create on GitHub.
-LATER_LABEL_DEFAULTS = {key: DEFAULT_LABELS[key] for key in ("work_started",)}
+LATER_LABEL_DEFAULTS = {key: DEFAULT_LABELS[key] for key in ("work_started", "standalone")}
 # Suggested for unknown keys, which usually come from a newer ralph-kit: the version only
 # changes on release, so a plain upgrade can keep an older build installed from Git.
 UPGRADE_COMMAND = "uv tool upgrade ralph-kit --reinstall"

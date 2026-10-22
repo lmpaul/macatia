@@ -312,7 +312,9 @@ class FakeGitHub:
     """GitHub as a run sees it, held in memory.
 
     Issues carry their state, labels, author, and comments; children and
-    blockers link them. Every check-runs request answers with the next scripted
+    blockers link them; an issue's parent is the issue it was added as a child
+    of, and `parent_error` maps an issue number to the error its parent lookup
+    raises instead. Every check-runs request answers with the next scripted
     CI round for the requested head; the last round repeats. A round is one
     conclusion for every check, or a mapping from check name to either a
     conclusion or the check-run fields to override (such as another commit's
@@ -357,6 +359,7 @@ class FakeGitHub:
         self.issues = {}
         self.children = {}
         self.blocked_by = {}
+        self.parent_error = {}
         self.pull_requests = []
         self.ci = list(ci)
         self.check_names = tuple(check_names)
@@ -453,6 +456,15 @@ class FakeGitHub:
 
     def sub_issues(self, parent):
         return [self.issue(number) for number in self.children.get(parent, [])]
+
+    def parent(self, number):
+        if number in self.parent_error:
+            raise self.parent_error[number]
+        self.issue(number)
+        for parent, children in self.children.items():
+            if number in children:
+                return self.issue(parent)
+        return None
 
     def blockers(self, child):
         return [self.issue(number) for number in self.blocked_by.get(child, [])]

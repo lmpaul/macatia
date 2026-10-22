@@ -14,6 +14,7 @@ agent_working = "agent-working"
 human_review = "human-review"
 implemented = "implemented"
 work_started = "work-started"
+standalone = "standalone"
 
 [models.implementation]
 engine = "codex"

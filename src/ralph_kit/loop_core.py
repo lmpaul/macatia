@@ -113,7 +113,8 @@ LONG_AGENT_SUMMARY = (
 STANDARD_RUN = RunMode(
     review=False,
     description=(
-        "Implement a parent issue with the configured agent, local gates, and exact-commit CI."
+        "Implement a parent issue's children, or a standalone issue, with the configured agent, "
+        "local gates, and exact-commit CI."
     ),
     diagnostics_label="run",
     # The "experimental" marker names predate the standard run becoming the default.
@@ -138,8 +139,8 @@ STANDARD_RUN = RunMode(
 REVIEWED_RUN = RunMode(
     review=True,
     description=(
-        "Implement a parent issue by processing and independently reviewing "
-        "its runnable children."
+        "Implement a parent issue's runnable children, or a standalone issue, "
+        "independently reviewing each one."
     ),
     diagnostics_label="run --review",
     implementation_evidence_prefix=ORIGINAL_EVIDENCE_PREFIX,
@@ -435,6 +436,9 @@ class RunState:
     branch: str | None = None
     # How to start this run again, for the next action of a stopped run.
     rerun_command: str | None = None
+    # Whether the run target is a standalone issue, the run's only child; set by the
+    # startup checks.
+    standalone: bool = False
     # What startup holds until the run ends, however it ends: the sleep lock.
     held_until_the_end: contextlib.ExitStack = field(default_factory=contextlib.ExitStack)
     initial_implemented_children: set[int] | None = None
@@ -495,7 +499,7 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         backup_line = state.backup_switch.summary_line(state.config.backup)
     warnings = "".join(f"\n- warning: {warning}" for warning in state.warnings)
     return (
-        f"🏁 Ralph summary for parent #{state.summary.parent}:\n"
+        f"🏁 Ralph summary for {run_target_name(state)}:\n"
         f"- implemented children this run: {state.summary.implemented}\n"
         f"- remaining children: {state.summary.remaining}\n"
         f"- agent sessions: {state.summary.agent_sessions}\n"
@@ -506,6 +510,19 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         f"- final outcome: {outcome}"
         f"{warnings}"
     )
+
+
+def run_target_name(state: RunState) -> str:
+    """The run target as messages name it, once the run has read it."""
+    kind = "standalone issue" if state.standalone else "parent"
+    return f"{kind} #{state.summary.parent}"
+
+
+def run_target_children(state: RunState, run_target: int) -> list[dict[str, Any]]:
+    """The run's children: a parent issue's sub-issues, or a standalone issue itself."""
+    if state.standalone:
+        return [issue_details(state, run_target)]
+    return state.github.sub_issues(run_target)
 
 
 def update_run_summary(
@@ -664,7 +681,8 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
     ready_label = configured_label(state, "ready_for_agent")
     rerun = rerun_instruction(state)
     remaining = []
-    for child in state.github.sub_issues(state.summary.parent):
+    run_target_kind = "issue" if state.standalone else "parent"
+    for child in run_target_children(state, state.summary.parent):
         if not child_is_remaining(state, child):
             continue
         number = int(child["number"])
@@ -679,11 +697,11 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
         elif number in left_agent_working:
             reason = "agent working from an earlier or concurrent run"
             action = (
-                "If no other run is working on this parent, inspect the branch, relabel "
+                f"If no other run is working on this {run_target_kind}, inspect the branch, relabel "
                 f"#{number} {ready_label}, then {rerun}."
             )
         elif number in agent_working_in_another_run:
-            reason = "agent working in another run on this parent"
+            reason = f"agent working in another run on this {run_target_kind}"
             action = (
                 f"Another run is working on #{number}: find and stop the run that should "
                 f"not be running, then {rerun} if this one should continue."
@@ -906,9 +924,10 @@ class BackupSwitch:
 class NoRunnableChild(RalphError):
     """Children remain, but none of them can run."""
 
-    def __init__(self, parent_issue: int):
+    def __init__(self, run_target: int, standalone: bool):
         super().__init__(
-            f"parent issue #{parent_issue} has children remaining but none is runnable"
+            f"standalone issue #{run_target} is not runnable" if standalone
+            else f"parent issue #{run_target} has children remaining but none is runnable"
         )
 
 
@@ -1413,7 +1432,7 @@ def select_runnable_child(
     list[dict[str, Any]],
     list[dict[str, Any]],
 ]:
-    children = state.github.sub_issues(parent_issue)
+    children = run_target_children(state, parent_issue)
     incomplete_children = []
     blocked_children = []
     for child in children:
@@ -1435,7 +1454,7 @@ def select_runnable_child(
         return None, [], children
     if len(blocked_children) == len(incomplete_children):
         raise DependencyDeadlock(blocked_children)
-    raise NoRunnableChild(parent_issue)
+    raise NoRunnableChild(parent_issue, state.standalone)
 
 
 def issue_details(state: RunState, issue_number: int) -> dict[str, Any]:
@@ -1539,18 +1558,29 @@ def verified_implementation_heads(state: RunState, issue: dict[str, Any]) -> lis
 
 
 def recoverable_implementation_heads(state: RunState, issue: dict[str, Any]) -> list[str] | None:
+    """The heads of implementation evidence nothing has updated the issue after, except the
+    terminal summaries a stopped run published on it as a standalone issue."""
     updated_at = issue.get("updatedAt")
     if not isinstance(updated_at, str):
         return None
+    # A run of either mode may have stopped on the issue since it published the evidence.
+    summaries = (STANDARD_RUN.terminal_summary_marker, REVIEWED_RUN.terminal_summary_marker)
+    after_summaries = False
     for comment in reversed(issue.get("comments", [])):
-        if not trusted_comment(state, comment):
-            continue
+        trusted = trusted_comment(state, comment)
         body = str(comment.get("body", ""))
-        if state.mode.implementation_evidence_prefix not in body:
-            continue
-        if comment.get("createdAt") != updated_at:
+        if trusted and state.mode.implementation_evidence_prefix in body:
+            if not after_summaries and comment.get("createdAt") != updated_at:
+                return None
+            return parse_implementation_evidence(state, body)
+        if (
+            trusted
+            and any(marker in body for marker in summaries)
+            and (after_summaries or comment.get("createdAt") == updated_at)
+        ):
+            after_summaries = True
+        elif after_summaries:
             return None
-        return parse_implementation_evidence(state, body)
     return None
 
 
@@ -1662,13 +1692,36 @@ def mark_parent_work_started(state: RunState, parent_number: int) -> None:
             parent_number, add=work_started, remove=sorted({ready_label} & parent_labels)
         )
     except RalphError as error:
-        warning = (
-            f"Ralph could not label parent #{parent_number} {work_started}: "
-            f"{sanitized_text(' '.join(str(error).split()))}. The run continues; add the "
-            "label by hand if you want it."
+        warn_informational_label_failed(state, f"parent #{parent_number}", work_started, error)
+
+
+def mark_standalone(state: RunState, issue_number: int) -> None:
+    """Label the standalone issue with the standalone marker, which nothing removes.
+
+    The label is informational, so a failed write warns and the run continues.
+    """
+    standalone = configured_label(state, "standalone")
+    try:
+        if standalone in labels(issue_details(state, issue_number)):
+            return
+        state.github.edit_issue_labels(issue_number, add=standalone, remove=[])
+    except RalphError as error:
+        warn_informational_label_failed(
+            state, f"standalone issue #{issue_number}", standalone, error
         )
-        state.warnings.append(warning)
-        print(f"⚠️  {warning}", flush=True)
+
+
+def warn_informational_label_failed(
+    state: RunState, issue: str, label: str, error: RalphError
+) -> None:
+    """Warn that an informational label write failed; the run continues without it."""
+    warning = (
+        f"Ralph could not label {issue} {label}: "
+        f"{sanitized_text(' '.join(str(error).split()))}. The run continues; add the "
+        "label by hand if you want it."
+    )
+    state.warnings.append(warning)
+    print(f"⚠️  {warning}", flush=True)
 
 
 def latest_child_base_comment(state: RunState, issue: dict[str, Any]) -> str | None:
@@ -1894,6 +1947,46 @@ def require_trusted_issue(state: RunState, issue: dict[str, Any]) -> None:
         )
 
 
+def require_run_target(state: RunState, issue_number: int) -> None:
+    """The issue is not a sub-issue of another issue, whatever that issue's state."""
+    parent = state.github.parent(issue_number)
+    if parent is not None:
+        raise RalphError(
+            f"issue #{issue_number} is a sub-issue of #{parent['number']}: "
+            f"run #{parent['number']} instead"
+        )
+
+
+def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None:
+    """The standalone issue is trusted, open, ready for an agent or left agent working by an
+    earlier run, and waits on no unsatisfied blocker, as its child cycle would require."""
+    require_trusted_issue(state, issue)
+    number = int(issue["number"])
+    if str(issue.get("state", "")).upper() != "OPEN":
+        raise RalphError(f"standalone issue #{number} is closed")
+    if not (child_is_ready(state, issue) or child_is_agent_working(state, issue)):
+        ready_label = configured_label(state, "ready_for_agent")
+        other_labels = sorted(
+            labels(issue) & (state.config.triage_labels | state.config.lifecycle_labels)
+            - {ready_label}
+        )
+        reason = (
+            f"labelled {', '.join(other_labels)}" if other_labels
+            else f"not labelled {ready_label}"
+        )
+        raise RalphError(f"standalone issue #{number} is not ready for an agent: {reason}")
+    # A failed lookup stops the run with its own reason, not as an unsatisfied blocker.
+    if unsatisfied := [
+        f"#{blocker['number']}"
+        for blocker in state.github.blockers(number)
+        if not blocker_is_satisfied(state, blocker)
+    ]:
+        raise RalphError(
+            f"standalone issue #{number} waits on {', '.join(unsatisfied)}, neither closed "
+            "nor implemented on this branch"
+        )
+
+
 def require_startable_parent(state: RunState, parent: dict[str, Any]) -> None:
     """The parent is trusted and carries no triage label other than ready-for-agent."""
     require_trusted_issue(state, parent)
@@ -2105,9 +2198,14 @@ def session_context(state: RunState, issue_number: int, head_sha: str) -> str:
     """Pass durable references and a small summary, without replaying a session."""
     assert state.diagnostics is not None
     repository = state.config.repository
+    # A standalone issue is its own run target: it has no parent to name.
+    parent = (
+        "" if state.standalone
+        else f"Parent: https://github.com/{repository}/issues/{state.summary.parent}\n"
+    )
     context = (
         f"\n\nShared context:\nIssue: https://github.com/{repository}/issues/{issue_number}\n"
-        f"Parent: https://github.com/{repository}/issues/{state.summary.parent}\n"
+        f"{parent}"
         f"Child base commit: {state.diagnostics.child_bases.get(issue_number, head_sha)}\n"
         f"Current commit: {head_sha}\nWorking directory: {state.repository_root}\n"
         f"Verification evidence (command metadata identifies each commit): {state.diagnostics.directory / 'evidence'}\n"
@@ -2353,7 +2451,10 @@ def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_iss
         state.github.create_draft_pull_request(
             base=configuration.base_branch,
             head=branch,
-            title=f"Implement Ralph parent #{parent_issue}",
+            title=(
+                f"Implement Ralph issue #{parent_issue}" if state.standalone
+                else f"Implement Ralph parent #{parent_issue}"
+            ),
             body=f"Cumulative implementation for #{parent_issue}. Human merge required.",
         )
 
@@ -3016,23 +3117,31 @@ def run_children(
     run branch. The run reaches everything else through its adapters.
     """
     assert state.branch is not None
+    infrastructure = InfrastructureRetryTracker(state)
+    # The blocker checks of a standalone issue may retry their pull request lookups.
+    state.summary = RunSummary(infrastructure=infrastructure)
     with spinner(f"Reading #{parent_issue}…"):
-        require_startable_parent(state, issue_details(state, parent_issue))
+        require_run_target(state, parent_issue)
+        issue = issue_details(state, parent_issue)
+        if state.github.sub_issues(parent_issue):
+            require_startable_parent(state, issue)
+        else:
+            state.standalone = True
+            require_startable_standalone(state, issue)
     if state.branch == state.config.base_branch:
         state.branch = offer_run_branch(state, parent_issue)
     branch = state.branch
-    with spinner(f"Reading the sub-issues of #{parent_issue}…"):
-        infrastructure = InfrastructureRetryTracker(state)
-        siblings = state.github.sub_issues(parent_issue)
+    with spinner(f"Reading the children of #{parent_issue}…"):
+        siblings = run_target_children(state, parent_issue)
         update_run_summary(state, parent_issue, siblings, None, infrastructure)
         while recover_published_child(state, siblings):
-            siblings = state.github.sub_issues(parent_issue)
+            siblings = run_target_children(state, parent_issue)
     if left_agent_working := [
         child for child in siblings if child_is_agent_working(state, child)
     ]:
         update_run_summary(state, parent_issue, siblings, None, infrastructure)
         resolve_left_agent_working(state, left_agent_working)
-        siblings = state.github.sub_issues(parent_issue)
+        siblings = run_target_children(state, parent_issue)
     # The default counts the ready children once, after the startup choice.
     ready_children = [child for child in siblings if child_is_ready(state, child)]
     budget = RunBudget(run_budget or max(4, len(ready_children) * state.mode.sessions_per_ready_child))
@@ -3043,7 +3152,7 @@ def run_children(
 
     while True:
         with spinner("Selecting the next runnable child…"):
-            siblings = state.github.sub_issues(parent_issue)
+            siblings = run_target_children(state, parent_issue)
             update_run_summary(state, parent_issue, siblings, budget, infrastructure)
             # Best-effort guard, not a lock: another run can still take a child
             # between this read and this run's own agent-working write. It precedes
@@ -3062,13 +3171,15 @@ def run_children(
                 stop_children_for_dependency_deadlock(state, error.children)
                 raise
         if selected_child is None:
-            with spinner(f"Handing #{parent_issue} to human review…"):
-                publish_parent_completion(
-                    state,
-                    parent_issue,
-                    len(siblings),
-                    budget.sessions,
-                )
+            with spinner(f"Finishing the run on #{parent_issue}…"):
+                # A standalone issue is already implemented: it gets no parent completion.
+                if not state.standalone:
+                    publish_parent_completion(
+                        state,
+                        parent_issue,
+                        len(siblings),
+                        budget.sessions,
+                    )
                 publish_terminal_summary(state, terminal_summary(state, "completed"))
                 mark_pull_request_ready(state, branch)
             break
@@ -3079,7 +3190,10 @@ def run_children(
             details = issue_details(state, child_number)
             require_trusted_issue(state, details)
             child_base = start_child_cycle(state, child_number, details, siblings)
-            mark_parent_work_started(state, parent_issue)
+            if state.standalone:
+                mark_standalone(state, parent_issue)
+            else:
+                mark_parent_work_started(state, parent_issue)
         state.diagnostics.child_bases[child_number] = child_base.commit
         cycle = run_child_cycle(
             child_number, child_base.commit, budget, adapters,
@@ -3112,6 +3226,9 @@ def run_children(
         update_run_summary(state, parent_issue, siblings, budget, infrastructure)
 
     print(
+        f"🎉 Standalone issue #{parent_issue} is implemented; "
+        "the pull request is ready for review."
+        if state.standalone else
         f"🎉 All {len(siblings)} children of #{parent_issue} are complete; "
         "the pull request is ready for review."
     )

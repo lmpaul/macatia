@@ -135,7 +135,7 @@ class CloseTests(unittest.TestCase):
                 repository_root=self.root,
             )
         self.assertEqual(code, 0)
-        self.assertIn(f"Checking #{PARENT} and its sub-issues before closing", terminal.getvalue())
+        self.assertIn(f"Checking #{PARENT} and any sub-issues before closing", terminal.getvalue())
 
     def test_other_output_gets_no_progress(self):
         self.add_parent()
@@ -183,13 +183,176 @@ class CloseTests(unittest.TestCase):
 
         self.assertIn("#404", self.stderr)
 
-    def test_an_issue_without_sub_issues_is_refused(self):
+    def add_standalone(self, number=80, *, labels=("implemented",), comments=None, **options):
+        """A standalone issue; by default with standard run evidence whose verified head is merged."""
+        if comments is None:
+            comments = [self.evidence(number)]
+        return self.github.add_issue(number, labels=labels, comments=comments, **options)
+
+    def closure_comments(self, number):
+        return [comment for comment in self.github.comments(number) if close.CLOSURE_MARKER in comment]
+
+    def test_a_merged_standalone_issue_is_closed_alone(self):
+        self.add_standalone(80, labels=("implemented", "standalone"))
+        closings = []
+        self.github.after_close = lambda number, reason: closings.append(number)
+
+        code = self.close("80", "--yes")
+
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual(closings, [80])
+        self.assertEqual(self.state(80), ("CLOSED", "COMPLETED"))
+        [comment] = self.closure_comments(80)
+        self.assertIn("standalone issue", comment)
+        self.assertNotIn("sub-issues", comment)
+        self.assertEqual(self.github.labels(80), {"implemented", "standalone"})
+        self.assertIn("Closing standalone issue #80 Issue 80", self.stdout)
+        self.assertIn("Closed #80.", self.stdout)
+
+    def test_a_standalone_issue_needs_no_human_review_label(self):
+        self.add_standalone(80)
+
+        self.assertEqual(self.close("80", "--yes"), 0, self.stderr)
+
+        self.assertNotIn("human-review", self.stdout)
+
+    def test_the_confirmation_of_a_standalone_issue_names_it(self):
+        self.add_standalone(80)
+        confirmer = ScriptedConfirmer(True)
+
+        self.assertEqual(self.close("80", confirm=confirmer), 0, self.stderr)
+
+        self.assertEqual(confirmer.questions, ["Close #80?"])
+
+    def test_a_standalone_issue_merged_by_a_pull_request_is_named_with_it(self):
+        verified_head = sha("verified-80-v1")
+        self.add_standalone(80)
+        self.merge_through_pull_requests(verified_head, CommitPull(12, sha("merge-12")))
+
+        self.assertEqual(self.close("80", "--yes"), 0, self.stderr)
+
+        [comment] = self.closure_comments(80)
+        self.assertIn("merged by PR #12", comment)
+
+    def test_an_unmerged_standalone_issue_is_refused(self):
+        self.add_standalone(80, comments=[self.evidence(80, merged=False)])
+
+        self.assertEqual(self.close("80", "--yes", confirm=ScriptedConfirmer()), 1)
+
+        self.assertIn("#80 might not be merged", self.stderr)
+        self.assertEqual(self.closure_comments(80), [])
+
+    def test_a_standalone_issue_that_is_not_implemented_is_refused(self):
+        self.add_standalone(80, labels=("agent-working", "standalone"))
+
+        self.assertEqual(self.close("80", "--yes", confirm=ScriptedConfirmer()), 1)
+
+        self.assertIn("#80 is not implemented", self.stderr)
+        self.assertEqual(self.state(80), ("OPEN", None))
+        self.assertEqual(self.closure_comments(80), [])
+
+    def test_an_untrusted_standalone_issue_is_refused(self):
+        self.add_standalone(80, author="stranger")
+
+        self.assertEqual(self.close("80", "--yes", confirm=ScriptedConfirmer()), 1)
+
+        self.assertIn("#80 is authored by @stranger", self.stderr)
+        self.assertEqual(self.state(80), ("OPEN", None))
+
+    def test_an_unevidenced_standalone_issue_is_refused_even_at_a_terminal(self):
+        self.add_standalone(80, comments=[])
+        confirmer = ScriptedConfirmer()
+
+        self.assertEqual(self.close("80", confirm=confirmer), 1)
+
+        self.assertIn("#80 has no implementation evidence", self.stderr)
+        self.assertIn("Nothing closed", self.stderr)
+        self.assertEqual(confirmer.questions, [])
+        self.assertEqual(self.state(80), ("OPEN", None))
+        self.assertEqual(self.closure_comments(80), [])
+
+    def test_untrusted_evidence_does_not_count_for_a_standalone_issue(self):
+        evidence = self.evidence(80)
+        self.add_standalone(80, comments=[{"author": {"login": "intruder"}, "body": evidence["body"]}])
+
+        self.assertEqual(self.close("80", "--yes"), 1)
+
+        self.assertIn("#80 has no implementation evidence", self.stderr)
+        self.assertEqual(self.state(80), ("OPEN", None))
+
+    def test_force_closes_an_unevidenced_standalone_issue_after_the_typed_number(self):
+        self.add_standalone(80, comments=[])
+
+        self.assertEqual(self.close("--force", "80", typed=ScriptedConfirmer("80")), 0, self.stderr)
+
+        self.assertIn("⚠️  #80 has no implementation evidence", self.stdout)
+        self.assertEqual(self.state(80), ("CLOSED", "COMPLETED"))
+        [comment] = self.closure_comments(80)
+        self.assertIn("forced", comment)
+        self.assertIn("#80 has no implementation evidence", comment)
+
+    def test_a_rerun_after_a_standalone_issue_failed_to_close_does_not_comment_again(self):
+        self.add_standalone(80)
+        self.github.close_error = {80: RalphError("command failed (gh issue close 80): HTTP 502")}
+        self.assertEqual(self.close("80", "--yes"), 1)
+        self.assertIn("ralph-kit close 80", self.stderr)
+        self.github.close_error = {}
+
+        self.assertEqual(self.close("80", "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.state(80), ("CLOSED", "COMPLETED"))
+        self.assertEqual(len(self.closure_comments(80)), 1)
+
+    def test_a_closed_standalone_issue_is_already_closed(self):
+        self.add_standalone(80, state="closed")
+
+        self.assertEqual(self.close("80", "--yes"), 0)
+
+        self.assertIn("already closed", self.stdout)
+        self.assertEqual(self.closure_comments(80), [])
+
+    def test_a_sub_issue_is_refused_naming_its_parent(self):
         self.add_parent()
+        self.add_child(70)
 
-        self.assertEqual(self.close(str(PARENT), "--yes"), 1)
+        self.assertEqual(self.close("70", "--yes", confirm=ScriptedConfirmer()), 1)
 
-        self.assertIn("no sub-issues", self.stderr)
+        self.assertIn(f"#70 is a sub-issue of #{PARENT}", self.stderr)
+        self.assertIn(f"close #{PARENT} instead", self.stderr)
+        self.assertEqual(self.state(70), ("OPEN", None))
         self.assert_nothing_written(PARENT)
+        self.assertEqual(self.closure_comments(70), [])
+
+    def test_a_sub_issue_of_a_closed_parent_is_refused_too(self):
+        self.add_parent(state="closed")
+        self.add_child(70)
+
+        self.assertEqual(self.close("70", "--yes", confirm=ScriptedConfirmer()), 1)
+
+        self.assertIn(f"#70 is a sub-issue of #{PARENT}", self.stderr)
+        self.assertEqual(self.state(70), ("OPEN", None))
+
+    def test_a_sub_issue_with_its_own_sub_issues_is_refused_naming_its_parent(self):
+        self.add_parent()
+        self.add_child(70)
+        self.github.add_issue(75, parent=70, labels=("implemented",), comments=[self.evidence(75)])
+
+        self.assertEqual(self.close("70", "--yes", confirm=ScriptedConfirmer()), 1)
+
+        self.assertIn(f"#70 is a sub-issue of #{PARENT}", self.stderr)
+        for number in (70, 75, PARENT):
+            self.assertEqual(self.state(number), ("OPEN", None))
+
+    def test_a_github_error_on_the_parent_lookup_writes_nothing(self):
+        self.add_standalone(80)
+        self.github.parent_error = {80: RalphError("command failed (gh api parent): HTTP 502")}
+
+        self.assertEqual(self.close("80", "--yes"), 1)
+
+        self.assertIn("#80", self.stderr)
+        self.assertIn("HTTP 502", self.stderr)
+        self.assertEqual(self.state(80), ("OPEN", None))
+        self.assertEqual(self.closure_comments(80), [])
 
     def test_a_refusal_lists_every_failed_check_and_writes_nothing(self):
         self.add_parent(labels=("ready-for-agent",), author="stranger")
@@ -563,7 +726,7 @@ class CloseTests(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(cli.main(["--help"]), 0)
-        self.assertIn("close [--yes | --force] [--config PATH] PARENT", stdout.getvalue())
+        self.assertIn("close [--yes | --force] [--config PATH] ISSUE", stdout.getvalue())
         with (
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
@@ -688,20 +851,46 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(code, 2)
         self.assert_nothing_written(PARENT, 70, 71, 72)
 
-    def test_force_on_an_issue_without_sub_issues_closes_only_that_issue(self):
+    def test_force_on_a_sub_issue_closes_only_that_issue(self):
         self.add_parent()
-        self.github.add_issue(70, labels=("implemented",))
+        self.add_child(70)
 
-        self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 0, self.stderr)
+        self.assertEqual(self.close("--force", "70", typed=ScriptedConfirmer("70")), 0, self.stderr)
 
-        self.assertIn("⚠️", self.stdout)
-        self.assertIn("no sub-issues", self.stdout)
-        self.assertEqual(self.state(PARENT), ("CLOSED", "COMPLETED"))
-        self.assertEqual(self.state(70), ("OPEN", None))
-        [comment] = self.github.comments(PARENT)
+        self.assertIn(f"⚠️  #70 is a sub-issue of #{PARENT}", self.stdout)
+        self.assertEqual(self.state(70), ("CLOSED", "COMPLETED"))
+        self.assertEqual(self.state(PARENT), ("OPEN", None))
+        [comment] = self.closure_comments(70)
         self.assertIn("forced", comment)
-        self.assertIn("no sub-issues", comment)
-        self.assertNotIn("every child was already closed", comment)
+        self.assertIn(f"#70 is a sub-issue of #{PARENT}", comment)
+        self.assertIn("sub-issue alone", comment)
+        self.assertEqual(self.github.comments(PARENT), [])
+
+    def test_force_closes_a_failing_standalone_issue_after_the_typed_number(self):
+        self.add_standalone(80, labels=("agent-working",), comments=[self.evidence(80, merged=False)])
+        confirmer = ScriptedConfirmer()
+        typed = ScriptedConfirmer("80")
+
+        code = self.close("--force", "80", confirm=confirmer, typed=typed)
+
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual(confirmer.questions, [])
+        self.assertEqual(len(typed.questions), 1)
+        self.assertIn("⚠️  #80 is not implemented", self.stdout)
+        self.assertIn("⚠️  #80 might not be merged", self.stdout)
+        self.assertEqual(self.state(80), ("CLOSED", "COMPLETED"))
+        [comment] = self.closure_comments(80)
+        self.assertIn("forced", comment)
+        self.assertIn("#80 is not implemented", comment)
+
+    def test_force_refuses_a_standalone_issue_without_the_typed_number(self):
+        self.add_standalone(80, labels=("agent-working",))
+
+        self.assertEqual(self.close("--force", "80", typed=ScriptedConfirmer("y")), 1)
+
+        self.assertIn("Nothing closed", self.stderr)
+        self.assertEqual(self.state(80), ("OPEN", None))
+        self.assertEqual(self.closure_comments(80), [])
 
     def test_force_still_refuses_a_nonexistent_issue(self):
         self.assertEqual(self.close("--force", "404", typed=ScriptedConfirmer("404")), 1)

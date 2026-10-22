@@ -43,6 +43,31 @@ def merged_pull_requests_into(base: str, pulls: list[dict[str, Any]]) -> list[Me
     return merged
 
 
+# GitHub's answer to a parent lookup of an issue that is not a sub-issue.
+NO_PARENT_MESSAGE = "No parent issue found"
+
+
+def parent_from_lookup(completed: subprocess.CompletedProcess[str]) -> dict[str, Any] | None:
+    """The parent issue a `gh api .../parent` call returned, or None for GitHub's
+    "No parent issue found" 404; any other failure, a missing issue included, raises."""
+    try:
+        body = json.loads(completed.stdout)
+    except json.JSONDecodeError:
+        body = None
+    if completed.returncode == 0:
+        if not isinstance(body, dict) or not isinstance(body.get("number"), int):
+            raise RalphError(f"GitHub returned an invalid parent issue: {completed.stdout!r}")
+        return body
+    if (
+        isinstance(body, dict)
+        and body.get("message") == NO_PARENT_MESSAGE
+        and str(body.get("status")) == "404"
+    ):
+        return None
+    detail = (completed.stderr or "").strip() or (completed.stdout or "").strip()
+    raise RalphError(f"command failed ({' '.join(completed.args)}): {detail}")
+
+
 # The CI diagnostic records these commands as evidence, so the in-memory GitHub
 # of the run tests reports the same ones.
 
@@ -98,6 +123,12 @@ class GitHub:
 
     def sub_issues(self, parent: int) -> list[dict[str, Any]]:
         return self._list(f"repos/{self.repository}/issues/{parent}/sub_issues")
+
+    def parent(self, number: int) -> dict[str, Any] | None:
+        """The issue `number` is a sub-issue of, or None when it has no parent."""
+        return parent_from_lookup(
+            self._gh("api", f"repos/{self.repository}/issues/{number}/parent", check=False)
+        )
 
     def commit_is_on_branch(self, branch: str, sha: str) -> bool:
         """Whether a commit is on a remote branch, as GitHub compares them; never local Git."""

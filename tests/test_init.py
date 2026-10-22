@@ -40,6 +40,7 @@ agent_working = "agent-working"
 human_review = "human-review"
 implemented = "implemented"
 work_started = "work-started"
+standalone = "standalone"
 
 [models.implementation]
 engine = "claude"
@@ -97,6 +98,7 @@ agent_working = "agent: working"
 human_review = "human: review"
 implemented = "done"
 work_started = "agent: started"
+standalone = "agent: standalone"
 
 [models.implementation]
 engine = "claude"
@@ -427,11 +429,18 @@ class InitTests(unittest.TestCase):
         self.assertIn("✓ Label implemented created", self.output.getvalue())
         self.assertIn("✓ Label agent-working created", self.output.getvalue())
         self.assertIn("✓ Label work-started created", self.output.getvalue())
+        self.assertIn("✓ Label standalone created", self.output.getvalue())
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "acme/widget",
              "--description", "Ralph has started work on this parent"),
             commands,
         )
+
+    def test_configuration_declares_all_ten_label_roles(self):
+        config = self.run_init()
+        self.assertEqual(len(config.labels), 10)
+        self.assertEqual(config.labels["standalone"], "standalone")
+        self.assertIn('work_started = "work-started"\nstandalone = "standalone"\n', (self.root / "ralph.toml").read_text())
 
     def test_configuration_declares_the_agent_working_label(self):
         config = self.run_init()
@@ -444,6 +453,11 @@ class InitTests(unittest.TestCase):
         self.assertIn('work_started = "work-started"\n', (self.root / "ralph.toml").read_text())
         self.assertNotIn("work-started", config.triage_labels)
         self.assertNotIn("work-started", config.lifecycle_labels)
+
+    def test_configuration_declares_the_standalone_marker_outside_triage_and_lifecycle(self):
+        config = self.run_init()
+        self.assertNotIn("standalone", config.triage_labels)
+        self.assertNotIn("standalone", config.lifecycle_labels)
 
     def test_labels_are_kept_for_later(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[]])
