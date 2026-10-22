@@ -134,8 +134,8 @@ class SingleChildHappyPathTests(unittest.TestCase):
             ScriptedResult("committed", "Reviewed the exact diff and committed one correction."),
         )
 
-        # `--review` is accepted in any position, here between the parent and the budget.
-        result = start_run(self.repository, self.github, sessions, PARENT, "--review", 4)
+        # `--review` is accepted in any position, here after the parent.
+        result = start_run(self.repository, self.github, sessions, PARENT, "--review")
 
         commits, evidence = self.assert_child_published(result, sessions=2, commit_count=2)
         self.assert_implementation_prompt_names_only_the_issue(sessions)
@@ -168,6 +168,14 @@ def worst_case_child_results(mode):
     return [committed, findings] * 3 + [committed, ScriptedResult("no_changes")]
 
 
+def child_session_limit(mode, limit):
+    """Patch the child session limit of `mode`'s runs to `limit` agent sessions."""
+    name = "REVIEWED_RUN" if mode.review else "STANDARD_RUN"
+    return mock.patch.object(
+        loop_core, name, dataclasses.replace(mode, child_session_limit=limit)
+    )
+
+
 class RunLevelTestCase(unittest.TestCase):
     # Called with each session request before it is answered; see `ready_for_agent_during_the_run`.
     before_session = None
@@ -181,12 +189,11 @@ class RunLevelTestCase(unittest.TestCase):
     def setUp(self):
         self.new_run()
 
-    def start(self, mode, *results, budget=None, confirm=None, terminal=False):
+    def start(self, mode, *results, confirm=None, terminal=False):
         self.sessions = ScriptedSessions(self.repository, *results)
         self.sessions.before_session = self.before_session
-        budget_argument = () if budget is None else (budget,)
         return start_mode_run(
-            mode, self.repository, self.github, self.sessions, PARENT, *budget_argument,
+            mode, self.repository, self.github, self.sessions, PARENT,
             confirm=confirm, terminal=terminal,
         )
 
@@ -194,11 +201,7 @@ class RunLevelTestCase(unittest.TestCase):
         return [request.child for request in self.sessions.requests]
 
     def ready_for_agent_during_the_run(self, child):
-        """`child` is ready for a human when the run starts and ready for an agent from its first session.
-
-        The run's default budget, sized at the start, leaves it out, so the run
-        can spend more than its ready children's worst case.
-        """
+        """`child` is ready for a human when the run starts and ready for an agent from its first session."""
         self.github.add_issue(child, parent=PARENT, labels=("ready-for-human",))
 
         def relabel(request):
@@ -614,18 +617,19 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.assertEqual(self.session_children(), [CHILD])
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
-    def test_resumed_child_counts_in_the_default_run_budget(self):
+    def test_resumed_child_gets_a_fresh_child_session_limit(self):
         self.github.add_issue(CHILD, parent=PARENT, labels=("agent-working",))
-        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
 
-        result = self.start(
-            loop_core.REVIEWED_RUN, *worst_case_child_results(loop_core.REVIEWED_RUN),
-            ScriptedResult("committed"), confirm=ScriptedConfirm(RESUME),
-        )
+        with child_session_limit(loop_core.STANDARD_RUN, 2):
+            result = self.start(
+                loop_core.STANDARD_RUN, findings, ScriptedResult("committed"),
+                findings, ScriptedResult("committed"), confirm=ScriptedConfirm(RESUME),
+            )
 
-        self.assertEqual(result.exit_code, 1)
-        self.assertIn("run budget exhausted before review", result.stderr)
-        self.assertEqual(len(self.sessions.requests), 9)
+        self.assert_completed(result, sessions=4)
+        self.assertEqual(self.session_children(), [CHILD] * 2 + [DEPENDENT] * 2)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
     def test_several_children_get_one_warning_and_one_choice(self):
@@ -1143,7 +1147,7 @@ class RunUsageCommandLineTests(unittest.TestCase):
                 self.assertIn("must be a positive integer", error)
 
     def test_reviewed_run_usage_names_ralph_kit_run_review(self):
-        for arguments in (("--review", "0"), ("5", "0", "--review", "--caffeinate")):
+        for arguments in (("--review", "0"), ("0", "--review", "--caffeinate")):
             with self.subTest(arguments=arguments):
                 error = self.usage_error(*arguments)
                 self.assertTrue(error.startswith("usage: ralph-kit run --review [-h]"), error)
@@ -1160,18 +1164,24 @@ class RunUsageCommandLineTests(unittest.TestCase):
             self.assertEqual(cli.main(["--help"]), 0)
         self.assertIn(
             "run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] "
-            "[ISSUE [RUN_BUDGET]]\n",
+            "[ISSUE]\n",
             stdout.getvalue(),
         )
+        self.assertNotIn("budget", stdout.getvalue().lower())
         self.assertIn(
             "Without ISSUE, at a terminal, offers the startable run targets to choose from.\n",
             stdout.getvalue(),
         )
 
-    def test_run_usage_names_the_issue_and_run_budget(self):
+    def test_run_usage_names_the_issue(self):
         error = self.usage_error("abc")
-        self.assertIn("usage: ralph-kit run [-h] [--config CONFIG] [ISSUE [RUN_BUDGET]]\n", error)
+        self.assertIn("usage: ralph-kit run [-h] [--config CONFIG] [ISSUE]\n", error)
         self.assertIn("argument ISSUE: must be a positive integer", error)
+
+    def test_a_second_number_is_an_unrecognized_argument(self):
+        error = self.usage_error("123", "10")
+        self.assertIn("usage: ralph-kit run [-h] [--config CONFIG] [ISSUE]\n", error)
+        self.assertIn("error: unrecognized arguments: 10", error)
 
     def test_review_and_no_review_together_are_a_usage_error(self):
         for arguments in (("--review", "--no-review", "5"), ("5", "--no-review", "--caffeinate", "--review")):
@@ -1630,7 +1640,7 @@ class StartupTests(StartupRejectionTestCase):
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent", "needs-info"})
 
     def test_arguments_must_be_positive_integers(self):
-        for arguments in (("0",), ("abc",), (PARENT, "0"), (PARENT, "abc")):
+        for arguments in (("0",), ("abc",)):
             with self.subTest(arguments=arguments):
                 self.sessions = ScriptedSessions(self.repository)
 
@@ -3380,13 +3390,14 @@ class InfrastructureRetryTests(VerificationTestCase):
 
                 self.assert_stopped_after_infrastructure_retries(result, f"gh api failed: {failure}")
 
-    def test_infrastructure_retry_that_succeeds_does_not_consume_the_run_budget(self):
+    def test_infrastructure_retry_that_succeeds_does_not_count_toward_the_child_session_limit(self):
         for mode in MODES:
             with self.subTest(mode.diagnostics_label):
                 self.new_child_run(ci=("cancelled", "success"))
                 sessions = passing_child_results(mode)
 
-                result = self.start(mode, *sessions, budget=len(sessions))
+                with child_session_limit(mode, len(sessions)):
+                    result = self.start(mode, *sessions)
 
                 self.assert_implemented(result)
                 self.assertIn(
@@ -3419,99 +3430,106 @@ HUMAN_REVIEW_CHILD = 197
 READY_FOR_HUMAN_CHILD = 198
 
 
-class RunBudgetTests(VerificationTestCase):
+class ChildSessionLimitTests(VerificationTestCase):
     def new_two_child_run(self):
         self.new_run()
         self.github.add_issue(CHILD, parent=PARENT)
         self.github.add_issue(DEPENDENT, parent=PARENT)
 
-    def assert_budget_stop(self, result, child, *, role, budget):
-        """The run stopped on the shared budget and handed `child` to human review."""
+    def assert_child_session_limit_stop(self, result, child, *, role, limit, mode, sessions):
+        """The run stopped on `child`'s session limit and handed it to human review."""
         self.assertEqual(result.exit_code, 1)
-        self.assertIn(f"run budget exhausted before {role}", result.stderr)
-        self.assertEqual(len(self.sessions.requests), budget)
+        self.assertIn(f"Stop reason: child session limit exhausted before {role}", result.stderr)
+        self.assertEqual(len(self.sessions.requests), sessions)
         self.assertEqual(self.github.labels(child), {"human-review"})
         handoff = self.github.comments(child)[-1]
-        self.assertIn(
-            f"run budget of {budget} agent sessions was exhausted after {budget} sessions", handoff
-        )
+        self.assertTrue(handoff.startswith(
+            f"Ralph stopped before {role} because the child session limit of {limit} "
+            f"({mode} run) was exhausted. This child remains open for human review."
+        ), handoff)
         self.assertIn(COMMITS_STAY, handoff)
         summary = self.github.comments(PARENT)[-1]
-        self.assertIn(f"- agent sessions: {budget}\n", summary)
+        self.assertIn(f"- agent sessions: {sessions}\n", summary)
         self.assertIn("- final outcome: stopped safely", summary)
-        self.assertIn(f"- agent sessions: {budget}\n", result.stderr)
+        self.assertIn(f"- agent sessions: {sessions}\n", result.stderr)
         self.assertEqual(self.github.labels(PARENT), {"work-started"})
         return handoff
 
-    def test_default_budget_of_a_reviewed_run_allows_nine_sessions_per_child_across_the_run(self):
+    def test_each_child_receives_its_worst_case_whatever_the_number_of_children(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_two_child_run()
+                self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
+                worst_case = worst_case_child_results(mode)
+
+                result = self.start(mode, *worst_case * 3)
+
+                self.assert_completed(result, sessions=len(worst_case) * 3)
+                self.assertEqual(
+                    self.session_children(),
+                    [CHILD] * len(worst_case) + [DEPENDENT] * len(worst_case)
+                    + [READY_FOR_HUMAN_CHILD] * len(worst_case),
+                )
+                self.assertIn(
+                    f"This run used {len(worst_case) * 3} agent sessions;",
+                    self.github.comments(PARENT)[-2],
+                )
+
+    def test_limit_below_the_worst_case_stops_the_child_and_the_run(self):
         self.new_two_child_run()
-        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
-        worst_case = worst_case_child_results(loop_core.REVIEWED_RUN)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
 
-        result = self.start(loop_core.REVIEWED_RUN, *worst_case * 2, *worst_case[:2])
+        with child_session_limit(loop_core.STANDARD_RUN, 3):
+            result = self.start(loop_core.STANDARD_RUN, *[findings] * 3)
 
-        self.assert_budget_stop(
-            result, READY_FOR_HUMAN_CHILD, role="issue correction", budget=18
+        handoff = self.assert_child_session_limit_stop(
+            result, CHILD, role="issue correction", limit=3, mode="standard", sessions=3
         )
-        self.assertEqual(
-            self.session_children(), [CHILD] * 8 + [DEPENDENT] * 8 + [READY_FOR_HUMAN_CHILD] * 2
-        )
-        self.assertEqual(self.github.labels(CHILD), {"implemented"})
-        self.assertEqual(self.github.labels(DEPENDENT), {"implemented"})
-        self.assertTrue(self.github.pull_request().is_draft)
+        self.assertIn("Last diagnostic:\n```text\n- Handle empty carts.\n```", handoff)
+        self.assertEqual(self.session_children(), [CHILD] * 3)
+        self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
 
-    def test_default_budget_of_a_run_reviewed_by_the_setting_allows_nine_sessions_per_child(self):
-        set_review_by_default(self.repository)
-        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
-        self.sessions = ScriptedSessions(
-            self.repository, *worst_case_child_results(loop_core.REVIEWED_RUN), ScriptedResult("committed")
-        )
-        self.sessions.before_session = self.before_session
+    def test_each_child_gets_its_own_count(self):
+        self.new_two_child_run()
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
+        child = [findings, ScriptedResult("committed")]
 
-        # No `--review`: the setting makes the run reviewed.
-        result = start_run(self.repository, self.github, self.sessions, PARENT)
+        with child_session_limit(loop_core.STANDARD_RUN, 2):
+            result = self.start(loop_core.STANDARD_RUN, *child * 2)
 
-        self.assert_budget_stop(result, READY_FOR_HUMAN_CHILD, role="review", budget=9)
-        self.assertEqual(self.session_children(), [CHILD] * 8 + [READY_FOR_HUMAN_CHILD])
-        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assert_completed(result, sessions=4)
+        self.assertEqual(self.session_children(), [CHILD] * 2 + [DEPENDENT] * 2)
 
-    def test_default_budget_of_a_standard_run_allows_five_sessions_per_child_across_the_run(self):
-        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
+    def test_reviewed_run_uses_the_reviewed_limit(self):
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
 
-        result = self.start(loop_core.STANDARD_RUN, *worst_case_child_results(loop_core.STANDARD_RUN), findings)
+        with child_session_limit(loop_core.REVIEWED_RUN, 2):
+            result = self.start(loop_core.REVIEWED_RUN, ScriptedResult("committed"), findings)
 
-        self.assert_budget_stop(
-            result, READY_FOR_HUMAN_CHILD, role="issue correction", budget=5
-        )
-        self.assertEqual(self.session_children(), [CHILD] * 4 + [READY_FOR_HUMAN_CHILD])
-        self.assertEqual(self.github.labels(CHILD), {"implemented"})
-
-    def test_default_budget_of_a_resumed_parent_counts_only_children_ready_for_an_agent(self):
-        # CHILD, from `setUp`, is the only child ready for an agent.
-        self.github.add_issue(CLOSED_CHILD, parent=PARENT, state="closed", labels=())
-        self.github.add_issue(IMPLEMENTED_CHILD, parent=PARENT, labels=("implemented",))
-        self.github.add_issue(HUMAN_REVIEW_CHILD, parent=PARENT, labels=("human-review",))
-        self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
-
-        result = self.start(
-            loop_core.REVIEWED_RUN, *worst_case_child_results(loop_core.REVIEWED_RUN),
-            ScriptedResult("committed"),
+        self.assert_child_session_limit_stop(
+            result, CHILD, role="issue correction", limit=2, mode="reviewed", sessions=2
         )
 
-        self.assert_budget_stop(result, READY_FOR_HUMAN_CHILD, role="review", budget=9)
-        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+    def test_run_reviewed_by_the_setting_uses_the_reviewed_limit(self):
+        set_review_by_default(self.repository)
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
 
-    def test_explicit_budget_replaces_the_default_across_children(self):
-        self.new_two_child_run()
-        results = [*passing_child_results(loop_core.REVIEWED_RUN), ScriptedResult("committed")]
+        # No `--review`: the setting makes the run reviewed.
+        with child_session_limit(loop_core.REVIEWED_RUN, 1):
+            result = start_run(self.repository, self.github, self.sessions, PARENT)
 
-        result = self.start(loop_core.REVIEWED_RUN, *results, budget=3)
+        self.assert_child_session_limit_stop(
+            result, CHILD, role="review", limit=1, mode="reviewed", sessions=1
+        )
 
-        self.assert_budget_stop(result, DEPENDENT, role="review", budget=3)
-        self.assertEqual(self.session_children(), [CHILD, CHILD, DEPENDENT])
-        self.assertEqual(self.github.labels(CHILD), {"implemented"})
-        self.assertTrue(self.github.pull_request().is_draft)
+    def test_no_review_uses_the_standard_limit_despite_the_setting(self):
+        set_review_by_default(self.repository)
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
+
+        with child_session_limit(loop_core.REVIEWED_RUN, 1):
+            result = start_run(self.repository, self.github, self.sessions, "--no-review", PARENT)
+
+        self.assert_implemented(result)
 
 
 class StopSummaryTests(VerificationTestCase):
@@ -3599,17 +3617,18 @@ class StopSummaryTests(VerificationTestCase):
                     f"and run `{command}` again.",
                 )
 
-    def test_exhausted_run_budget_says_the_next_run_has_a_fresh_one(self):
-        result = self.start(loop_core.REVIEWED_RUN, ScriptedResult("committed"), budget=1)
+    def test_exhausted_child_session_limit_says_the_next_run_gives_a_fresh_one(self):
+        with child_session_limit(loop_core.REVIEWED_RUN, 1):
+            result = self.start(loop_core.REVIEWED_RUN, ScriptedResult("committed"))
 
         self.assert_stop_summary(
             result,
             "- agent sessions: 1\n- infrastructure retries: 0\n",
-            "Stop reason: run budget exhausted before review",
+            "Stop reason: child session limit exhausted before review",
             f"- #{CHILD}: handed to human review ({self.github.latest_comment_url(CHILD)}).",
-            f"Next action:\n- #{CHILD} was handed to human review because the run budget was "
-            f"exhausted: relabel it ready-for-agent, then run `ralph-kit run --review {PARENT}` "
-            "again; each run starts with a fresh run budget.",
+            f"Next action:\n- #{CHILD} was handed to human review because its child session "
+            f"limit was exhausted: relabel it ready-for-agent, then run `ralph-kit run --review "
+            f"{PARENT}` again; each run gives a child a fresh child session limit.",
         )
 
     def test_exhausted_infrastructure_retries_give_their_reason_and_next_action(self):
@@ -3650,7 +3669,7 @@ class StopSummaryTests(VerificationTestCase):
         )
         self.assertNotIn("hunter2", self.github.comments(PARENT)[-1])
 
-    def test_rerun_command_keeps_the_configuration_path_and_drops_the_run_budget(self):
+    def test_rerun_command_keeps_the_configuration_path(self):
         (self.repository.path / "config").mkdir()
         git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
         git(self.repository.path, "commit", "-m", "Move the Ralph configuration")
@@ -3658,7 +3677,7 @@ class StopSummaryTests(VerificationTestCase):
 
         result = start_mode_run(
             loop_core.REVIEWED_RUN, self.repository, self.github, self.sessions,
-            "--config", "config/ralph.toml", PARENT, 7,
+            "--config", "config/ralph.toml", PARENT,
         )
 
         self.assert_stop_summary(
@@ -3703,12 +3722,10 @@ class StopSummaryTests(VerificationTestCase):
 class AgentSessionTestCase(VerificationTestCase):
     """Ralph's real session handling, with scripted engine processes in place of the CLIs."""
 
-    def start_engine(self, mode, *results, budget=None, confirm=None):
+    def start_engine(self, mode, *results, confirm=None):
         self.engine = ScriptedEngine(self.repository, *results)
-        budget_argument = () if budget is None else (budget,)
         return start_mode_run(
-            mode, self.repository, self.github, self.engine, PARENT, *budget_argument,
-            confirm=confirm,
+            mode, self.repository, self.github, self.engine, PARENT, confirm=confirm,
         )
 
     def session_file(self, index, name):
@@ -4141,7 +4158,6 @@ class BackupTakeoverTests(AgentSessionTestCase):
             EngineResult("no_changes"),
             EngineResult("committed"),
             EngineResult("no_changes"),
-            budget=10,
         )
 
         self.assertEqual(result.exit_code, 0, result.stderr)
@@ -4310,35 +4326,35 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assertEqual(self.engine.engines(), ["codex"])
         self.assertNotIn("backup", result.stdout)
 
-    def test_failed_session_counts_toward_the_run_budget(self):
+    def test_failed_session_and_its_replay_count_toward_the_child_session_limit(self):
         self.new_child_run()
 
-        result = self.start_engine(
-            loop_core.REVIEWED_RUN,
-            EngineResult(writes_result=False, commit=False),
-            EngineResult("committed"),
-            budget=2,
-        )
+        with child_session_limit(loop_core.REVIEWED_RUN, 2):
+            result = self.start_engine(
+                loop_core.REVIEWED_RUN,
+                EngineResult(writes_result=False, commit=False),
+                EngineResult("committed"),
+            )
 
         self.assert_handed_to_human_review(
             result,
-            "run budget exhausted before review",
-            "run budget of 2 agent sessions was exhausted after 2 sessions",
+            "child session limit exhausted before review",
+            "child session limit of 2 (reviewed run) was exhausted",
         )
         self.assertEqual(self.engine.engines(), ["codex", "claude"])
 
-    def test_engine_failure_on_the_last_budgeted_session_exhausts_the_run_budget_instead_of_replaying(self):
-        result = self.start_engine(
-            loop_core.STANDARD_RUN,
-            EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
-            budget=1,
-        )
+    def test_engine_failure_on_the_last_allowed_session_exhausts_the_limit_instead_of_replaying(self):
+        with child_session_limit(loop_core.STANDARD_RUN, 1):
+            result = self.start_engine(
+                loop_core.STANDARD_RUN,
+                EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
+            )
 
         self.assert_handed_to_human_review(
             result,
-            "run budget exhausted before implementation",
-            "Ralph stopped before implementation because the run budget of 1 agent sessions "
-            "was exhausted after 1 sessions.",
+            "child session limit exhausted before implementation",
+            "Ralph stopped before implementation because the child session limit of 1 "
+            "(standard run) was exhausted.",
             "implementation exited non-zero without a committed outcome",
         )
         self.assertEqual(self.engine.engines(), ["codex"])
@@ -4401,10 +4417,9 @@ class StandaloneRunTestCase(VerificationTestCase):
         )
         return self.start(mode, *results), observed
 
-    def start_engine(self, mode, *results, budget=None):
+    def start_engine(self, mode, *results):
         self.engine = ScriptedEngine(self.repository, *results)
-        budget_argument = () if budget is None else (budget,)
-        return start_mode_run(mode, self.repository, self.github, self.engine, STANDALONE, *budget_argument)
+        return start_mode_run(mode, self.repository, self.github, self.engine, STANDALONE)
 
     def assert_standalone_implemented(self, result, *, sessions):
         self.assertEqual(result.exit_code, 0, result.stderr)
@@ -4706,8 +4721,8 @@ class StandaloneMarkerTests(StandaloneRunTestCase):
             self.assertIn(f"- warning: {warning}", printed)
 
 
-class StandaloneBudgetTests(StandaloneRunTestCase):
-    def test_default_budget_of_a_standard_run_is_five_sessions(self):
+class StandaloneChildSessionLimitTests(StandaloneRunTestCase):
+    def test_default_child_session_limit_of_a_standard_run_is_five_sessions(self):
         self.new_child_run(local_gate_results=("fail", "fail", "fail", "pass"), backup=True)
 
         result = self.start_engine(
@@ -4722,7 +4737,7 @@ class StandaloneBudgetTests(StandaloneRunTestCase):
         self.assertIn(f"Issue: https://github.com/lmpaul/buyr/issues/{STANDALONE}\n", self.engine.calls[0].prompt)
         self.assertNotIn("Parent: ", self.engine.calls[0].prompt)
 
-    def test_default_budget_of_a_reviewed_run_is_nine_sessions(self):
+    def test_default_child_session_limit_of_a_reviewed_run_is_nine_sessions(self):
         self.new_child_run(backup=True)
         findings = EngineResult("needs_correction", findings=("Handle empty carts.",))
 
@@ -4736,13 +4751,14 @@ class StandaloneBudgetTests(StandaloneRunTestCase):
 
         self.assert_standalone_implemented(result, sessions=9)
 
-    def test_explicit_budget_applies_unchanged(self):
-        result = self.start(
-            loop_core.REVIEWED_RUN, *passing_child_results(loop_core.REVIEWED_RUN), budget=1
-        )
+    def test_child_session_limit_applies_unchanged(self):
+        with child_session_limit(loop_core.REVIEWED_RUN, 1):
+            result = self.start(
+                loop_core.REVIEWED_RUN, *passing_child_results(loop_core.REVIEWED_RUN)
+            )
 
         self.assertEqual(result.exit_code, 1)
-        self.assertIn("run budget exhausted before review", result.stderr)
+        self.assertIn("child session limit exhausted before review", result.stderr)
         self.assertEqual(len(self.sessions.requests), 1)
         self.assertEqual(self.github.labels(STANDALONE), {"human-review", "standalone"})
 
@@ -4896,10 +4912,10 @@ class RunTargetPickerTests(RunLevelTestCase):
         self.ready_for_agent_during_the_run(READY_FOR_HUMAN_CHILD)
         confirm = ScriptedConfirm(CREATE)
         choose = ScriptedChoice(PARENT)
-        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
 
         result = self.start_without_run_target(
-            choose, *worst_case_child_results(loop_core.STANDARD_RUN), findings,
+            choose, *worst_case_child_results(loop_core.STANDARD_RUN),
+            ScriptedResult("blocked", "Needs a product decision."),
             flags=("--no-caffeinate",), confirm=confirm,
         )
 
@@ -4907,12 +4923,10 @@ class RunTargetPickerTests(RunLevelTestCase):
         self.assertEqual(confirm.questions, [f"Create {RUN_BRANCH} from an up-to-date main?"])
         self.assertEqual(git(self.repository.path, "branch", "--show-current"), RUN_BRANCH)
         self.assertEqual(result.exit_code, 1)
-        # The default run budget counts the ready children, as for `ralph-kit run 191`.
+        # Each child gets its own child session limit, as for `ralph-kit run 191`.
         self.assertEqual(self.session_children(), [CHILD] * 4 + [READY_FOR_HUMAN_CHILD])
-        self.assertIn("run budget exhausted before issue correction", result.stderr)
         self.assertIn(
-            f"then run `ralph-kit run --no-caffeinate {PARENT}` again; "
-            "each run starts with a fresh run budget.",
+            f"and run `ralph-kit run --no-caffeinate {PARENT}` again.",
             self.github.comments(PARENT)[-1],
         )
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
