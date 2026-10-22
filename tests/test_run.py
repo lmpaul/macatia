@@ -1436,6 +1436,19 @@ class ParentWorkStartedTests(ParentLabelTestCase):
         for printed in (summary, result.stdout.split("🏁 Ralph summary")[-1]):
             self.assertIn(f"- warning: {warning}", printed)
 
+    def test_parent_and_children_never_get_the_standalone_marker(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(DEPENDENT, parent=PARENT)
+        added = []
+        self.github.after_label_edit = lambda number, add, remove: added.append(add)
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN) * 2)
+
+        self.assert_completed(result, sessions=2)
+        self.assertNotIn("standalone", added)
+        for number in (PARENT, CHILD, DEPENDENT):
+            self.assertNotIn("standalone", self.github.labels(number))
+
 
 class RepeatedRunTests(RunLevelTestCase):
     def test_second_run_in_the_same_process_does_not_share_the_first_runs_state(self):
@@ -4326,7 +4339,7 @@ class StandaloneRunTestCase(VerificationTestCase):
         self.assertNotIn("children of", result.stdout)
         self.assertIn(f"🏁 Ralph summary for standalone issue #{STANDALONE}:\n", result.stdout)
         self.assertIn(f"- agent sessions: {sessions}\n", result.stdout)
-        self.assertEqual(self.github.labels(STANDALONE), {"implemented"})
+        self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone"})
         comments = self.github.comments(STANDALONE)
         self.assertTrue(any("Ralph verified implementation commits" in body for body in comments))
         self.assertFalse(any("parent-completion" in body for body in comments))
@@ -4356,7 +4369,7 @@ class StandaloneRunTests(StandaloneRunTestCase):
         )
 
         self.assert_standalone_implemented(result, sessions=1)
-        self.assertEqual(observed, [("implementation", STANDALONE, {"agent-working"})])
+        self.assertEqual(observed, [("implementation", STANDALONE, {"agent-working", "standalone"})])
 
     def test_reviewed_run_includes_the_review_session(self):
         result, observed = self.start_observing_labels(
@@ -4367,8 +4380,8 @@ class StandaloneRunTests(StandaloneRunTestCase):
         self.assertEqual(
             observed,
             [
-                ("implementation", STANDALONE, {"agent-working"}),
-                ("review", STANDALONE, {"agent-working"}),
+                ("implementation", STANDALONE, {"agent-working", "standalone"}),
+                ("review", STANDALONE, {"agent-working", "standalone"}),
             ],
         )
 
@@ -4378,7 +4391,7 @@ class StandaloneRunTests(StandaloneRunTestCase):
         result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
 
         self.assertEqual(result.exit_code, 0, result.stderr)
-        self.assertEqual(self.github.labels(STANDALONE), {"implemented", "documentation"})
+        self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone", "documentation"})
         self.assertFalse(
             any("Ralph observed all" in body for body in self.github.comments(STANDALONE))
         )
@@ -4479,7 +4492,7 @@ class StandaloneStopTests(StandaloneRunTestCase):
 
         self.assertEqual(result.exit_code, 1)
         self.assertIn("correction limit of 3 exhausted before issue correction", result.stderr)
-        self.assertEqual(self.github.labels(STANDALONE), {"human-review"})
+        self.assertEqual(self.github.labels(STANDALONE), {"human-review", "standalone"})
         self.assertIn(COMMITS_STAY, self.github.reports(STANDALONE)[-2])
         self.assertIn("- final outcome: stopped safely", self.github.comments(STANDALONE)[-1])
 
@@ -4491,7 +4504,7 @@ class StandaloneStopTests(StandaloneRunTestCase):
     def test_left_agent_working_gets_the_resume_or_stop_choice(self):
         for answer, exit_code, final_labels in (
             (STOP, 1, {"agent-working"}),
-            (RESUME, 0, {"implemented"}),
+            (RESUME, 0, {"implemented", "standalone"}),
         ):
             with self.subTest(resume=answer):
                 self.new_child_run(issue_labels=("agent-working",))
@@ -4521,7 +4534,7 @@ class StandaloneStopTests(StandaloneRunTestCase):
                 stop()
                 with self.assertRaises((RunInterrupted, ValueError)):
                     self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
-                self.assertEqual(self.github.labels(STANDALONE), {"agent-working"})
+                self.assertEqual(self.github.labels(STANDALONE), {"agent-working", "standalone"})
                 self.github.after_comment = None
                 confirm = ScriptedConfirm(STOP)
 
@@ -4533,6 +4546,88 @@ class StandaloneStopTests(StandaloneRunTestCase):
     def crash_after_evidence(self, number, body):
         if loop_core.STANDARD_RUN.implementation_evidence_prefix in body:
             raise ValueError("the label write never happened")
+
+
+class StandaloneMarkerTests(StandaloneRunTestCase):
+    """The standalone marker is added once the issue is marked agent working, and only read by humans."""
+
+    def record_standalone_edits(self):
+        """Record each label edit on the issue as (added, removed) from now on."""
+        self.standalone_edits = []
+        self.github.after_label_edit = lambda number, add, remove: (
+            self.standalone_edits.append((add, sorted(remove))) if number == STANDALONE else None
+        )
+
+    def test_marker_is_added_right_after_the_issue_is_marked_agent_working(self):
+        self.record_standalone_edits()
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_standalone_implemented(result, sessions=1)
+        self.assertEqual(
+            self.standalone_edits,
+            [
+                ("agent-working", ["ready-for-agent"]),
+                ("standalone", []),
+                ("implemented", ["agent-working"]),
+            ],
+        )
+
+    def test_marker_added_by_hand_changes_nothing_about_the_run(self):
+        self.new_child_run(issue_labels=("ready-for-agent", "standalone"))
+        self.record_standalone_edits()
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_standalone_implemented(result, sessions=1)
+        self.assertEqual(
+            self.standalone_edits,
+            [("agent-working", ["ready-for-agent"]), ("implemented", ["agent-working"])],
+        )
+
+    def test_marker_added_by_hand_does_not_make_an_unready_issue_runnable(self):
+        self.new_child_run(issue_labels=("needs-info", "standalone"))
+
+        result = self.start(loop_core.STANDARD_RUN)
+
+        self.assert_refused(
+            result,
+            f"standalone issue #{STANDALONE} is not ready for an agent: labelled needs-info",
+            ("needs-info", "standalone"),
+        )
+
+    def test_marker_removed_by_hand_during_the_cycle_is_not_restored(self):
+        self.before_session = lambda request: self.github.edit_issue_labels(
+            STANDALONE, add="agent-working", remove=["standalone"]
+        )
+
+        result = self.start(loop_core.REVIEWED_RUN, *passing_child_results(loop_core.REVIEWED_RUN))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(len(self.sessions.requests), 2)
+        self.assertEqual(self.github.labels(STANDALONE), {"implemented"})
+
+    def test_failed_marker_write_warns_and_the_run_continues(self):
+        # The marker write is the next label edit after the issue is marked agent working.
+        def fail_the_marker_write(number, add, remove):
+            if number == STANDALONE and add == "agent-working":
+                self.github.label_edit_error = RalphError("gh issue edit failed: HTTP 502")
+
+        self.github.after_label_edit = fail_the_marker_write
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.github.labels(STANDALONE), {"implemented"})
+        warning = (
+            f"Ralph could not label standalone issue #{STANDALONE} standalone: "
+            "gh issue edit failed: HTTP 502."
+        )
+        self.assertIn(f"⚠️  {warning}", result.stdout)
+        summary = self.github.comments(STANDALONE)[-1]
+        self.assertIn("- final outcome: completed", summary)
+        for printed in (summary, result.stdout.split("🏁 Ralph summary")[-1]):
+            self.assertIn(f"- warning: {warning}", printed)
 
 
 class StandaloneBudgetTests(StandaloneRunTestCase):
@@ -4573,7 +4668,7 @@ class StandaloneBudgetTests(StandaloneRunTestCase):
         self.assertEqual(result.exit_code, 1)
         self.assertIn("run budget exhausted before review", result.stderr)
         self.assertEqual(len(self.sessions.requests), 1)
-        self.assertEqual(self.github.labels(STANDALONE), {"human-review"})
+        self.assertEqual(self.github.labels(STANDALONE), {"human-review", "standalone"})
 
 
 class StandaloneRunBranchTests(BaseBranchTestCase):
@@ -4589,7 +4684,7 @@ class StandaloneRunBranchTests(BaseBranchTestCase):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(confirm.questions, [f"Create ralph-kit/issue-{STANDALONE} from an up-to-date main?"])
         self.assertEqual(self.current_branch(), f"ralph-kit/issue-{STANDALONE}")
-        self.assertEqual(self.github.labels(STANDALONE), {"implemented"})
+        self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone"})
 
     def test_refused_issue_is_refused_before_the_run_branch_is_offered(self):
         self.github.edit_issue_labels(STANDALONE, add="needs-info", remove=["ready-for-agent"])

@@ -1692,13 +1692,36 @@ def mark_parent_work_started(state: RunState, parent_number: int) -> None:
             parent_number, add=work_started, remove=sorted({ready_label} & parent_labels)
         )
     except RalphError as error:
-        warning = (
-            f"Ralph could not label parent #{parent_number} {work_started}: "
-            f"{sanitized_text(' '.join(str(error).split()))}. The run continues; add the "
-            "label by hand if you want it."
+        warn_informational_label_failed(state, f"parent #{parent_number}", work_started, error)
+
+
+def mark_standalone(state: RunState, issue_number: int) -> None:
+    """Label the standalone issue with the standalone marker, which nothing removes.
+
+    The label is informational, so a failed write warns and the run continues.
+    """
+    standalone = configured_label(state, "standalone")
+    try:
+        if standalone in labels(issue_details(state, issue_number)):
+            return
+        state.github.edit_issue_labels(issue_number, add=standalone, remove=[])
+    except RalphError as error:
+        warn_informational_label_failed(
+            state, f"standalone issue #{issue_number}", standalone, error
         )
-        state.warnings.append(warning)
-        print(f"⚠️  {warning}", flush=True)
+
+
+def warn_informational_label_failed(
+    state: RunState, issue: str, label: str, error: RalphError
+) -> None:
+    """Warn that an informational label write failed; the run continues without it."""
+    warning = (
+        f"Ralph could not label {issue} {label}: "
+        f"{sanitized_text(' '.join(str(error).split()))}. The run continues; add the "
+        "label by hand if you want it."
+    )
+    state.warnings.append(warning)
+    print(f"⚠️  {warning}", flush=True)
 
 
 def latest_child_base_comment(state: RunState, issue: dict[str, Any]) -> str | None:
@@ -3167,7 +3190,9 @@ def run_children(
             details = issue_details(state, child_number)
             require_trusted_issue(state, details)
             child_base = start_child_cycle(state, child_number, details, siblings)
-            if not state.standalone:
+            if state.standalone:
+                mark_standalone(state, parent_issue)
+            else:
                 mark_parent_work_started(state, parent_issue)
         state.diagnostics.child_bases[child_number] = child_base.commit
         cycle = run_child_cycle(

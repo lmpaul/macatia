@@ -307,6 +307,15 @@ comment, no `human-review` handoff of the run target, and never `work-started`.
 A stop hands the issue to human review as it would a child; relabelled
 `ready-for-agent`, it resumes on the next run.
 
+Right after marking a standalone issue `agent-working`, once every start check
+has passed, Ralph also labels it with the standalone marker `standalone`, unless it already carries the
+label. The label is informational only: Ralph never reads it to decide
+anything, nothing removes it, and adding or removing it by hand changes nothing
+about a run. A refused issue never receives it, and an implemented issue or one
+handed to human review keeps it. Parent issues and their children never
+receive it. If the write fails, Ralph prints a warning, repeats it in the
+terminal summary, and the run continues.
+
 At startup, before anything is commented, labelled, pushed or run, the parent
 must be authored by a trusted author and must not be held back by triage: a
 parent carrying any triage label configured in `ralph.toml` other than
