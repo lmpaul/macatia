@@ -3224,11 +3224,20 @@ def choose_run_target(state: RunState) -> int | None:
         targets = startable_run_targets(state)
     if not targets:
         return None
+    # On the run branch of a listed issue, that issue is preselected; otherwise the first one is.
+    numbers = {target.number for target in targets}
+    branch = state.branch or ""
+    suffix = branch.removeprefix(RUN_BRANCH_PREFIX)
+    preselected = (
+        int(suffix)
+        if branch.startswith(RUN_BRANCH_PREFIX) and suffix.isdecimal() and int(suffix) in numbers
+        else None
+    )
     try:
-        chosen = choose(targets, None)
+        chosen = choose(targets, preselected)
     except KeyboardInterrupt:
         raise RalphError("no run target was chosen") from None
-    if chosen not in {target.number for target in targets}:
+    if chosen not in numbers:
         raise RalphError(f"#{chosen} is not one of the startable run targets")
     return chosen
 

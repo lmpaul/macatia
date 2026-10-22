@@ -4858,6 +4858,36 @@ class RunTargetPickerTests(RunLevelTestCase):
         ]])
         self.assertEqual(choose.preselected, [None])
 
+    def test_preselects_the_issue_of_the_run_branch_when_it_is_listed(self):
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.add_issue(200)
+        self.github.add_issue(202, state="closed")
+        self.github.add_issue(203, labels=("needs-info",))
+        for branch, preselected in (
+            ("ralph-kit/issue-200", 200),
+            (RUN_BRANCH, PARENT),
+            ("ralph-kit/issue-202", None),
+            ("ralph-kit/issue-203", None),
+            ("ralph-kit/issue-999", None),
+            ("codex/issue-200", None),
+        ):
+            with self.subTest(branch=branch):
+                git(self.repository.path, "checkout", "-q", "-B", branch)
+                choose = ScriptedChoice(KeyboardInterrupt())
+
+                result = self.start_without_run_target(choose)
+
+                self.assertEqual(choose.offered, [[
+                    f"#{PARENT}  Issue {PARENT}  (parent · 1 ready children)",
+                    "#200  Issue 200  (standalone)",
+                ]])
+                self.assertEqual(choose.preselected, [preselected])
+                # The preselected issue still waits for the user's choice.
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn("Ralph stopped: no run target was chosen", result.stderr)
+                self.assert_nothing_changed(result)
+                self.assertEqual(self.github.labels(200), {"ready-for-agent"})
+
     def test_picking_an_issue_runs_it_as_if_it_was_passed(self):
         git(self.repository.path, "checkout", "main")
         self.github.add_issue(CHILD, parent=PARENT)
