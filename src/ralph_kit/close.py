@@ -26,7 +26,8 @@ from .progress import spinner
 
 COMPLETED = "completed"
 NO_EVIDENCE = "implemented without evidence: merge not verified"
-# Marks the parent's closure comment, so a rerun after the parent failed to close does not repeat it.
+# Marks the closure comment, so a rerun after the issue failed to close does not repeat it;
+# the marker predates standalone issues and stays as it is for those already posted.
 CLOSURE_MARKER = "<!-- ralph-parent-closure -->"
 
 
@@ -98,7 +99,8 @@ def failed_checks(
     is implemented is not a failure; only --force closes the others.
 
     `children` are the open children's details, comments included; a standalone
-    `target` is its own only child, checked as one, and needs no human review.
+    `target` is its own only child, checked as one, and needs no human review,
+    but without evidence it fails: no other child's evidence vouches for the run.
     """
     human_review = config.labels["human_review"]
     implemented = config.labels["implemented"]
@@ -123,7 +125,9 @@ def failed_checks(
                 f"lifecycle labels: {shown} (expected only {implemented})",
             ))
         heads = latest_implementation_heads(child, config.trusted_authors, STANDARD_RUN)
-        if heads is None:
+        if heads is None and standalone:
+            failures.append(Failure(f"#{child['number']} has no implementation evidence", NO_EVIDENCE))
+        elif heads is None:
             without_evidence.append(child)
         # Ancestry first: a child merged by ancestry costs no pull request lookup.
         elif not github.commit_is_on_branch(config.base_branch, heads[-1]):
@@ -169,14 +173,11 @@ def closure_comment(
     `forced_failures` is None unless the closure was forced."""
     forced = "" if forced_failures is None else "\n\n" + forced_section(forced_failures)
     if standalone is not None:
-        if standalone in without_evidence:
-            how = ", as confirmed by a human without implementation evidence"
-        else:
-            pull = merged_by.get(int(standalone["number"]))
-            how = "" if pull is None else f", merged by PR #{pull}"
-        return f"{CLOSURE_MARKER}\nRalph closed this standalone issue as completed{how}.{forced}"
+        pull = merged_by.get(int(standalone["number"]))
+        merged = "" if pull is None else f", merged by PR #{pull}"
+        return f"{CLOSURE_MARKER}\nRalph closed this standalone issue as completed{merged}.{forced}"
     if not has_children:
-        return f"{CLOSURE_MARKER}\nRalph closed this issue, which has no sub-issues.{forced}"
+        return f"{CLOSURE_MARKER}\nRalph closed this sub-issue alone: it has no sub-issues of its own.{forced}"
     if not closed:
         return f"{CLOSURE_MARKER}\nRalph closed this parent issue: every child was already closed.{forced}"
     sections = [
@@ -196,10 +197,10 @@ def closure_comment(
     )
 
 
-def has_closure_comment(config: RalphConfig, parent: dict[str, Any]) -> bool:
-    """Whether the parent's latest trusted comment is a closure comment."""
+def has_closure_comment(config: RalphConfig, issue: dict[str, Any]) -> bool:
+    """Whether the issue's latest trusted comment is a closure comment."""
     trusted = [
-        comment for comment in parent.get("comments", [])
+        comment for comment in issue.get("comments", [])
         if author_login(comment) in config.trusted_authors
     ]
     return bool(trusted) and CLOSURE_MARKER in str(trusted[-1].get("body", ""))
@@ -236,7 +237,7 @@ def close_target(
     closed alone. An issue with a parent fails a check naming it: the parent is the run target.
     Under `force`, failed checks are warnings and the confirmation is the typed issue number.
     """
-    with spinner(f"Checking #{number} and its sub-issues before closing…"):
+    with spinner(f"Checking #{number} and any sub-issues before closing…"):
         try:
             target = github.issue(number)
         except RalphError as error:
@@ -284,8 +285,6 @@ def close_target(
     closing = "Force-closing" if force else "Closing"
     if standalone is not None:
         print(f"📋 {closing} standalone issue {merged_child_reference(target, merged_by)}, as completed.")
-        if without_evidence:
-            print(f"   ❓ {NO_EVIDENCE}")
     else:
         print(f"📋 {closing} {issue_reference(target)}, as completed:")
         for child in open_children:

@@ -135,7 +135,7 @@ class CloseTests(unittest.TestCase):
                 repository_root=self.root,
             )
         self.assertEqual(code, 0)
-        self.assertIn(f"Checking #{PARENT} and its sub-issues before closing", terminal.getvalue())
+        self.assertIn(f"Checking #{PARENT} and any sub-issues before closing", terminal.getvalue())
 
     def test_other_output_gets_no_progress(self):
         self.add_parent()
@@ -259,35 +259,37 @@ class CloseTests(unittest.TestCase):
         self.assertIn("#80 is authored by @stranger", self.stderr)
         self.assertEqual(self.state(80), ("OPEN", None))
 
-    def test_an_unevidenced_standalone_issue_is_refused_even_with_yes(self):
+    def test_an_unevidenced_standalone_issue_is_refused_even_at_a_terminal(self):
         self.add_standalone(80, comments=[])
+        confirmer = ScriptedConfirmer()
+
+        self.assertEqual(self.close("80", confirm=confirmer), 1)
+
+        self.assertIn("#80 has no implementation evidence", self.stderr)
+        self.assertIn("Nothing closed", self.stderr)
+        self.assertEqual(confirmer.questions, [])
+        self.assertEqual(self.state(80), ("OPEN", None))
+        self.assertEqual(self.closure_comments(80), [])
+
+    def test_untrusted_evidence_does_not_count_for_a_standalone_issue(self):
+        evidence = self.evidence(80)
+        self.add_standalone(80, comments=[{"author": {"login": "intruder"}, "body": evidence["body"]}])
 
         self.assertEqual(self.close("80", "--yes"), 1)
 
-        self.assertIn(NO_EVIDENCE, self.stderr)
-        self.assertIn("#80", self.stderr)
+        self.assertIn("#80 has no implementation evidence", self.stderr)
         self.assertEqual(self.state(80), ("OPEN", None))
-        self.assertEqual(self.closure_comments(80), [])
 
-    def test_declining_an_unevidenced_standalone_issue_writes_nothing(self):
-        self.add_standalone(80, comments=[])
-        confirmer = ScriptedConfirmer(False)
-
-        self.assertEqual(self.close("80", "--yes", confirm=confirmer), 1)
-
-        self.assertEqual(confirmer.questions, ["Close #80?"])
-        self.assertIn(NO_EVIDENCE, self.stdout)
-        self.assertEqual(self.state(80), ("OPEN", None))
-        self.assertEqual(self.closure_comments(80), [])
-
-    def test_a_human_confirms_closing_an_unevidenced_standalone_issue(self):
+    def test_force_closes_an_unevidenced_standalone_issue_after_the_typed_number(self):
         self.add_standalone(80, comments=[])
 
-        self.assertEqual(self.close("80", confirm=ScriptedConfirmer(True)), 0, self.stderr)
+        self.assertEqual(self.close("--force", "80", typed=ScriptedConfirmer("80")), 0, self.stderr)
 
+        self.assertIn("⚠️  #80 has no implementation evidence", self.stdout)
         self.assertEqual(self.state(80), ("CLOSED", "COMPLETED"))
         [comment] = self.closure_comments(80)
-        self.assertIn("confirmed by a human without implementation evidence", comment)
+        self.assertIn("forced", comment)
+        self.assertIn("#80 has no implementation evidence", comment)
 
     def test_a_rerun_after_a_standalone_issue_failed_to_close_does_not_comment_again(self):
         self.add_standalone(80)
@@ -861,6 +863,7 @@ class CloseTests(unittest.TestCase):
         [comment] = self.closure_comments(70)
         self.assertIn("forced", comment)
         self.assertIn(f"#70 is a sub-issue of #{PARENT}", comment)
+        self.assertIn("sub-issue alone", comment)
         self.assertEqual(self.github.comments(PARENT), [])
 
     def test_force_closes_a_failing_standalone_issue_after_the_typed_number(self):

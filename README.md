@@ -775,15 +775,16 @@ An open child labelled `implemented` without trusted implementation evidence
 (typically work a human did) does not fail a check: `close` lists it apart as
 `implemented without evidence: merge not verified`.
 
-A standalone issue, one with no parent and no sub-issues, is checked as a single
-open child: authored by a trusted author, `implemented` as its only lifecycle
-label, and merged as proven by its implementation evidence. It needs no
-`human-review` label, and its `standalone` marker is ignored. `close` lists it,
-asks `Close #N?` and closes it alone, with one comment saying Ralph closed the
-standalone issue (and the pull request that merged it, if one proved it). An
-unmerged or unimplemented standalone issue is refused; one implemented without
-evidence is closed only once a human at a terminal confirms it, as a child
-would be.
+A standalone issue, one with no parent and no sub-issues, is checked as the
+run's only child: authored by a trusted author, `implemented` as its only
+lifecycle label, and merged as proven by its trusted implementation evidence.
+It needs no `human-review` label, and its `standalone` marker is ignored.
+Unlike a child, it fails a check without trusted implementation evidence
+(`#N has no implementation evidence`), so an unmerged, unimplemented or
+unevidenced standalone issue is refused and only `--force` closes it. Once every
+check passes, `close` lists it, asks `Close #N?` (`--yes` skips it) and closes
+it alone, with one comment saying Ralph closed the standalone issue (and the
+pull request that merged it, if one proved it).
 
 A refusal lists every failed check at once and closes nothing. When every check
 passes, `close` lists the children and the parent it will close and asks one
