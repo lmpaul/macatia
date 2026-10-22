@@ -81,8 +81,6 @@ class RunMode:
     follow_up_commits: str
     gate_correction_scope: str
     unverified_warning: str
-    # The child session limit: a child's worst case under the correction limit, plus one.
-    child_session_limit: int
 
 
 DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
@@ -131,8 +129,6 @@ STANDARD_RUN = RunMode(
         "ℹ️ Ralph is running without automated verification: local gates and "
         "remote CI are explicitly disabled; human review is required before merge."
     ),
-    # One implementation session and three correction sessions, plus one.
-    child_session_limit=5,
 )
 
 
@@ -155,9 +151,6 @@ REVIEWED_RUN = RunMode(
         "⚠️ Ralph is running without automated verification: independent "
         "agent review is the only configured check."
     ),
-    # One implementation session, three correction sessions, and a review session
-    # after each of them, plus one.
-    child_session_limit=9,
 )
 
 
@@ -3331,7 +3324,9 @@ def run_children(
                 mark_parent_work_started(state, parent_issue)
         state.diagnostics.child_bases[child_number] = child_base.commit
         # Each child gets a fresh count in every run, a resumed child included.
-        state.child_session_limit = ChildSessionLimit(state.mode.child_session_limit, session_total)
+        state.child_session_limit = ChildSessionLimit(
+            state.config.child_session_limits.for_run(review=state.mode.review), session_total
+        )
         cycle = run_child_cycle(
             child_number, child_base.commit, state.child_session_limit, adapters,
             review=state.mode.review, gate_base=child_base.recorded,

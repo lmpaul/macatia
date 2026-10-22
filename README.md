@@ -298,8 +298,8 @@ branch. Otherwise the run is refused with the reason, such as
 `standalone issue #42 is not ready for an agent: labelled needs-info` or
 `standalone issue #42 waits on #41, neither closed nor implemented on this branch`.
 A run on the base branch offers `ralph-kit/issue-<N>` as for a parent, and the
-issue, as its run's only child, gets the child session limit (five sessions in a
-standard run, nine in a reviewed run). The draft PR is titled `Implement Ralph
+issue, as its run's only child, gets the child session limit (by default five
+sessions in a standard run, nine in a reviewed run). The draft PR is titled `Implement Ralph
 issue #N`, still requires a human merge and carries no closing keyword. Once
 the issue is implemented, it carries only the `implemented` lifecycle label and
 its implementation evidence, the PR is marked ready, and the terminal summary is
@@ -385,12 +385,15 @@ The loop of a standard run is:
    only a human merges.
 
 The **child session limit** bounds the agent sessions one child may receive in
-a run: 5 in a standard run and 9 in a reviewed run, a child's worst case under
-the correction limit, plus one. That worst case is four sessions in a standard
+a run: by default 5 in a standard run and 9 in a reviewed run, a child's worst
+case under the correction limit, plus one; `[child_session_limit]` in
+`ralph.toml` sets each value (see [repository settings](#repository-settings)).
+That worst case is four sessions in a standard
 run (one implementation session and three correction sessions) and eight in a
 reviewed run (the same, with a review session after each of them); the plus
 one leaves room for a backup replay, so at these values the correction limit
-always binds first. Implementation,
+always binds first. A lower value stops a child earlier; a value above the
+worst case has no effect. Implementation,
 review, issue correction, local gate correction, and CI correction sessions all
 count toward it; infrastructure retries do not. Each child has its own count,
 and there is no run-wide cap: the number of children does not change how many
@@ -486,6 +489,21 @@ infrastructure retries, then stops the run.
 - `caffeinate_by_default` is optional (`false` when missing). `true` makes every
   run hold a sleep lock until it ends; `ralph-kit run --no-caffeinate` overrides
   it for one run.
+- `[child_session_limit]` is an optional table with two optional integer keys:
+  `standard` (5 when missing, at least 1) and `reviewed` (9 when missing, at
+  least 2, so a reviewed run can always reach its review session), the child
+  session limit of a standard and a reviewed run. A run uses the value of its
+  mode: `reviewed` with `--review` or `review_by_default = true`, `standard`
+  with `--no-review` or otherwise. The correction limit already bounds a child
+  at 4 sessions in a standard run and 8 in a reviewed run, so a value above
+  that has no effect; a lower value stops a child earlier:
+
+  ```toml
+  [child_session_limit]
+  standard = 5
+  reviewed = 9
+  ```
+
 - `labels` maps Ralph's ten label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, the lifecycle labels `ready_for_agent`,
@@ -514,8 +532,9 @@ infrastructure retries, then stops the run.
   them in engine, model, or reasoning effort.
 
 The loader rejects missing and unknown settings, duplicate TOML keys, duplicate
-authors, duplicate label values, unsafe repository paths, and unsupported mode
-values before starting an agent or changing GitHub state.
+authors, duplicate label values, unsafe repository paths, unsupported mode
+values, and child session limits that are not integers or are below their
+minimum before starting an agent or changing GitHub state.
 
 ## Codex and Claude Code
 

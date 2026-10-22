@@ -33,6 +33,9 @@ MODEL_ROLES = ("implementation", "review", "correction")
 MODEL_KEYS = set(MODEL_ROLES)
 # The optional profile that takes over every session role after an engine failure.
 BACKUP_MODEL_KEY = "backup"
+# Each child session limit key with its default and minimum. A default is a child's worst
+# case under the correction limit, plus one; a reviewed child always needs a review session.
+CHILD_SESSION_LIMITS = {"standard": (5, 1), "reviewed": (9, 2)}
 REASONING_EFFORTS = {
     "none",
     "minimal",
@@ -84,6 +87,17 @@ class VerificationConfig:
 
 
 @dataclass(frozen=True)
+class ChildSessionLimits:
+    """The maximum number of agent sessions one child may receive in a run of each mode."""
+
+    standard: int = CHILD_SESSION_LIMITS["standard"][0]
+    reviewed: int = CHILD_SESSION_LIMITS["reviewed"][0]
+
+    def for_run(self, *, review: bool) -> int:
+        return self.reviewed if review else self.standard
+
+
+@dataclass(frozen=True)
 class RalphConfig:
     repository: str
     base_branch: str
@@ -98,6 +112,7 @@ class RalphConfig:
     review_by_default: bool = False
     # Makes a run without --caffeinate or --no-caffeinate hold the sleep lock.
     caffeinate_by_default: bool = False
+    child_session_limits: ChildSessionLimits = ChildSessionLimits()
     # Label roles the file leaves out, which got their default name.
     defaulted_labels: frozenset[str] = frozenset()
 
@@ -188,6 +203,20 @@ def _profile(value: Any, path: str) -> AgentProfile:
     )
 
 
+def _child_session_limits(value: Any, path: str) -> ChildSessionLimits:
+    values = _mapping(value, path, set(), set(CHILD_SESSION_LIMITS))
+    limits = {}
+    for key, (default, minimum) in CHILD_SESSION_LIMITS.items():
+        limit = values.get(key, default)
+        # TOML booleans load as bool, a subclass of int.
+        if not isinstance(limit, int) or isinstance(limit, bool):
+            raise RalphConfigError(f"{path}.{key} must be an integer")
+        if limit < minimum:
+            raise RalphConfigError(f"{path}.{key} must be at least {minimum}")
+        limits[key] = limit
+    return ChildSessionLimits(**limits)
+
+
 def load_config(
     path: pathlib.Path, repository_root: pathlib.Path, *, require_review: bool = True
 ) -> RalphConfig:
@@ -206,7 +235,7 @@ def load_config(
             "models",
             "verification",
         },
-        {"review_by_default", "caffeinate_by_default"},
+        {"review_by_default", "caffeinate_by_default", "child_session_limit"},
     )
     if values["version"] != 1:
         raise RalphConfigError("configuration.version must be 1")
@@ -237,6 +266,10 @@ def load_config(
     caffeinate_by_default = values.get("caffeinate_by_default", False)
     if not isinstance(caffeinate_by_default, bool):
         raise RalphConfigError("configuration.caffeinate_by_default must be a boolean")
+
+    child_session_limits = _child_session_limits(
+        values.get("child_session_limit", {}), "configuration.child_session_limit"
+    )
 
     if isinstance(values["labels"], dict) and (
         missing := sorted(LABEL_KEYS - set(LATER_LABEL_DEFAULTS) - set(values["labels"]))
@@ -309,6 +342,7 @@ def load_config(
         backup=backup,
         review_by_default=review_by_default,
         caffeinate_by_default=caffeinate_by_default,
+        child_session_limits=child_session_limits,
         defaulted_labels=defaulted_labels,
         verification=VerificationConfig(
             local_checks=verification_values["local_checks"],

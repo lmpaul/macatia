@@ -168,11 +168,11 @@ def worst_case_child_results(mode):
     return [committed, findings] * 3 + [committed, ScriptedResult("no_changes")]
 
 
-def child_session_limit(mode, limit):
-    """Patch the child session limit of `mode`'s runs to `limit` agent sessions."""
-    name = "REVIEWED_RUN" if mode.review else "STANDARD_RUN"
-    return mock.patch.object(
-        loop_core, name, dataclasses.replace(mode, child_session_limit=limit)
+def set_child_session_limit(repository, **limits):
+    """Configure `[child_session_limit]` in `repository`'s ralph.toml with `limits`."""
+    table = "".join(f"{key} = {value}\n" for key, value in limits.items())
+    repository.edit_configuration(
+        "[verification]\n", f"[child_session_limit]\n{table}\n[verification]\n"
     )
 
 
@@ -622,11 +622,12 @@ class LeftAgentWorkingTests(RunLevelTestCase):
         self.github.add_issue(DEPENDENT, parent=PARENT)
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
 
-        with child_session_limit(loop_core.STANDARD_RUN, 2):
-            result = self.start(
-                loop_core.STANDARD_RUN, findings, ScriptedResult("committed"),
-                findings, ScriptedResult("committed"), confirm=ScriptedConfirm(RESUME),
-            )
+        set_child_session_limit(self.repository, standard=2)
+
+        result = self.start(
+            loop_core.STANDARD_RUN, findings, ScriptedResult("committed"),
+            findings, ScriptedResult("committed"), confirm=ScriptedConfirm(RESUME),
+        )
 
         self.assert_completed(result, sessions=4)
         self.assertEqual(self.session_children(), [CHILD] * 2 + [DEPENDENT] * 2)
@@ -3396,8 +3397,11 @@ class InfrastructureRetryTests(VerificationTestCase):
                 self.new_child_run(ci=("cancelled", "success"))
                 sessions = passing_child_results(mode)
 
-                with child_session_limit(mode, len(sessions)):
-                    result = self.start(mode, *sessions)
+                set_child_session_limit(
+                    self.repository, **{"reviewed" if mode.review else "standard": len(sessions)}
+                )
+
+                result = self.start(mode, *sessions)
 
                 self.assert_implemented(result)
                 self.assertIn(
@@ -3479,8 +3483,9 @@ class ChildSessionLimitTests(VerificationTestCase):
         self.new_two_child_run()
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
 
-        with child_session_limit(loop_core.STANDARD_RUN, 3):
-            result = self.start(loop_core.STANDARD_RUN, *[findings] * 3)
+        set_child_session_limit(self.repository, standard=3)
+
+        result = self.start(loop_core.STANDARD_RUN, *[findings] * 3)
 
         handoff = self.assert_child_session_limit_stop(
             result, CHILD, role="issue correction", limit=3, mode="standard", sessions=3
@@ -3491,14 +3496,14 @@ class ChildSessionLimitTests(VerificationTestCase):
 
     def test_handed_off_child_relabelled_and_rerun_gets_a_fresh_count(self):
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
-        with child_session_limit(loop_core.STANDARD_RUN, 1):
-            result = self.start(loop_core.STANDARD_RUN, findings)
-            self.assert_child_session_limit_stop(
-                result, CHILD, role="issue correction", limit=1, mode="standard", sessions=1
-            )
-            self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=["human-review"])
+        set_child_session_limit(self.repository, standard=1)
+        result = self.start(loop_core.STANDARD_RUN, findings)
+        self.assert_child_session_limit_stop(
+            result, CHILD, role="issue correction", limit=1, mode="standard", sessions=1
+        )
+        self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=["human-review"])
 
-            result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed", path="rerun.txt"))
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed", path="rerun.txt"))
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
@@ -3508,17 +3513,18 @@ class ChildSessionLimitTests(VerificationTestCase):
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
         child = [findings, ScriptedResult("committed")]
 
-        with child_session_limit(loop_core.STANDARD_RUN, 2):
-            result = self.start(loop_core.STANDARD_RUN, *child * 2)
+        set_child_session_limit(self.repository, standard=2)
+
+        result = self.start(loop_core.STANDARD_RUN, *child * 2)
 
         self.assert_completed(result, sessions=4)
         self.assertEqual(self.session_children(), [CHILD] * 2 + [DEPENDENT] * 2)
 
     def test_reviewed_run_uses_the_reviewed_limit(self):
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+        set_child_session_limit(self.repository, standard=1, reviewed=2)
 
-        with child_session_limit(loop_core.REVIEWED_RUN, 2):
-            result = self.start(loop_core.REVIEWED_RUN, ScriptedResult("committed"), findings)
+        result = self.start(loop_core.REVIEWED_RUN, ScriptedResult("committed"), findings)
 
         self.assert_child_session_limit_stop(
             result, CHILD, role="issue correction", limit=2, mode="reviewed", sessions=2
@@ -3526,24 +3532,74 @@ class ChildSessionLimitTests(VerificationTestCase):
 
     def test_run_reviewed_by_the_setting_uses_the_reviewed_limit(self):
         set_review_by_default(self.repository)
-        self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
+        set_child_session_limit(self.repository, standard=1, reviewed=2)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"), findings)
 
         # No `--review`: the setting makes the run reviewed.
-        with child_session_limit(loop_core.REVIEWED_RUN, 1):
-            result = start_run(self.repository, self.github, self.sessions, PARENT)
+        result = start_run(self.repository, self.github, self.sessions, PARENT)
 
         self.assert_child_session_limit_stop(
-            result, CHILD, role="review", limit=1, mode="reviewed", sessions=1
+            result, CHILD, role="issue correction", limit=2, mode="reviewed", sessions=2
         )
 
     def test_no_review_uses_the_standard_limit_despite_the_setting(self):
         set_review_by_default(self.repository)
-        self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
+        set_child_session_limit(self.repository, standard=1, reviewed=9)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
+        self.sessions = ScriptedSessions(self.repository, findings)
 
-        with child_session_limit(loop_core.REVIEWED_RUN, 1):
-            result = start_run(self.repository, self.github, self.sessions, "--no-review", PARENT)
+        result = start_run(self.repository, self.github, self.sessions, "--no-review", PARENT)
 
-        self.assert_implemented(result)
+        self.assert_child_session_limit_stop(
+            result, CHILD, role="issue correction", limit=1, mode="standard", sessions=1
+        )
+
+    def test_a_key_left_out_of_the_table_keeps_its_default(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_child_run()
+                # Only the other mode's limit is configured, tighter than any worst case.
+                set_child_session_limit(self.repository, **{"standard" if mode.review else "reviewed": 2})
+                worst_case = worst_case_child_results(mode)
+
+                result = self.start(mode, *worst_case)
+
+                self.assert_implemented(result)
+                self.assertEqual(len(self.sessions.requests), len(worst_case))
+
+    def test_invalid_limit_is_rejected_before_any_session(self):
+        for table, reason in (
+            ('standard = "5"', "configuration.child_session_limit.standard must be an integer"),
+            ("standard = 5.0", "configuration.child_session_limit.standard must be an integer"),
+            ("reviewed = true", "configuration.child_session_limit.reviewed must be an integer"),
+            ("standard = 0", "configuration.child_session_limit.standard must be at least 1"),
+            ("reviewed = 1", "configuration.child_session_limit.reviewed must be at least 2"),
+            ("review = 9", "configuration.child_session_limit has unknown keys: review"),
+        ):
+            with self.subTest(table):
+                self.new_child_run()
+                self.repository.edit_configuration(
+                    "[verification]\n", f"[child_session_limit]\n{table}\n\n[verification]\n"
+                )
+
+                result = self.start(loop_core.STANDARD_RUN)
+
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(self.sessions.requests, [])
+                self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+
+    def test_table_that_is_not_a_mapping_is_rejected(self):
+        self.repository.edit_configuration(
+            'trusted_authors = ["lmpaul"]\n', 'trusted_authors = ["lmpaul"]\nchild_session_limit = 5\n'
+        )
+
+        result = self.start(loop_core.STANDARD_RUN)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("configuration.child_session_limit must be a mapping", result.stderr)
+        self.assertEqual(self.sessions.requests, [])
 
 
 class StopSummaryTests(VerificationTestCase):
@@ -3632,13 +3688,18 @@ class StopSummaryTests(VerificationTestCase):
                 )
 
     def test_exhausted_child_session_limit_says_the_next_run_gives_a_fresh_one(self):
-        with child_session_limit(loop_core.REVIEWED_RUN, 1):
-            result = self.start(loop_core.REVIEWED_RUN, ScriptedResult("committed"))
+        set_child_session_limit(self.repository, reviewed=2)
+
+        result = self.start(
+            loop_core.REVIEWED_RUN,
+            ScriptedResult("committed"),
+            ScriptedResult("needs_correction", findings=("Handle empty carts.",)),
+        )
 
         self.assert_stop_summary(
             result,
-            "- agent sessions: 1\n- infrastructure retries: 0\n",
-            "Stop reason: child session limit exhausted before review",
+            "- agent sessions: 2\n- infrastructure retries: 0\n",
+            "Stop reason: child session limit exhausted before issue correction",
             f"- #{CHILD}: handed to human review ({self.github.latest_comment_url(CHILD)}).",
             f"Next action:\n- #{CHILD} was handed to human review because its child session "
             f"limit was exhausted: relabel it ready-for-agent, then run `ralph-kit run --review "
@@ -4343,12 +4404,13 @@ class BackupTakeoverTests(AgentSessionTestCase):
     def test_failed_session_and_its_replay_count_toward_the_child_session_limit(self):
         self.new_child_run()
 
-        with child_session_limit(loop_core.REVIEWED_RUN, 2):
-            result = self.start_engine(
-                loop_core.REVIEWED_RUN,
-                EngineResult(writes_result=False, commit=False),
-                EngineResult("committed"),
-            )
+        set_child_session_limit(self.repository, reviewed=2)
+
+        result = self.start_engine(
+            loop_core.REVIEWED_RUN,
+            EngineResult(writes_result=False, commit=False),
+            EngineResult("committed"),
+        )
 
         self.assert_handed_to_human_review(
             result,
@@ -4358,11 +4420,13 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assertEqual(self.engine.engines(), ["codex", "claude"])
 
     def test_engine_failure_on_the_last_allowed_session_exhausts_the_limit_instead_of_replaying(self):
-        with child_session_limit(loop_core.STANDARD_RUN, 1):
-            result = self.start_engine(
-                loop_core.STANDARD_RUN,
-                EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
-            )
+        set_child_session_limit(self.repository, standard=1)
+        self.start_head = self.repository.head()
+
+        result = self.start_engine(
+            loop_core.STANDARD_RUN,
+            EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
+        )
 
         self.assert_handed_to_human_review(
             result,
@@ -4766,14 +4830,17 @@ class StandaloneChildSessionLimitTests(StandaloneRunTestCase):
         self.assert_standalone_implemented(result, sessions=9)
 
     def test_child_session_limit_applies_unchanged(self):
-        with child_session_limit(loop_core.REVIEWED_RUN, 1):
-            result = self.start(
-                loop_core.REVIEWED_RUN, *passing_child_results(loop_core.REVIEWED_RUN)
-            )
+        set_child_session_limit(self.repository, reviewed=2)
+
+        result = self.start(
+            loop_core.REVIEWED_RUN,
+            ScriptedResult("committed"),
+            ScriptedResult("needs_correction", findings=("Handle empty carts.",)),
+        )
 
         self.assertEqual(result.exit_code, 1)
-        self.assertIn("child session limit exhausted before review", result.stderr)
-        self.assertEqual(len(self.sessions.requests), 1)
+        self.assertIn("child session limit exhausted before issue correction", result.stderr)
+        self.assertEqual(len(self.sessions.requests), 2)
         self.assertEqual(self.github.labels(STANDALONE), {"human-review", "standalone"})
 
 
