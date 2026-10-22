@@ -41,9 +41,21 @@ if git rev-parse --quiet --verify "refs/tags/$tag" >/dev/null; then
   exit 1
 fi
 
-echo "Running lint and tests..."
+echo "Running lint..."
 uvx ruff==0.17.1 check src tests
-uv run python -m unittest discover -s tests
+
+# The suite pushes to throwaway fixture remotes, so its git output is noise:
+# keep it in a log and show it only when a test fails.
+echo "Running tests (about 2 minutes)..."
+log="$(mktemp)"
+if ! uv run python -m unittest discover -s tests >"$log" 2>&1; then
+  cat "$log"
+  rm -f "$log"
+  echo "tests failed, nothing was released" >&2
+  exit 1
+fi
+tail -n 1 "$log"
+rm -f "$log"
 
 sed -i.bak "s/^__version__ = \"$current\"$/__version__ = \"$version\"/" "$init"
 sed -i.bak "s/ralph-kit@v$current/ralph-kit@$tag/" README.md
