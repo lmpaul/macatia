@@ -3489,6 +3489,20 @@ class ChildSessionLimitTests(VerificationTestCase):
         self.assertEqual(self.session_children(), [CHILD] * 3)
         self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
 
+    def test_handed_off_child_relabelled_and_rerun_gets_a_fresh_count(self):
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
+        with child_session_limit(loop_core.STANDARD_RUN, 1):
+            result = self.start(loop_core.STANDARD_RUN, findings)
+            self.assert_child_session_limit_stop(
+                result, CHILD, role="issue correction", limit=1, mode="standard", sessions=1
+            )
+            self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=["human-review"])
+
+            result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed", path="rerun.txt"))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
     def test_each_child_gets_its_own_count(self):
         self.new_two_child_run()
         findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)

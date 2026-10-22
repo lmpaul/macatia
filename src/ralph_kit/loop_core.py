@@ -365,12 +365,12 @@ class RunSummary:
     parent: int | None = None
     implemented: int = 0
     remaining: int = 0
-    sessions: SessionTotal | None = None
+    session_total: SessionTotal | None = None
     infrastructure: InfrastructureRetryTracker | None = None
 
     @property
     def agent_sessions(self) -> int:
-        return self.sessions.sessions if self.sessions is not None else 0
+        return self.session_total.count if self.session_total is not None else 0
 
     @property
     def infra_retries(self) -> int:
@@ -555,7 +555,7 @@ def update_run_summary(
     state: RunState,
     parent_issue: int,
     children: Iterable[dict[str, Any]],
-    sessions: SessionTotal,
+    session_total: SessionTotal,
     infrastructure: InfrastructureRetryTracker,
 ) -> None:
     """Count the children again."""
@@ -571,7 +571,7 @@ def update_run_summary(
         parent=parent_issue,
         implemented=len(implemented_children - state.initial_implemented_children),
         remaining=sum(child_is_remaining(state, child) for child in child_list),
-        sessions=sessions,
+        session_total=session_total,
         infrastructure=infrastructure,
     )
 
@@ -3255,7 +3255,7 @@ def run_children(
     """
     assert state.branch is not None
     infrastructure = InfrastructureRetryTracker(state)
-    sessions = SessionTotal()
+    session_total = SessionTotal()
     # The blocker checks of a standalone issue may retry their pull request lookups.
     state.summary = RunSummary(infrastructure=infrastructure)
     with spinner(f"Reading #{parent_issue}…"):
@@ -3271,16 +3271,16 @@ def run_children(
     branch = state.branch
     with spinner(f"Reading the children of #{parent_issue}…"):
         siblings = run_target_children(state, parent_issue)
-        update_run_summary(state, parent_issue, siblings, sessions, infrastructure)
+        update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
         while recover_published_child(state, siblings):
             siblings = run_target_children(state, parent_issue)
     if left_agent_working := [
         child for child in siblings if child_is_agent_working(state, child)
     ]:
-        update_run_summary(state, parent_issue, siblings, sessions, infrastructure)
+        update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
         resolve_left_agent_working(state, left_agent_working)
         siblings = run_target_children(state, parent_issue)
-    update_run_summary(state, parent_issue, siblings, sessions, infrastructure)
+    update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
     adapters = state.adapters.child_cycle(
         ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
     )
@@ -3288,7 +3288,7 @@ def run_children(
     while True:
         with spinner("Selecting the next runnable child…"):
             siblings = run_target_children(state, parent_issue)
-            update_run_summary(state, parent_issue, siblings, sessions, infrastructure)
+            update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
             # Best-effort guard, not a lock: another run can still take a child
             # between this read and this run's own agent-working write. It precedes
             # recovery so that another run's published child is left to that run.
@@ -3313,7 +3313,7 @@ def run_children(
                         state,
                         parent_issue,
                         len(siblings),
-                        sessions.sessions,
+                        session_total.count,
                     )
                 publish_terminal_summary(state, terminal_summary(state, "completed"))
                 mark_pull_request_ready(state, branch)
@@ -3331,7 +3331,7 @@ def run_children(
                 mark_parent_work_started(state, parent_issue)
         state.diagnostics.child_bases[child_number] = child_base.commit
         # Each child gets a fresh count in every run, a resumed child included.
-        state.child_session_limit = ChildSessionLimit(state.mode.child_session_limit, sessions)
+        state.child_session_limit = ChildSessionLimit(state.mode.child_session_limit, session_total)
         cycle = run_child_cycle(
             child_number, child_base.commit, state.child_session_limit, adapters,
             review=state.mode.review, gate_base=child_base.recorded,
@@ -3360,7 +3360,7 @@ def run_children(
         state.working_child = None
         print(f"✅ Completed child #{child_number}", flush=True)
         print("🔄 Selecting the next runnable child.", flush=True)
-        update_run_summary(state, parent_issue, siblings, sessions, infrastructure)
+        update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
 
     print(
         f"🎉 Standalone issue #{parent_issue} is implemented; "
@@ -3369,7 +3369,7 @@ def run_children(
         f"🎉 All {len(siblings)} children of #{parent_issue} are complete; "
         "the pull request is ready for review."
     )
-    update_run_summary(state, parent_issue, siblings, sessions, infrastructure)
+    update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
     print_terminal_summary(state, "completed")
     return 0
 

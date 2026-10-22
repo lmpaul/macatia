@@ -101,7 +101,7 @@ class SessionTotal:
     """The agent sessions one run started across its children, reported but never capped."""
 
     def __init__(self) -> None:
-        self.sessions = 0
+        self.count = 0
 
 
 class ChildSessionLimit:
@@ -116,7 +116,7 @@ class ChildSessionLimit:
         if self.sessions >= self.maximum:
             raise ChildSessionLimitExhausted(role)
         self.sessions += 1
-        self.total.sessions += 1
+        self.total.count += 1
 
 
 class ChildSessionLimitExhausted(Exception):

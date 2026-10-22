@@ -208,7 +208,8 @@ The default suite is offline: it never starts `ralph-kit run` as a subprocess,
 launches a real agent, or calls GitHub. Each rule is tested at one level:
 
 - **Child cycle rules** (correction limit, review session order, handoff on
-  missing commits, child session limit checks inside a cycle): `tests/test_child_cycle.py`,
+  missing commits, child session limit checks inside a cycle):
+  `tests/test_child_cycle.py`,
   in memory through the child cycle adapters.
 - **Run rules** (child selection, blockers, deadlock, recovery, publication,
   parent completion, infrastructure retries, startup and trust):
@@ -297,7 +298,7 @@ branch. Otherwise the run is refused with the reason, such as
 `standalone issue #42 is not ready for an agent: labelled needs-info` or
 `standalone issue #42 waits on #41, neither closed nor implemented on this branch`.
 A run on the base branch offers `ralph-kit/issue-<N>` as for a parent, and the
-issue gets the same child session limit as a child (five sessions in a
+issue, as its run's only child, gets the child session limit (five sessions in a
 standard run, nine in a reviewed run). The draft PR is titled `Implement Ralph
 issue #N`, still requires a human merge and carries no closing keyword. Once
 the issue is implemented, it carries only the `implemented` lifecycle label and
@@ -387,9 +388,9 @@ The **child session limit** bounds the agent sessions one child may receive in
 a run: 5 in a standard run and 9 in a reviewed run, a child's worst case under
 the correction limit, plus one. That worst case is four sessions in a standard
 run (one implementation session and three correction sessions) and eight in a
-reviewed run (the same, with a review session after each of them), so the
-correction limit binds first; the child session limit only stops a child
-earlier when an engine failure's backup replay adds a session. Implementation,
+reviewed run (the same, with a review session after each of them); the plus
+one leaves room for a backup replay, so at these values the correction limit
+always binds first. Implementation,
 review, issue correction, local gate correction, and CI correction sessions all
 count toward it; infrastructure retries do not. Each child has its own count,
 and there is no run-wide cap: the number of children does not change how many
@@ -423,8 +424,9 @@ run's. With the setting on,
 
 An implementation or correction that returns `needs_correction` must still pass
 its outstanding findings to an issue correction before publication. The
-correction limit and the child session limit remain in force. CI corrections must create
-a new commit. Infrastructure retries do not count toward the child session limit.
+correction limit and the child session limit remain in force. CI corrections
+must create a new commit. Infrastructure retries do not count toward the child
+session limit.
 
 Correction context is assembled by Python; it does not launch a separate LLM
 or invoke the `handoff` skill. Prompts contain the parent and child issue URLs,
