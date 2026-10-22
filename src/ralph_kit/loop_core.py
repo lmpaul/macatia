@@ -1945,31 +1945,45 @@ def recover_published_child(state: RunState, children: Iterable[dict[str, Any]])
     return False
 
 
+def trusted_issue_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
+    if author_login(issue) in state.config.trusted_authors:
+        return None
+    return f"issue #{issue['number']} must be authored by one of: " + ", ".join(
+        f"@{author}" for author in sorted(state.config.trusted_authors)
+    )
+
+
 def require_trusted_issue(state: RunState, issue: dict[str, Any]) -> None:
-    if author_login(issue) not in state.config.trusted_authors:
-        raise RalphError(
-            f"issue #{issue['number']} must be authored by one of: "
-            + ", ".join(f"@{author}" for author in sorted(state.config.trusted_authors))
-        )
+    if refusal := trusted_issue_refusal(state, issue):
+        raise RalphError(refusal)
+
+
+def run_target_refusal(state: RunState, issue_number: int) -> str | None:
+    """Why the issue is not a run target: it is a sub-issue of another issue, whatever that
+    issue's state. A failed lookup raises."""
+    parent = state.github.parent(issue_number)
+    if parent is None:
+        return None
+    return (
+        f"issue #{issue_number} is a sub-issue of #{parent['number']}: "
+        f"run #{parent['number']} instead"
+    )
 
 
 def require_run_target(state: RunState, issue_number: int) -> None:
-    """The issue is not a sub-issue of another issue, whatever that issue's state."""
-    parent = state.github.parent(issue_number)
-    if parent is not None:
-        raise RalphError(
-            f"issue #{issue_number} is a sub-issue of #{parent['number']}: "
-            f"run #{parent['number']} instead"
-        )
+    if refusal := run_target_refusal(state, issue_number):
+        raise RalphError(refusal)
 
 
-def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None:
-    """The standalone issue is trusted, open, ready for an agent or left agent working by an
-    earlier run, and waits on no unsatisfied blocker, as its child cycle would require."""
-    require_trusted_issue(state, issue)
+def standalone_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
+    """Why a run would not start on the standalone issue: it must be trusted, open, ready for
+    an agent or left agent working by an earlier run, and wait on no unsatisfied blocker, as
+    its child cycle would require. A failed lookup raises."""
+    if refusal := trusted_issue_refusal(state, issue):
+        return refusal
     number = int(issue["number"])
     if str(issue.get("state", "")).upper() != "OPEN":
-        raise RalphError(f"standalone issue #{number} is closed")
+        return f"standalone issue #{number} is closed"
     if not (child_is_ready(state, issue) or child_is_agent_working(state, issue)):
         ready_label = configured_label(state, "ready_for_agent")
         other_labels = sorted(
@@ -1980,30 +1994,43 @@ def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None
             f"labelled {', '.join(other_labels)}" if other_labels
             else f"not labelled {ready_label}"
         )
-        raise RalphError(f"standalone issue #{number} is not ready for an agent: {reason}")
+        return f"standalone issue #{number} is not ready for an agent: {reason}"
     # A failed lookup stops the run with its own reason, not as an unsatisfied blocker.
     if unsatisfied := [
         f"#{blocker['number']}"
         for blocker in state.github.blockers(number)
         if not blocker_is_satisfied(state, blocker)
     ]:
-        raise RalphError(
+        return (
             f"standalone issue #{number} waits on {', '.join(unsatisfied)}, neither closed "
             "nor implemented on this branch"
         )
+    return None
 
 
-def require_startable_parent(state: RunState, parent: dict[str, Any]) -> None:
-    """The parent is trusted and carries no triage label other than ready-for-agent."""
-    require_trusted_issue(state, parent)
+def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None:
+    if refusal := standalone_refusal(state, issue):
+        raise RalphError(refusal)
+
+
+def parent_refusal(state: RunState, parent: dict[str, Any]) -> str | None:
+    """Why a run would not start on the parent: it must be trusted and carry no triage label
+    other than ready-for-agent."""
+    if refusal := trusted_issue_refusal(state, parent):
+        return refusal
     blocking = labels(parent) & (
         state.config.triage_labels - {configured_label(state, "ready_for_agent")}
     )
     if blocking:
-        raise RalphError(
-            f"parent issue #{parent['number']} is held back by triage: "
-            + ", ".join(sorted(blocking))
+        return f"parent issue #{parent['number']} is held back by triage: " + ", ".join(
+            sorted(blocking)
         )
+    return None
+
+
+def require_startable_parent(state: RunState, parent: dict[str, Any]) -> None:
+    if refusal := parent_refusal(state, parent):
+        raise RalphError(refusal)
 
 
 def parse_agent_result(path: pathlib.Path) -> dict[str, Any]:
