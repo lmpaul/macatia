@@ -1894,6 +1894,16 @@ def require_trusted_issue(state: RunState, issue: dict[str, Any]) -> None:
         )
 
 
+def require_run_target(state: RunState, issue_number: int) -> None:
+    """The issue is not a sub-issue of another issue, whatever that issue's state."""
+    parent = state.github.parent(issue_number)
+    if parent is not None:
+        raise RalphError(
+            f"issue #{issue_number} is a sub-issue of #{parent['number']}: "
+            f"run #{parent['number']} instead"
+        )
+
+
 def require_startable_parent(state: RunState, parent: dict[str, Any]) -> None:
     """The parent is trusted and carries no triage label other than ready-for-agent."""
     require_trusted_issue(state, parent)
@@ -3017,6 +3027,7 @@ def run_children(
     """
     assert state.branch is not None
     with spinner(f"Reading #{parent_issue}…"):
+        require_run_target(state, parent_issue)
         require_startable_parent(state, issue_details(state, parent_issue))
     if state.branch == state.config.base_branch:
         state.branch = offer_run_branch(state, parent_issue)

@@ -1575,8 +1575,8 @@ class StartupTests(StartupRejectionTestCase):
 RUN_BRANCH = f"ralph-kit/issue-{PARENT}"
 
 
-class RunBranchTests(StartupRejectionTestCase):
-    """A run started on the base branch offers to create the parent's run branch."""
+class BaseBranchTestCase(StartupRejectionTestCase):
+    """A run started on the base branch, with a second clone that can push to `origin`."""
 
     def setUp(self):
         super().setUp()
@@ -1618,6 +1618,9 @@ class RunBranchTests(StartupRejectionTestCase):
         self.assertEqual(self.repository.head(), base_head or self.base_head)
         self.assertNotIn(RUN_BRANCH, self.local_branches())
         self.assertNotIn(RUN_BRANCH, self.origin_branches())
+
+class RunBranchTests(BaseBranchTestCase):
+    """A run started on the base branch offers to create the parent's run branch."""
 
     def test_create_fast_forwards_the_base_branch_and_pushes_the_run_branch_before_any_session(self):
         remote_head = self.push_to_origin_main("upstream.txt")
@@ -1917,6 +1920,82 @@ class RunBranchTests(StartupRejectionTestCase):
         self.assert_completed(result, sessions=1)
         self.assertEqual(confirm.questions, [])
         self.assertNotIn(RUN_BRANCH, self.origin_branches())
+
+
+OUTER_PARENT = 190
+
+
+class SubIssueRunTargetTests(BaseBranchTestCase):
+    """A run started on a sub-issue is refused before its run branch is offered."""
+
+    def make_sub_issue(self, *, parent_state="open", parent_labels=("work-started",)):
+        self.github.add_issue(OUTER_PARENT, state=parent_state, labels=parent_labels)
+        self.github.children[OUTER_PARENT] = [PARENT]
+
+    def assert_refused_naming_the_parent(self, result, confirm, parent_labels=("work-started",)):
+        self.assert_nothing_changed(
+            result, f"issue #{PARENT} is a sub-issue of #{OUTER_PARENT}: run #{OUTER_PARENT} instead"
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(self.github.comments(OUTER_PARENT), [])
+        self.assertEqual(self.github.labels(OUTER_PARENT), set(parent_labels))
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+
+    def test_sub_issue_with_sub_issues_is_refused_naming_its_parent(self):
+        self.make_sub_issue()
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_refused_naming_the_parent(result, confirm)
+
+    def test_sub_issue_without_sub_issues_is_refused_naming_its_parent(self):
+        self.github.children[PARENT] = []
+        self.make_sub_issue()
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_refused_naming_the_parent(result, confirm)
+
+    def test_sub_issue_is_refused_whatever_the_state_of_its_parent(self):
+        for parent_state, parent_labels in (
+            ("closed", ()),
+            ("open", ("human-review",)),
+            ("open", ("needs-info",)),
+        ):
+            with self.subTest(parent_state=parent_state, parent_labels=parent_labels):
+                self.make_sub_issue(parent_state=parent_state, parent_labels=parent_labels)
+                confirm = ScriptedConfirm(CREATE)
+
+                result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+                self.assert_refused_naming_the_parent(result, confirm, parent_labels)
+
+    def test_sub_issue_held_back_by_triage_is_refused_naming_its_parent(self):
+        self.github.edit_issue_labels(PARENT, "needs-info", ["ready-for-agent"])
+        self.make_sub_issue()
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_nothing_changed(
+            result, f"issue #{PARENT} is a sub-issue of #{OUTER_PARENT}: run #{OUTER_PARENT} instead"
+        )
+        self.assertEqual(confirm.questions, [])
+
+    def test_failed_parent_lookup_stops_the_run_as_an_error(self):
+        self.github.parent_error[PARENT] = RalphError(
+            f"command failed (gh api repos/lmpaul/buyr/issues/{PARENT}/parent): "
+            "gh: Server Error (HTTP 502)"
+        )
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start(loop_core.STANDARD_RUN, confirm=confirm)
+
+        self.assert_nothing_changed(result, "gh: Server Error (HTTP 502)")
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
 
 
 class ParentTriageTests(StartupRejectionTestCase):

@@ -270,6 +270,17 @@ Each run executes the loop over the parent issue's runnable children.
 session for each child once its local gates pass, repeated after every
 correction session that follows a review (issue, local gate, or CI).
 
+A run starts on a run target: an issue that is not a sub-issue of another
+issue, as GitHub's native sub-issue relationship records it. A run target with
+sub-issues is a parent issue, and its sub-issues are the children the run works
+through. At startup, before the run branch is offered and before anything is
+written on GitHub, Ralph asks GitHub for the issue's parent: an issue that has
+one is refused, whether or not it has sub-issues of its own and whatever the
+state of its parent, and the error names the parent to run instead
+(`issue #124 is a sub-issue of #123: run #123 instead`). Only GitHub's "No
+parent issue found" answer means the issue has no parent; any other failure of
+that lookup stops the run as an error.
+
 At startup, before anything is commented, labelled, pushed or run, the parent
 must be authored by a trusted author and must not be held back by triage: a
 parent carrying any triage label configured in `ralph.toml` other than
