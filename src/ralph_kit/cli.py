@@ -27,11 +27,12 @@ commands:
   update-labels [--config PATH]
       Add each label role the configuration leaves out, with its default name, keeping the rest of the file;
       then offer to create the labels missing on GitHub.
-  close [--yes | --force] [--config PATH] PARENT
-      Parent closure: once every open child of PARENT is implemented and PARENT is in human review,
-      close the open children, then PARENT, as completed, after one confirmation.
+  close [--yes | --force] [--config PATH] ISSUE
+      Closure: once every open child of a parent ISSUE is implemented and ISSUE is in human review,
+      close the open children, then ISSUE, as completed, after one confirmation; a standalone ISSUE
+      that is implemented and merged closes alone.
       --yes closes without asking; without a terminal, close needs --yes.
-      --force closes despite failed checks, shown as warnings, once you type PARENT at a terminal.
+      --force closes despite failed checks, shown as warnings, once you type ISSUE at a terminal.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """

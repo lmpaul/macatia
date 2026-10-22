@@ -1,4 +1,5 @@
-"""`ralph-kit close`: the parent closure of a parent issue whose children are implemented."""
+"""`ralph-kit close`: the closure of a run target once its work is merged: a parent issue's
+implemented children, then the parent, or a standalone issue alone."""
 
 from __future__ import annotations
 
@@ -53,7 +54,10 @@ class CloseCancelled(Exception):
 def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=prog,
-        description="Close a parent issue's open children, then the parent, as completed.",
+        description=(
+            "Close a parent issue's open children, then the parent, or a standalone issue alone, "
+            "as completed."
+        ),
     )
     parser.add_argument(
         "--config",
@@ -66,9 +70,9 @@ def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
     confirmation.add_argument(
         "--force",
         action="store_true",
-        help="close despite failed checks, after typing the parent number at a terminal",
+        help="close despite failed checks, after typing the issue number at a terminal",
     )
-    parser.add_argument("parent_issue", type=positive_integer)
+    parser.add_argument("issue", type=positive_integer)
     return parser.parse_args(argv)  # Exits with status 2 on usage errors.
 
 
@@ -81,14 +85,20 @@ def issue_reference(issue: dict[str, Any]) -> str:
 
 
 def failed_checks(
-    github: Any, config: RalphConfig, parent: dict[str, Any], children: list[dict[str, Any]]
+    github: Any,
+    config: RalphConfig,
+    target: dict[str, Any],
+    children: list[dict[str, Any]],
+    *,
+    standalone: bool,
 ) -> tuple[list[Failure], list[dict[str, Any]], dict[int, int]]:
-    """Every reason the parent closure cannot proceed, the open children whose merge
-    is not verified: without trusted implementation evidence, and the number of the
-    merged pull request that proves each child merged by one. A child without evidence
-    that is implemented is not a failure; only --force closes the others.
+    """Every reason the closure cannot proceed, the open children whose merge is not
+    verified: without trusted implementation evidence, and the number of the merged
+    pull request that proves each child merged by one. A child without evidence that
+    is implemented is not a failure; only --force closes the others.
 
-    `children` are the open children's details, comments included.
+    `children` are the open children's details, comments included; a standalone
+    `target` is its own only child, checked as one, and needs no human review.
     """
     human_review = config.labels["human_review"]
     implemented = config.labels["implemented"]
@@ -96,9 +106,9 @@ def failed_checks(
     failures: list[Failure] = []
     without_evidence = []
     merged_by: dict[int, int] = {}
-    if human_review not in labels(parent):
-        failures.append(Failure(f"#{parent['number']} is not labelled {human_review}"))
-    for issue in (parent, *children):
+    if not standalone and human_review not in labels(target):
+        failures.append(Failure(f"#{target['number']} is not labelled {human_review}"))
+    for issue in children if standalone else (target, *children):
         if author_login(issue) not in config.trusted_authors:
             failures.append(Failure(
                 f"#{issue['number']} is authored by @{author_login(issue)}",
@@ -151,11 +161,20 @@ def closure_comment(
     without_evidence: list[dict[str, Any]],
     merged_by: dict[int, int],
     *,
+    standalone: dict[str, Any] | None,
     has_children: bool,
     forced_failures: list[Failure] | None,
 ) -> str:
-    """The parent's closure comment; `forced_failures` is None unless the closure was forced."""
+    """The closure comment on the run target, `standalone` when it is a standalone issue;
+    `forced_failures` is None unless the closure was forced."""
     forced = "" if forced_failures is None else "\n\n" + forced_section(forced_failures)
+    if standalone is not None:
+        if standalone in without_evidence:
+            how = ", as confirmed by a human without implementation evidence"
+        else:
+            pull = merged_by.get(int(standalone["number"]))
+            how = "" if pull is None else f", merged by PR #{pull}"
+        return f"{CLOSURE_MARKER}\nRalph closed this standalone issue as completed{how}.{forced}"
     if not has_children:
         return f"{CLOSURE_MARKER}\nRalph closed this issue, which has no sub-issues.{forced}"
     if not closed:
@@ -186,24 +205,24 @@ def has_closure_comment(config: RalphConfig, parent: dict[str, Any]) -> bool:
     return bool(trusted) and CLOSURE_MARKER in str(trusted[-1].get("body", ""))
 
 
-def confirm_typed(parent_number: int, type_answer: Callable[[str], str] | None) -> None:
-    """Ask a human at a terminal to type the parent number; refuse on anything else."""
+def confirm_typed(number: int, type_answer: Callable[[str], str] | None) -> None:
+    """Ask a human at a terminal to type the issue number; refuse on anything else."""
     if type_answer is None:
-        raise CloseRefused("--force needs a human at a terminal to type the parent number. Nothing closed.")
+        raise CloseRefused("--force needs a human at a terminal to type the issue number. Nothing closed.")
     try:
-        answer = type_answer(f"Type {parent_number} to force the closure: ")
+        answer = type_answer(f"Type {number} to force the closure: ")
     except KeyboardInterrupt:
         raise CloseCancelled from None
     except EOFError:
         answer = ""
-    if answer.strip() != str(parent_number):
-        raise CloseRefused(f"Did not type {parent_number}. Nothing closed.")
+    if answer.strip() != str(number):
+        raise CloseRefused(f"Did not type {number}. Nothing closed.")
 
 
-def close_parent(
+def close_target(
     github: Any,
     config: RalphConfig,
-    parent_number: int,
+    number: int,
     *,
     yes: bool,
     force: bool,
@@ -211,34 +230,50 @@ def close_parent(
     type_answer: Callable[[str], str] | None,
     rerun: str,
 ) -> None:
-    """Check everything, confirm, then close the open children, comment on and close the parent.
+    """Check everything, confirm, then close the open children, comment on and close the issue.
 
-    Under `force`, failed checks are warnings and the confirmation is the typed parent number.
+    An issue without a parent or sub-issues is a standalone issue, checked as a child and
+    closed alone. An issue with a parent fails a check naming it: the parent is the run target.
+    Under `force`, failed checks are warnings and the confirmation is the typed issue number.
     """
-    with spinner(f"Checking #{parent_number} and its sub-issues before closing…"):
+    with spinner(f"Checking #{number} and its sub-issues before closing…"):
         try:
-            parent = github.issue(parent_number)
+            target = github.issue(number)
         except RalphError as error:
-            raise RalphError(f"Cannot read #{parent_number}, nothing closed: {error}") from error
-        if int(parent.get("number", 0)) != parent_number:
-            raise RalphError(f"GitHub returned the wrong issue for #{parent_number}")
-        if is_open(parent):
-            children = github.sub_issues(parent_number)
+            raise RalphError(f"Cannot read #{number}, nothing closed: {error}") from error
+        if int(target.get("number", 0)) != number:
+            raise RalphError(f"GitHub returned the wrong issue for #{number}")
+        if is_open(target):
+            try:
+                parent = github.parent(number)
+            except RalphError as error:
+                raise RalphError(
+                    f"Cannot read the parent of #{number}, nothing closed: {error}"
+                ) from error
+            children = github.sub_issues(number)
+            standalone = target if parent is None and not children else None
             # Sub-issue listings carry no comments: each open child's evidence is in its details.
             open_children = [
                 github.issue(int(child["number"])) for child in children if is_open(child)
             ]
             failures, without_evidence, merged_by = failed_checks(
-                github, config, parent, open_children
+                github,
+                config,
+                target,
+                open_children if standalone is None else [target],
+                standalone=standalone is not None,
             )
-    if not is_open(parent):
-        print(f"#{parent_number} is already closed.")
+            if parent is not None:
+                failures.insert(0, Failure(
+                    f"#{number} is a sub-issue of #{parent['number']}",
+                    f"close #{parent['number']} instead",
+                ))
+    if not is_open(target):
+        print(f"#{number} is already closed.")
         return
-    if not children:
-        failures.append(Failure(f"#{parent_number} has no sub-issues"))
     if failures and not force:
         raise CloseRefused(
-            f"Cannot close #{parent_number}:\n\n"
+            f"Cannot close #{number}:\n\n"
             + "\n".join(failure.terminal() for failure in failures)
             + "\n\nNothing closed."
         )
@@ -246,17 +281,23 @@ def close_parent(
         print(failure.terminal())
     if failures:
         print()
-    print(f"📋 {'Force-closing' if force else 'Closing'} {issue_reference(parent)}, as completed:")
-    for child in open_children:
-        if child not in without_evidence:
-            print(f"   → {merged_child_reference(child, merged_by)}")
-    if without_evidence:
-        print(f"   ❓ {NO_EVIDENCE}:")
-        for child in without_evidence:
-            print(f"      → {issue_reference(child)}")
-    print(f"   → then #{parent_number}")
+    closing = "Force-closing" if force else "Closing"
+    if standalone is not None:
+        print(f"📋 {closing} standalone issue {merged_child_reference(target, merged_by)}, as completed.")
+        if without_evidence:
+            print(f"   ❓ {NO_EVIDENCE}")
+    else:
+        print(f"📋 {closing} {issue_reference(target)}, as completed:")
+        for child in open_children:
+            if child not in without_evidence:
+                print(f"   → {merged_child_reference(child, merged_by)}")
+        if without_evidence:
+            print(f"   ❓ {NO_EVIDENCE}:")
+            for child in without_evidence:
+                print(f"      → {issue_reference(child)}")
+        print(f"   → then #{number}")
     if force:
-        confirm_typed(parent_number, type_answer)
+        confirm_typed(number, type_answer)
     elif without_evidence or not yes:
         if confirm is None:
             raise CloseRefused(
@@ -269,7 +310,11 @@ def close_parent(
                 "Nothing closed."
             )
         try:
-            confirmed = confirm(f"Close these {len(open_children) + 1} issues?")
+            confirmed = confirm(
+                f"Close these {len(open_children) + 1} issues?"
+                if open_children
+                else f"Close #{number}?"
+            )
         except KeyboardInterrupt:
             raise CloseCancelled from None
         if not confirmed:
@@ -280,25 +325,26 @@ def close_parent(
             github.close_issue(int(child["number"]), COMPLETED)
             closed.append(child)
             print(f"   ✓ #{child['number']}")
-        if closed or not has_closure_comment(config, parent):
+        if closed or not has_closure_comment(config, target):
             github.comment_on_issue(
-                parent_number,
+                number,
                 closure_comment(
                     closed,
                     without_evidence,
                     merged_by,
+                    standalone=standalone,
                     has_children=bool(children),
                     forced_failures=failures if force else None,
                 ),
             )
-        github.close_issue(parent_number, COMPLETED)
+        github.close_issue(number, COMPLETED)
     except RalphError as error:
         done = child_numbers(closed) or "none"
         raise RalphError(f"{error}\nClosed so far: {done}. Rerun `{rerun}` to finish.") from error
-    print(f"   ✓ #{parent_number}")
+    print(f"   ✓ #{number}")
     count = len(closed)
     print(
-        f"✅ Closed #{parent_number}"
+        f"✅ Closed #{number}"
         + (f" and {count} {'child' if count == 1 else 'children'}" if count else "")
         + "."
     )
@@ -327,14 +373,14 @@ def run(
         *prog.split(),
         *(["--force"] if arguments.force else []),
         *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
-        str(arguments.parent_issue),
+        str(arguments.issue),
     ])
     try:
         config = load_config(config_path.resolve(), root, require_review=False)
-        close_parent(
+        close_target(
             github(root, config.repository),
             config,
-            arguments.parent_issue,
+            arguments.issue,
             yes=arguments.yes,
             force=arguments.force,
             confirm=confirm,

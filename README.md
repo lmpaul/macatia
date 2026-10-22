@@ -40,7 +40,7 @@ ralph-kit run --review 123     # reviewed run: adds an independent review sessio
 ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
-ralph-kit close 123            # parent closure: close #123's children, then #123 (asks first)
+ralph-kit close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
 ralph-kit close --yes 123      # same, without the confirmation
 ralph-kit close --force 123    # close despite failed checks, after typing 123
 ```
@@ -223,7 +223,7 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   covers `ralph-kit init` the same way, `tests/test_configure.py` covers
   `ralph-kit configure`, and `tests/test_update_labels.py` covers
   `ralph-kit update-labels`.
-- **Parent closure** (every check, the confirmation, the writes and resuming
+- **Closure** (every check, the confirmation, the writes and resuming
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
@@ -302,7 +302,8 @@ standard run, nine in a reviewed run). The draft PR is titled `Implement Ralph
 issue #N`, still requires a human merge and carries no closing keyword. Once
 the issue is implemented, it carries only the `implemented` lifecycle label and
 its implementation evidence, the PR is marked ready, and the terminal summary is
-published on the issue and the PR. There is no parent completion: no completion
+published on the issue and the PR. Once the PR is merged, `ralph-kit close <N>`
+closes the issue (see [Closure](#closure-close)). There is no parent completion: no completion
 comment, no `human-review` handoff of the run target, and never `work-started`.
 A stop hands the issue to human review as it would a child; relabelled
 `ready-for-agent`, it resumes on the next run.
@@ -734,11 +735,12 @@ leaving the labels as they are, so the next run asks about a child still
 caught: they release nothing and publish no interrupted summary. A signal
 ignored at launch, such as SIGHUP under `nohup`, stays ignored.
 
-## Parent closure: `close`
+## Closure: `close`
 
 Merging the cumulative draft PR closes nothing: its body carries no closing
-keyword. Once the work is merged, a parent closure closes the parent's open
-children, then the parent itself, as `completed`:
+keyword. Once the work is merged, a closure closes the run target as
+`completed`: a parent issue's open children, then the parent itself, or a
+standalone issue alone:
 
 ```sh
 ralph-kit close 123
@@ -750,8 +752,13 @@ ralph-kit close --force 123
 names, trusted authors) and needs nothing else from the checkout: no branch,
 clean worktree or Git remote. Before writing anything it checks that:
 
-- the parent is open (a closed parent prints `already closed` and exits 0);
-- the parent has sub-issues, carries `human-review` and is authored by a trusted author;
+- the issue is open (a closed issue prints `already closed` and exits 0);
+- the issue is a run target: an issue with a parent fails a check naming it
+  (`#124 is a sub-issue of #123`, `close #123 instead`), whatever the parent's
+  state and whether or not the issue has sub-issues of its own. As for a run,
+  only GitHub's "No parent issue found" answer means no parent; any other
+  failure of that lookup refuses and closes nothing;
+- a parent issue carries `human-review` and is authored by a trusted author;
 - each open child is authored by a trusted author and has `implemented` as its
   only lifecycle label. Closed children are ignored, whatever their labels;
 - each open child with trusted implementation evidence is merged: its verified
@@ -768,6 +775,16 @@ An open child labelled `implemented` without trusted implementation evidence
 (typically work a human did) does not fail a check: `close` lists it apart as
 `implemented without evidence: merge not verified`.
 
+A standalone issue, one with no parent and no sub-issues, is checked as a single
+open child: authored by a trusted author, `implemented` as its only lifecycle
+label, and merged as proven by its implementation evidence. It needs no
+`human-review` label, and its `standalone` marker is ignored. `close` lists it,
+asks `Close #N?` and closes it alone, with one comment saying Ralph closed the
+standalone issue (and the pull request that merged it, if one proved it). An
+unmerged or unimplemented standalone issue is refused; one implemented without
+evidence is closed only once a human at a terminal confirms it, as a child
+would be.
+
 A refusal lists every failed check at once and closes nothing. When every check
 passes, `close` lists the children and the parent it will close and asks one
 Yes/No question (No by default); `--yes` skips it, unless a child is implemented
@@ -782,12 +799,13 @@ closed (it is not repeated when only the parent was left open), and the closure 
 
 `--force` lets a human at a terminal close despite failed checks. Every check
 still runs and each failure is printed as a warning; instead of the Yes/No
-question, `close` asks you to type the parent number, and anything else closes
+question, `close` asks you to type the issue number, and anything else closes
 nothing. A forced closure is never unattended: without a terminal `--force` is
-refused, and `--force` with `--yes` is a usage error. On an issue with no
-sub-issues, `--force` closes only that issue. The parent comment says the
-closure was forced and lists the failed checks. A nonexistent issue is still
-refused, and a closed parent still prints `already closed` and exits 0.
+refused, and `--force` with `--yes` is a usage error. On a sub-issue with no
+sub-issues of its own, or a standalone issue, `--force` closes only that issue.
+The closure comment says the closure was forced and lists the failed checks. A
+nonexistent issue is still refused, and a closed issue still prints `already
+closed` and exits 0.
 
 Exit codes: 0 once closed or already closed; 1 for a refusal, a declined
 confirmation or a GitHub error; 2 for a usage error; 130 for Ctrl-C.
