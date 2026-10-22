@@ -8,6 +8,10 @@ Ralph drives coding agents through a run target's children, one at a time, and p
 An issue a run can start on: one that is not a sub-issue of another issue, whether it is a parent issue or a standalone issue.
 _Avoid_: Runnable issue, eligible issue
 
+**Startable run target**:
+A run target a run would start on now and that has work left: a parent issue that passes the run's startup checks and has a ready child or a child left agent working, or a standalone issue that is itself ready or agent working and waits on no unsatisfied blocker. A run started without a run target offers these to choose from.
+_Avoid_: Eligible issue, available issue, candidate
+
 **Parent issue**:
 A run target with sub-issues; its sub-issues are the children Ralph works through.
 _Avoid_: Epic, spec issue
