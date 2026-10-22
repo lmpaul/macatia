@@ -299,8 +299,8 @@ branch. Otherwise the run is refused with the reason, such as
 `standalone issue #42 waits on #41, neither closed nor implemented on this branch`.
 A run on the base branch offers `ralph-kit/issue-<N>` as for a parent, and the
 issue, as its run's only child, gets the child session limit (by default five
-sessions in a standard run, nine in a reviewed run). The draft PR is titled `Implement Ralph
-issue #N`, still requires a human merge and carries no closing keyword. Once
+sessions in a standard run, nine in a reviewed run). The draft PR is titled
+`Implement Ralph issue #N`, still requires a human merge and carries no closing keyword. Once
 the issue is implemented, it carries only the `implemented` lifecycle label and
 its implementation evidence, the PR is marked ready, and the terminal summary is
 published on the issue and the PR. Once the PR is merged, `ralph-kit close <N>`
@@ -388,12 +388,11 @@ The **child session limit** bounds the agent sessions one child may receive in
 a run: by default 5 in a standard run and 9 in a reviewed run, a child's worst
 case under the correction limit, plus one; `[child_session_limit]` in
 `ralph.toml` sets each value (see [repository settings](#repository-settings)).
-That worst case is four sessions in a standard
-run (one implementation session and three correction sessions) and eight in a
-reviewed run (the same, with a review session after each of them); the plus
+That worst case is four sessions in a standard run (one implementation session
+and three correction sessions) and eight in a reviewed run (the same, with a review session after each of them); the plus
 one leaves room for a backup replay, so at these values the correction limit
 always binds first. A lower value stops a child earlier; a value above the
-worst case has no effect. Implementation,
+worst case has no effect beyond that room for a backup replay. Implementation,
 review, issue correction, local gate correction, and CI correction sessions all
 count toward it; infrastructure retries do not. Each child has its own count,
 and there is no run-wide cap: the number of children does not change how many
@@ -496,7 +495,9 @@ infrastructure retries, then stops the run.
   mode: `reviewed` with `--review` or `review_by_default = true`, `standard`
   with `--no-review` or otherwise. The correction limit already bounds a child
   at 4 sessions in a standard run and 8 in a reviewed run, so a value above
-  that has no effect; a lower value stops a child earlier:
+  that has no effect beyond room for a backup replay (see
+  [the loop](#the-loop-run-and-run---review)); a lower value stops a child
+  earlier:
 
   ```toml
   [child_session_limit]

@@ -33,9 +33,11 @@ MODEL_ROLES = ("implementation", "review", "correction")
 MODEL_KEYS = set(MODEL_ROLES)
 # The optional profile that takes over every session role after an engine failure.
 BACKUP_MODEL_KEY = "backup"
-# Each child session limit key with its default and minimum. A default is a child's worst
-# case under the correction limit, plus one; a reviewed child always needs a review session.
-CHILD_SESSION_LIMITS = {"standard": (5, 1), "reviewed": (9, 2)}
+# Each child session limit key with its default: a child's worst case under the correction
+# limit, plus one.
+DEFAULT_CHILD_SESSION_LIMITS = {"standard": 5, "reviewed": 9}
+# A reviewed child always needs room for its review session.
+MINIMUM_CHILD_SESSION_LIMITS = {"standard": 1, "reviewed": 2}
 REASONING_EFFORTS = {
     "none",
     "minimal",
@@ -90,8 +92,8 @@ class VerificationConfig:
 class ChildSessionLimits:
     """The maximum number of agent sessions one child may receive in a run of each mode."""
 
-    standard: int = CHILD_SESSION_LIMITS["standard"][0]
-    reviewed: int = CHILD_SESSION_LIMITS["reviewed"][0]
+    standard: int = DEFAULT_CHILD_SESSION_LIMITS["standard"]
+    reviewed: int = DEFAULT_CHILD_SESSION_LIMITS["reviewed"]
 
     def for_run(self, *, review: bool) -> int:
         return self.reviewed if review else self.standard
@@ -204,10 +206,10 @@ def _profile(value: Any, path: str) -> AgentProfile:
 
 
 def _child_session_limits(value: Any, path: str) -> ChildSessionLimits:
-    values = _mapping(value, path, set(), set(CHILD_SESSION_LIMITS))
+    values = _mapping(value, path, set(), set(DEFAULT_CHILD_SESSION_LIMITS))
     limits = {}
-    for key, (default, minimum) in CHILD_SESSION_LIMITS.items():
-        limit = values.get(key, default)
+    for key, minimum in MINIMUM_CHILD_SESSION_LIMITS.items():
+        limit = values.get(key, DEFAULT_CHILD_SESSION_LIMITS[key])
         # TOML booleans load as bool, a subclass of int.
         if not isinstance(limit, int) or isinstance(limit, bool):
             raise RalphConfigError(f"{path}.{key} must be an integer")
