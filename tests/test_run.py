@@ -1153,6 +1153,21 @@ class RunUsageCommandLineTests(unittest.TestCase):
         self.assertTrue(error.startswith("usage: ralph-kit run --no-review [-h]"), error)
         self.assertIn("must be a positive integer", error)
 
+    def test_usage_shows_the_issue_as_optional(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(cli.main(["--help"]), 0)
+        self.assertIn(
+            "run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] "
+            "[ISSUE [RUN_BUDGET]]\n",
+            stdout.getvalue(),
+        )
+
+    def test_run_usage_names_the_issue_and_run_budget(self):
+        error = self.usage_error("abc")
+        self.assertIn("[ISSUE] [RUN_BUDGET]", error)
+        self.assertIn("argument ISSUE: must be a positive integer", error)
+
     def test_review_and_no_review_together_are_a_usage_error(self):
         for arguments in (("--review", "--no-review", "5"), ("5", "--no-review", "--caffeinate", "--review")):
             with self.subTest(arguments=arguments):
@@ -1583,6 +1598,28 @@ class StartupTests(StartupRejectionTestCase):
                 result = start_mode_run(loop_core.STANDARD_RUN, self.repository, self.github, self.sessions, *arguments)
 
                 self.assert_rejected_at_startup(result, "must be a positive integer")
+
+    def test_without_a_run_target_the_run_asks_for_the_issue_before_reading_github(self):
+        for name, confirm, terminal in (
+            ("without a terminal", None, False),
+            # Until the run offers its startable run targets, a terminal changes nothing.
+            ("at a terminal", ScriptedConfirm(RESUME), True),
+        ):
+            for flags in ((), ("--review",), ("--no-review", "--caffeinate")):
+                with self.subTest(name, flags=flags):
+                    self.sessions = ScriptedSessions(self.repository)
+
+                    result = start_run(
+                        self.repository, self.github, self.sessions, *flags,
+                        confirm=confirm, terminal=terminal,
+                    )
+
+                    self.assertEqual(result.exit_code, 2)
+                    self.assert_rejected_at_startup(result, "pass the issue to run: ralph-kit run ISSUE")
+                    self.assertEqual(self.github.opened_for, [])
+                    self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+                    if confirm is not None:
+                        self.assertEqual(confirm.questions, [])
 
 
 RUN_BRANCH = f"ralph-kit/issue-{PARENT}"
