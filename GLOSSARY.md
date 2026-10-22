@@ -1,15 +1,23 @@
 # ralph-kit
 
-Ralph drives coding agents through a parent issue's children, one at a time, and publishes the verified work as a draft PR for a human to review and merge.
+Ralph drives coding agents through a run target's children, one at a time, and publishes the verified work as a draft PR for a human to review and merge.
 
 ## Work structure
 
+**Run target**:
+An issue a run can start on: one that is not a sub-issue of another issue, whether it is a parent issue or a standalone issue.
+_Avoid_: Runnable issue, eligible issue
+
 **Parent issue**:
-The GitHub issue that groups the work for one run; its sub-issues are the children Ralph works through.
+A run target with sub-issues; its sub-issues are the children Ralph works through.
 _Avoid_: Epic, spec issue
 
+**Standalone issue**:
+A run target without sub-issues; Ralph works on the issue itself.
+_Avoid_: Single issue, leaf issue
+
 **Child**:
-A sub-issue of the parent issue: the unit of work one implementation covers.
+The unit of work one implementation covers: a sub-issue of a parent issue, or a standalone issue itself.
 _Avoid_: Sub-issue, ticket, task
 
 **Blocker**:
@@ -52,11 +60,11 @@ The branch commit a child's work starts from; its implementation evidence and re
 _Avoid_: Issue base, starting commit
 
 **Run**:
-One execution of the loop against a parent issue, until no runnable child is left or the run stops.
+One execution of the loop against a run target, until no runnable child is left or the run stops.
 _Avoid_: Runner, execution
 
 **Run branch**:
-The branch a run commits to and publishes from. A run started on the base branch offers to switch to `ralph-kit/issue-<parent>`, creating it from an up-to-date base branch unless it already exists.
+The branch a run commits to and publishes from. A run started on the base branch offers to switch to `ralph-kit/issue-<run target>`, creating it from an up-to-date base branch unless it already exists.
 _Avoid_: Work branch, feature branch, Ralph branch
 
 **Standard run**:
@@ -188,8 +196,12 @@ _Avoid_: Escalation, stuck
 The label role marking a parent on which Ralph has started work. It is neither a triage label nor a lifecycle label, and it is informational only: Ralph never reads it to decide anything.
 _Avoid_: Parent in progress, parent agent-working
 
+**Standalone marker**:
+The label role marking a standalone issue on which a run has started; it is never removed. Like work started, it is neither a triage label nor a lifecycle label, and Ralph never reads it to decide anything.
+_Avoid_: Standalone label, single-issue flag
+
 **Label role**:
-One of Ralph's nine canonical meanings for a label, mapped to a label name in each repository.
+One of Ralph's ten canonical meanings for a label, mapped to a label name in each repository.
 
 **Triage labels**:
 The label roles that say whether a child is ready for an agent: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix. A run also refuses to start on a parent carrying any of them other than ready-for-agent.
@@ -207,6 +219,6 @@ _Avoid_: Logs, artifacts
 A child whose verified head is on the base branch, or belongs to a pull request merged into the base branch, whatever the merge method.
 _Avoid_: Landed child, done child
 
-**Parent closure**:
-Closing a parent issue's open children, then the parent itself, once a human has merged their work.
-_Avoid_: Finish, complete, done (completed is a run's outcome)
+**Closure**:
+Closing a run target once a human has merged its work: a parent issue's open children, then the parent itself, or a standalone issue alone.
+_Avoid_: Parent closure, finish, complete, done (completed is a run's outcome)
