@@ -1,9 +1,10 @@
 # ralph-kit
 
 Ralph runs a loop of coding agents (Codex or Claude Code) over a parent GitHub
-issue, one runnable child (a GitHub sub-issue) at a time: implement, verify,
-correct, publish a draft PR. A human reviews and merges. The project vocabulary is
-defined in [GLOSSARY.md](GLOSSARY.md).
+issue, one runnable child (a GitHub sub-issue) at a time, or over a standalone
+issue on its own: implement, verify, correct, publish a draft PR. A human
+reviews and merges. The project vocabulary is defined in
+[GLOSSARY.md](GLOSSARY.md).
 
 `ralph-kit` is installed once per machine and run from any repository. Each
 repository only keeps its own `ralph.toml` (plus, when verification is enabled,
@@ -264,7 +265,8 @@ RALPH_LIVE=1 RALPH_LIVE_REFRESH=1 uv run python -m unittest discover -s tests -p
 
 ## The loop: `run` and `run --review`
 
-Each run executes the loop over the parent issue's runnable children.
+Each run executes the loop over the runnable children of its run target: a
+parent issue's sub-issues, or a standalone issue itself.
 `ralph-kit run` starts a standard run, with no review session.
 `ralph-kit run --review` starts a reviewed run: the same loop, plus a review
 session for each child once its local gates pass, repeated after every
@@ -280,6 +282,30 @@ state of its parent, and the error names the parent to run instead
 (`issue #124 is a sub-issue of #123: run #123 instead`). Only GitHub's "No
 parent issue found" answer means the issue has no parent; any other failure of
 that lookup stops the run as an error.
+
+A run target without sub-issues is a standalone issue: the run's only child is
+the issue itself, and it goes through the same loop as any child (child cycle,
+corrections, review session in a reviewed run, implementation evidence,
+cumulative draft PR). At startup, before the run branch is offered and before
+anything is written on GitHub, a standalone issue must be authored by a trusted
+author, open, and a ready child: its only triage label and only lifecycle label
+`ready-for-agent`. An issue left `agent-working` by an interrupted run is also
+accepted and gets the same resume-or-stop choice, or recovery when its
+implementation evidence is already published, as a child. Every blocker must be
+satisfied as for a child: closed, or implemented with its work on the run's
+branch. Otherwise the run is refused with the reason, such as
+`standalone issue #42 is not ready for an agent: labelled needs-info` or
+`standalone issue #42 waits on #41, neither closed nor implemented on this branch`.
+A run on the base branch offers `ralph-kit/issue-<N>` as for a parent, and the
+default run budget counts the issue as one ready child (five sessions in a
+standard run, nine in a reviewed run). The draft PR is titled `Implement Ralph
+issue #N`, still requires a human merge and carries no closing keyword. Once
+the issue is implemented, it carries only the `implemented` lifecycle label and
+its implementation evidence, the PR is marked ready, and the terminal summary is
+published on the issue and the PR. There is no parent completion: no completion
+comment, no `human-review` handoff of the run target, and never `work-started`.
+A stop hands the issue to human review as it would a child; relabelled
+`ready-for-agent`, it resumes on the next run.
 
 At startup, before anything is commented, labelled, pushed or run, the parent
 must be authored by a trusted author and must not be held back by triage: a
