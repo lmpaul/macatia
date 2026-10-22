@@ -74,6 +74,12 @@ local_checks = false
 ci_checks = false
 quality_module = ".github/scripts/quality.py"
 quality_manifest = ".github/quality-gates.json"
+
+[child_session_limit]
+# The most agent sessions one child may receive in a run. The correction limit (three corrections)
+# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.
+standard = 5
+reviewed = 9
 """
 # Values init never asks about, as the renderer writes them.
 CUSTOM_CONFIGURATION = """\
@@ -132,6 +138,12 @@ local_checks = true
 ci_checks = false
 quality_module = "tools/policy/quality.py"
 quality_manifest = "tools/policy/gates.json"
+
+[child_session_limit]
+# The most agent sessions one child may receive in a run. The correction limit (three corrections)
+# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.
+standard = 3
+reviewed = 7
 """
 
 
@@ -403,6 +415,17 @@ class InitTests(unittest.TestCase):
     def test_default_answers_write_the_default_configuration(self):
         self.run_init(answers=[""] * 8)
         self.assertEqual((self.root / "ralph.toml").read_text(), DEFAULT_CONFIGURATION)
+
+    def test_the_child_session_limits_are_written_with_their_defaults(self):
+        config = self.run_init()
+        self.assertIn(
+            "\n[child_session_limit]\n"
+            "# The most agent sessions one child may receive in a run. The correction limit (three corrections)\n"
+            "# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.\n"
+            "standard = 5\nreviewed = 9\n",
+            (self.root / "ralph.toml").read_text(),
+        )
+        self.assertEqual((config.child_session_limits.standard, config.child_session_limits.reviewed), (5, 9))
 
     def test_no_backup_with_both_engines_writes_no_section(self):
         config = self.run_init(answers=[""] * 5 + ["3"])

@@ -205,16 +205,23 @@ def _profile(value: Any, path: str) -> AgentProfile:
     )
 
 
+def child_session_limit_error(key: str, limit: Any) -> str | None:
+    """Why limit cannot be the child session limit for key, or None when it can."""
+    # TOML booleans load as bool, a subclass of int.
+    if not isinstance(limit, int) or isinstance(limit, bool):
+        return "must be an integer"
+    if limit < MINIMUM_CHILD_SESSION_LIMITS[key]:
+        return f"must be at least {MINIMUM_CHILD_SESSION_LIMITS[key]}"
+    return None
+
+
 def _child_session_limits(value: Any, path: str) -> ChildSessionLimits:
     values = _mapping(value, path, set(), set(DEFAULT_CHILD_SESSION_LIMITS))
     limits = {}
-    for key, minimum in MINIMUM_CHILD_SESSION_LIMITS.items():
+    for key in MINIMUM_CHILD_SESSION_LIMITS:
         limit = values.get(key, DEFAULT_CHILD_SESSION_LIMITS[key])
-        # TOML booleans load as bool, a subclass of int.
-        if not isinstance(limit, int) or isinstance(limit, bool):
-            raise RalphConfigError(f"{path}.{key} must be an integer")
-        if limit < minimum:
-            raise RalphConfigError(f"{path}.{key} must be at least {minimum}")
+        if error := child_session_limit_error(key, limit):
+            raise RalphConfigError(f"{path}.{key} {error}")
         limits[key] = limit
     return ChildSessionLimits(**limits)
 
