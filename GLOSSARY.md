@@ -109,16 +109,16 @@ A correction session that repairs a failed CI check.
 
 ## Limits
 
-**Run budget**:
-The maximum number of agent sessions a run may start, shared by all its children; counted in sessions, never tokens or time. Without an explicit value it is five sessions for each ready child in a standard run and nine in a reviewed run (a child's worst case under the correction limit, plus one), never fewer than four; the ready children are counted when the run starts, including children it resumed from agent working.
-_Avoid_: Session budget, agent budget, iteration limit, token budget
+**Child session limit**:
+The maximum number of agent sessions one child may receive in a run, with one value for standard runs and one for reviewed runs; counted in sessions, never tokens or time. Each run gives a child a fresh count.
+_Avoid_: Run budget, ticket budget, session budget, iteration limit, token budget
 
 **Correction limit**:
 The maximum number of correction sessions one child may receive (three), counting issue, local gate, and CI corrections together.
 _Avoid_: Attempts, retry limit, issue-correction limit
 
 **Infrastructure retry**:
-A repeated remote operation (GitHub, CI polling) that does not consume the run budget.
+A repeated remote operation (GitHub, CI polling) that does not count toward the child session limit.
 _Avoid_: Retry (alone), correction
 
 **Engine**:
