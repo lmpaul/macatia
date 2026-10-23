@@ -1,6 +1,6 @@
 """Child cycle: one runnable child from its implementation session to a verified head.
 
-The cycle owns the correction limit, the run budget checks, the review session,
+The cycle owns the correction limit, the child session limit, the review session,
 and every handoff to human review. Agent sessions, local gates, CI, and GitHub
 reach it through `ChildCycleAdapters`, so it runs the same against the real
 tools and against in-memory fakes.
@@ -86,7 +86,7 @@ class Verified:
 class HandoffCause(Enum):
     """Why a child cycle handed its child to human review, when the child itself is not the cause."""
 
-    RUN_BUDGET = "run budget"
+    CHILD_SESSION_LIMIT = "child session limit"
     INFRASTRUCTURE = "infrastructure"
 
 
@@ -97,20 +97,31 @@ class HandedToHumanReview:
     cause: HandoffCause | None = None
 
 
-class RunBudget:
-    def __init__(self, maximum: int):
+class SessionTotal:
+    """The agent sessions one run started across its children, reported but never capped."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+
+class ChildSessionLimit:
+    """Bounds the agent sessions one child receives in one run; each run gives a fresh count."""
+
+    def __init__(self, maximum: int, total: SessionTotal | None = None):
         self.maximum = maximum
         self.sessions = 0
+        self.total = total if total is not None else SessionTotal()
 
     def start(self, role: str) -> None:
         if self.sessions >= self.maximum:
-            raise RunBudgetExhausted(role)
+            raise ChildSessionLimitExhausted(role)
         self.sessions += 1
+        self.total.count += 1
 
 
-class RunBudgetExhausted(Exception):
+class ChildSessionLimitExhausted(Exception):
     def __init__(self, role: str):
-        super().__init__(f"run budget exhausted before {role}")
+        super().__init__(f"child session limit exhausted before {role}")
         self.role = role
         self.diagnostic: str | None = None
 
@@ -151,7 +162,7 @@ class HumanReviewStop(Exception):
 class CorrectionLimit:
     """Bounds every correction session of one child: issue, local gate, and CI."""
 
-    budget: RunBudget
+    session_limit: ChildSessionLimit
     used: int = field(default=0)
 
     def start(
@@ -165,8 +176,8 @@ class CorrectionLimit:
         if self.used >= MAX_CORRECTIONS:
             raise CorrectionLimitExhausted(role, findings, diagnostic)
         try:
-            self.budget.start(role)
-        except RunBudgetExhausted as error:
+            self.session_limit.start(role)
+        except ChildSessionLimitExhausted as error:
             error.diagnostic = diagnostic or format_findings(findings)
             raise
         self.used += 1
@@ -175,7 +186,7 @@ class CorrectionLimit:
 def run_child_cycle(
     child: int,
     base_sha: str,
-    budget: RunBudget,
+    session_limit: ChildSessionLimit,
     adapters: ChildCycleAdapters,
     *,
     review: bool,
@@ -188,12 +199,13 @@ def run_child_cycle(
     """
     cause = None
     try:
-        return _ChildCycle(child, base_sha, budget, adapters, review, gate_base).run()
-    except RunBudgetExhausted as error:
-        cause = HandoffCause.RUN_BUDGET
+        return _ChildCycle(child, base_sha, session_limit, adapters, review, gate_base).run()
+    except ChildSessionLimitExhausted as error:
+        cause = HandoffCause.CHILD_SESSION_LIMIT
+        mode = "reviewed" if review else "standard"
         body = (
-            f"Ralph stopped before {error.role} because the run budget of "
-            f"{budget.maximum} agent sessions was exhausted after {budget.sessions} sessions. "
+            f"Ralph stopped before {error.role} because the child session limit of "
+            f"{session_limit.maximum} ({mode} run) was exhausted. "
             f"This child remains open for human review.{_diagnostic_detail(error.diagnostic)}"
         )
         reason = str(error)
@@ -235,7 +247,7 @@ class _ChildCycle:
         self,
         child: int,
         base_sha: str,
-        budget: RunBudget,
+        session_limit: ChildSessionLimit,
         adapters: ChildCycleAdapters,
         review: bool,
         gate_base: str | None = None,
@@ -243,13 +255,13 @@ class _ChildCycle:
         self.child = child
         self.base_sha = base_sha
         self.gate_base = gate_base or base_sha
-        self.budget = budget
+        self.session_limit = session_limit
         self.adapters = adapters
         self.review = review
-        self.corrections = CorrectionLimit(budget)
+        self.corrections = CorrectionLimit(session_limit)
 
     def run(self) -> Verified:
-        self.budget.start("implementation")
+        self.session_limit.start("implementation")
         implementation = self.session(SessionRequest("implementation", self.child))
         verified_head = self.complete(implementation)
         while True:
@@ -266,7 +278,7 @@ class _ChildCycle:
                 )
             try:
                 verified_head = self.correct_ci(verdict.diagnostic)
-            except RunBudgetExhausted as error:
+            except ChildSessionLimitExhausted as error:
                 error.diagnostic = error.diagnostic or verdict.diagnostic
                 raise
 
@@ -334,7 +346,7 @@ class _ChildCycle:
             head_sha = self.pass_local_gates(head_sha)
             if not self.review:
                 return head_sha
-            self.budget.start("review")
+            self.session_limit.start("review")
             result = self.session(
                 SessionRequest(
                     "review", self.child, base_sha=self.base_sha, head_sha=head_sha

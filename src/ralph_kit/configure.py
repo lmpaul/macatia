@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import functools
 import pathlib
+import re
 import shlex
 import shutil
 from collections.abc import Callable
@@ -11,11 +13,13 @@ from typing import NamedTuple
 
 from .config import (
     BACKUP_MODEL_KEY,
+    DEFAULT_CHILD_SESSION_LIMITS,
     MODEL_ROLES,
     AgentProfile,
     MissingConfigError,
     RalphConfig,
     RalphConfigError,
+    child_session_limit_error,
     load_config,
 )
 from .init import (
@@ -118,6 +122,10 @@ SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] 
         lambda config: _on(config.caffeinate_by_default),
         lambda key: key == "caffeinate_by_default",
     ),
+    "Child session limits": (
+        lambda config: f"standard {config.child_session_limits.standard} · reviewed {config.child_session_limits.reviewed}",
+        lambda key: key.startswith("child_session_limit."),
+    ),
 }
 
 
@@ -131,6 +139,10 @@ def _toml_values(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
         "review_by_default": str(config.review_by_default).lower(),
         "caffeinate_by_default": str(config.caffeinate_by_default).lower(),
         **{f"labels.{key}": value for key, value in config.labels.items()},
+        **{
+            f"child_session_limit.{key}": str(getattr(config.child_session_limits, key))
+            for key in DEFAULT_CHILD_SESSION_LIMITS
+        },
     }
     for role, profile in {**config.models, BACKUP_MODEL_KEY: config.backup}.items():
         if profile is not None:
@@ -392,6 +404,39 @@ def _edit_caffeinate_by_default(prompter: Prompter, config: RalphConfig, state: 
     return dataclasses.replace(config, caffeinate_by_default=not enabled)
 
 
+def _child_session_limit_error(key: str, value: str) -> str | None:
+    """Why the answer cannot be key's child session limit, as loading the file would say."""
+    # Digits only, as TOML writes an integer: int() would also take "+5" or "5_0".
+    return child_session_limit_error(key, int(value) if re.fullmatch(r"[0-9]+", value) else value)
+
+
+def _edit_child_session_limits(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+    while True:
+        limits = config.child_session_limits
+        answer = prompter.choice(
+            "Child session limits: which limit do you want to change?",
+            [
+                ("Standard runs", f"{limits.standard} agent sessions per child"),
+                ("Reviewed runs", f"{limits.reviewed} agent sessions per child"),
+                (BACK, ""),
+            ],
+            BACK,
+        )
+        if answer == BACK:
+            return config
+        key = "standard" if answer == "Standard runs" else "reviewed"
+        current = getattr(limits, key)
+        value = int(prompter.text(
+            f"Most agent sessions one child may receive in a {key} run",
+            default=str(current),
+            validate=functools.partial(_child_session_limit_error, key),
+        ))
+        if value == current:
+            continue
+        config = dataclasses.replace(config, child_session_limits=dataclasses.replace(limits, **{key: value}))
+        prompter.say(f"  ✓ {answer}: {value} agent sessions per child")
+
+
 class GitField(NamedTuple):
     key: str
     question: str
@@ -458,6 +503,7 @@ EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = 
     "Git": _edit_git,
     "Reviewed runs by default": _edit_review_by_default,
     "Keep the machine awake by default": _edit_caffeinate_by_default,
+    "Child session limits": _edit_child_session_limits,
 }
 
 

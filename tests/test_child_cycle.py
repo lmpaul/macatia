@@ -11,13 +11,13 @@ sys.path.insert(0, str(KIT_ROOT / "src"))
 from ralph_kit.child_cycle import (
     HANDOFF_PREFIX,
     ChildCycleAdapters,
+    ChildSessionLimit,
     ChildWorkRejected,
     CIFailure,
     CIUnavailable,
     GateFailure,
     HandedToHumanReview,
     HandoffCause,
-    RunBudget,
     SessionResult,
     Verified,
     run_child_cycle,
@@ -88,22 +88,22 @@ class FakeTools:
         return [request.role for request in self.requests]
 
 
-def cycle(tools, *, review=False, budget=20):
-    run_budget = RunBudget(budget)
-    result = run_child_cycle(CHILD, BASE, run_budget, tools.adapters, review=review)
-    return result, run_budget
+def cycle(tools, *, review=False, limit=20):
+    session_limit = ChildSessionLimit(limit)
+    result = run_child_cycle(CHILD, BASE, session_limit, tools.adapters, review=review)
+    return result, session_limit
 
 
 class VerifiedCycleTests(unittest.TestCase):
     def test_standard_run_verifies_the_implementation_head(self):
         tools = FakeTools({"implementation": [committed()]})
 
-        result, budget = cycle(tools)
+        result, session_limit = cycle(tools)
 
         self.assertEqual(result, Verified("implementation-1-0", "implementation-1-0"))
         self.assertEqual(tools.gate_heads, ["implementation-1-0"])
         self.assertEqual(tools.ci_heads, ["implementation-1-0"])
-        self.assertEqual(budget.sessions, 1)
+        self.assertEqual(session_limit.sessions, 1)
         self.assertEqual(tools.handoffs, [])
 
     def test_reviewed_run_reviews_the_gated_head(self):
@@ -120,7 +120,7 @@ class VerifiedCycleTests(unittest.TestCase):
         tools = FakeTools({"implementation": [committed()], "review": [no_changes()]})
 
         run_child_cycle(
-            CHILD, BASE, RunBudget(20), tools.adapters, review=True, gate_base="earlier"
+            CHILD, BASE, ChildSessionLimit(20), tools.adapters, review=True, gate_base="earlier"
         )
 
         self.assertEqual(tools.requests[1].base_sha, BASE)
@@ -193,12 +193,12 @@ class UnchangedImplementationTests(unittest.TestCase):
     def test_standard_run_verifies_the_unchanged_head(self):
         tools = FakeTools({"implementation": [no_changes()]})
 
-        result, budget = cycle(tools)
+        result, session_limit = cycle(tools)
 
         self.assertEqual(result, Verified(BASE, BASE))
         self.assertEqual(tools.gate_heads, [BASE])
         self.assertEqual(tools.ci_heads, [BASE])
-        self.assertEqual(budget.sessions, 1)
+        self.assertEqual(session_limit.sessions, 1)
         self.assertEqual(tools.handoffs, [])
 
     def test_unchanged_review_verifies_the_unchanged_head(self):
@@ -328,14 +328,14 @@ class HumanReviewTests(unittest.TestCase):
             gates=[GateFailure("unit tests", f"failure {index}") for index in range(4)],
         )
 
-        result, budget = cycle(tools)
+        result, session_limit = cycle(tools)
 
         self.assert_handed_off(
             tools, result,
             "correction limit of 3 exhausted before local gate correction",
             "failure 3",
         )
-        self.assertEqual(budget.sessions, 4)
+        self.assertEqual(session_limit.sessions, 4)
         self.assertEqual(tools.ci_heads, [])
 
     def test_review_findings_share_the_correction_limit(self):
@@ -354,39 +354,42 @@ class HumanReviewTests(unittest.TestCase):
         self.assertEqual(corrections, [1, 2, 3])
         self.assertEqual(len(tools.requests), 7)
 
-    def test_run_budget_stops_before_the_review_session(self):
+    def test_child_session_limit_stops_before_the_review_session(self):
         tools = FakeTools({"implementation": [committed()]})
 
-        result, budget = cycle(tools, review=True, budget=1)
+        result, session_limit = cycle(tools, review=True, limit=1)
 
         self.assert_handed_off(
             tools, result,
-            "run budget exhausted before review",
-            "run budget of 1 agent sessions was exhausted after 1 sessions",
-            cause=HandoffCause.RUN_BUDGET,
+            "child session limit exhausted before review",
+            "Ralph stopped before review because the child session limit of 1 (reviewed run) "
+            "was exhausted. This child remains open for human review.",
+            cause=HandoffCause.CHILD_SESSION_LIMIT,
         )
-        self.assertEqual(budget.sessions, 1)
+        self.assertEqual(session_limit.sessions, 1)
 
-    def test_run_budget_stop_during_ci_correction_keeps_the_ci_diagnostic(self):
+    def test_child_session_limit_stop_during_ci_correction_keeps_the_ci_diagnostic(self):
         tools = FakeTools(
             {"implementation": [committed()]}, ci=[CIFailure("lint failed")]
         )
 
-        result, _ = cycle(tools, budget=1)
+        result, _ = cycle(tools, limit=1)
 
         self.assert_handed_off(
-            tools, result, "run budget exhausted before CI correction", "lint failed",
-            cause=HandoffCause.RUN_BUDGET,
+            tools, result, "child session limit exhausted before CI correction", "lint failed",
+            "child session limit of 1 (standard run)",
+            cause=HandoffCause.CHILD_SESSION_LIMIT,
         )
 
-    def test_run_budget_stop_before_issue_correction_keeps_the_remaining_findings(self):
+    def test_child_session_limit_stop_before_issue_correction_keeps_the_remaining_findings(self):
         tools = FakeTools({"implementation": [needs_correction("reversible ordering", commits=1)]})
 
-        result, _ = cycle(tools, budget=1)
+        result, _ = cycle(tools, limit=1)
 
         self.assert_handed_off(
-            tools, result, "run budget exhausted before issue correction", "- reversible ordering",
-            cause=HandoffCause.RUN_BUDGET,
+            tools, result, "child session limit exhausted before issue correction",
+            "- reversible ordering",
+            cause=HandoffCause.CHILD_SESSION_LIMIT,
         )
         self.assertEqual(tools.gate_heads, [])
 
@@ -396,13 +399,13 @@ class HumanReviewTests(unittest.TestCase):
             ci=[CIUnavailable("infrastructure retries exhausted", "checks never started")],
         )
 
-        result, budget = cycle(tools)
+        result, session_limit = cycle(tools)
 
         self.assert_handed_off(
             tools, result, "infrastructure retries exhausted", "checks never started",
             cause=HandoffCause.INFRASTRUCTURE,
         )
-        self.assertEqual(budget.sessions, 1)
+        self.assertEqual(session_limit.sessions, 1)
 
     def test_failed_issue_correction_handoff_keeps_the_original_findings(self):
         tools = FakeTools({
@@ -457,11 +460,11 @@ class NewCommitRuleTests(unittest.TestCase):
             gates=[GateFailure("unit tests", "1 failed")] * 4,
         )
 
-        result, budget = cycle(tools)
+        result, session_limit = cycle(tools)
 
         self.assert_no_commit_handoff(tools, result, "local gate correction")
         self.assertEqual(tools.gate_heads, ["implementation-1-0"])
-        self.assertEqual(budget.sessions, 2)
+        self.assertEqual(session_limit.sessions, 2)
         self.assertIn("1 failed", tools.handoffs[0][1])
 
     def test_issue_correction_without_a_commit_uses_the_same_handoff(self):

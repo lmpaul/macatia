@@ -549,6 +549,12 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
         f"ci_checks = {str(verification.ci_checks).lower()}",
         f"quality_module = {_string(verification.quality_module.relative_to(root).as_posix())}",
         f"quality_manifest = {_string(verification.quality_manifest.relative_to(root).as_posix())}",
+        "",
+        "[child_session_limit]",
+        "# The most agent sessions one child may receive in a run. The correction limit (three corrections)",
+        "# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.",
+        f"standard = {config.child_session_limits.standard}",
+        f"reviewed = {config.child_session_limits.reviewed}",
     ]
     return "\n".join(lines) + "\n"
 

@@ -36,7 +36,6 @@ ralph-kit check                # readiness check (offers to create missing label
 ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
 ralph-kit run                  # at a terminal, pick among the startable run targets
 ralph-kit run 123              # standard run: implement the children of parent issue #123
-ralph-kit run 123 10           # same, with a run budget of 10 agent sessions
 ralph-kit run --review 123     # reviewed run: adds an independent review session per child
 ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
@@ -132,7 +131,7 @@ repository's `.gitignore` (creating the file if needed) and says so. Commit it w
 `init` on an existing file points to `configure`: `ralph-kit configure [--config PATH]`
 opens an existing, valid configuration and shows a menu of its sections (model
 profiles, backup, trusted authors, verification, Git, reviewed runs by default, keep the
-machine awake by default), each with its current value
+machine awake by default, child session limits), each with its current value
 and `*` once changed. Pick a section to change only what it holds; nothing is
 re-detected over an existing value, and the values no section edits (label names,
 quality policy paths, display names, a correction profile distinct from
@@ -167,6 +166,9 @@ review profile first asks for one, as Model profiles does for review; turning it
 the review profile.
 Keep the machine awake by default turns `caffeinate_by_default` on or off; it asks
 for nothing else.
+Child session limits changes `standard` or `reviewed` in `[child_session_limit]`, with
+the current value as the default and the same validation as loading (an integer, at
+least 1 for standard and 2 for reviewed). `init` writes the table with its defaults.
 Save lists each changed key as `key: old → new`, writes the file, validates it and
 suggests committing it, then `ralph-kit check`; Save without changes, Quit without
 saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
@@ -209,7 +211,8 @@ The default suite is offline: it never starts `ralph-kit run` as a subprocess,
 launches a real agent, or calls GitHub. Each rule is tested at one level:
 
 - **Child cycle rules** (correction limit, review session order, handoff on
-  missing commits, run budget checks inside a cycle): `tests/test_child_cycle.py`,
+  missing commits, child session limit checks inside a cycle):
+  `tests/test_child_cycle.py`,
   in memory through the child cycle adapters.
 - **Run rules** (child selection, blockers, deadlock, recovery, publication,
   parent completion, infrastructure retries, startup and trust):
@@ -298,9 +301,9 @@ branch. Otherwise the run is refused with the reason, such as
 `standalone issue #42 is not ready for an agent: labelled needs-info` or
 `standalone issue #42 waits on #41, neither closed nor implemented on this branch`.
 A run on the base branch offers `ralph-kit/issue-<N>` as for a parent, and the
-default run budget counts the issue as one ready child (five sessions in a
-standard run, nine in a reviewed run). The draft PR is titled `Implement Ralph
-issue #N`, still requires a human merge and carries no closing keyword. Once
+issue, as its run's only child, gets the child session limit (by default five
+sessions in a standard run, nine in a reviewed run). The draft PR is titled
+`Implement Ralph issue #N`, still requires a human merge and carries no closing keyword. Once
 the issue is implemented, it carries only the `implemented` lifecycle label and
 its implementation evidence, the PR is marked ready, and the terminal summary is
 published on the issue and the PR. Once the PR is merged, `ralph-kit close <N>`
@@ -384,21 +387,27 @@ The loop of a standard run is:
    `human-review` replacing its other lifecycle labels and `work-started`;
    only a human merges.
 
-The optional final number is the run budget: the total number of agent
-sessions the run may start, shared by all children. The default is
-`max(4, ready_children * 5)` in a standard run and `max(4, ready_children * 9)`
-in a reviewed run: a child's worst case under the correction limit, plus one.
+The **child session limit** bounds the agent sessions one child may receive in
+a run: by default 5 in a standard run and 9 in a reviewed run, a child's worst
+case under the correction limit, plus one; `[child_session_limit]` in
+`ralph.toml` sets each value (see [repository settings](#repository-settings)).
 That worst case is four sessions in a standard run (one implementation session
-and three correction sessions) and eight in a reviewed run (the same, with a
-review session after each of them). `ready_children` counts the ready children
-when the run starts, after the startup choice below: open, not `implemented`,
-with `ready-for-agent` as their only triage label and only lifecycle label,
-blocked or not. Children resumed at that choice count. Closed, implemented,
-agent-working, human-review, and ready-for-human children do not count, so
-resuming a parent with one child left gets 5 sessions in a standard run and 9 in
-a reviewed run.
-The count is taken once; relabelling a child during the run does not change its
-budget. It counts sessions, not tokens or time.
+and three correction sessions) and eight in a reviewed run (the same, with a review session after each of them); the plus
+one leaves room for a backup replay, so at these values the correction limit
+always binds first. A lower value stops a child earlier; a value above the
+worst case has no effect beyond that room for a backup replay. Implementation,
+review, issue correction, local gate correction, and CI correction sessions all
+count toward it; infrastructure retries do not. Each child has its own count,
+and there is no run-wide cap: the number of children does not change how many
+sessions each one receives. Every run gives each child a fresh count, a child
+resumed from `agent-working` included, so relabelling a handed-off child
+`ready-for-agent` and rerunning gives it the full limit again. The limit counts
+sessions, not tokens or time. A child that exhausts its limit is handed to
+human review and stops the run, with a handoff comment such as "Ralph stopped
+before review because the child session limit of 9 (reviewed run) was
+exhausted.", followed by the last diagnostic or remaining findings; the next
+action is to relabel it `ready-for-agent`, then rerun. The run summary and the
+parent completion still report the total number of agent sessions the run used.
 
 A standard run has no separate review session, including after corrections. The
 `models.review` configuration entry is optional and unused by a standard run;
@@ -414,13 +423,15 @@ reviewed run without `--review`, and says so once at startup;
 `ralph-kit run --no-review` starts a standard run instead. `--no-review` is
 also accepted when the setting is off. `--review` together with `--no-review`
 is a usage error. A run made reviewed by the setting requires `models.review`
-and gets a reviewed run's default run budget. With the setting on,
+and gets a reviewed run's child session limit; `--no-review` gives it a standard
+run's. With the setting on,
 `ralph-kit check` also checks the review role, as `check --review` does.
 
 An implementation or correction that returns `needs_correction` must still pass
 its outstanding findings to an issue correction before publication. The
-correction limit and the run budget remain in force. CI corrections must create
-a new commit. Infrastructure retries do not consume the run budget.
+correction limit and the child session limit remain in force. CI corrections
+must create a new commit. Infrastructure retries do not count toward the child
+session limit.
 
 Correction context is assembled by Python; it does not launch a separate LLM
 or invoke the `handoff` skill. Prompts contain the parent and child issue URLs,
@@ -480,6 +491,23 @@ infrastructure retries, then stops the run.
 - `caffeinate_by_default` is optional (`false` when missing). `true` makes every
   run hold a sleep lock until it ends; `ralph-kit run --no-caffeinate` overrides
   it for one run.
+- `[child_session_limit]` is an optional table with two optional integer keys:
+  `standard` (5 when missing, at least 1) and `reviewed` (9 when missing, at
+  least 2, so a reviewed run can always reach its review session), the child
+  session limit of a standard and a reviewed run. A run uses the value of its
+  mode: `reviewed` with `--review` or `review_by_default = true`, `standard`
+  with `--no-review` or otherwise. The correction limit already bounds a child
+  at 4 sessions in a standard run and 8 in a reviewed run, so a value above
+  that has no effect beyond room for a backup replay (see
+  [the loop](#the-loop-run-and-run---review)); a lower value stops a child
+  earlier:
+
+  ```toml
+  [child_session_limit]
+  standard = 5
+  reviewed = 9
+  ```
+
 - `labels` maps Ralph's ten label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, the lifecycle labels `ready_for_agent`,
@@ -508,8 +536,9 @@ infrastructure retries, then stops the run.
   them in engine, model, or reasoning effort.
 
 The loader rejects missing and unknown settings, duplicate TOML keys, duplicate
-authors, duplicate label values, unsafe repository paths, and unsupported mode
-values before starting an agent or changing GitHub state.
+authors, duplicate label values, unsafe repository paths, unsupported mode
+values, and child session limits that are not integers or are below their
+minimum before starting an agent or changing GitHub state.
 
 ## Codex and Claude Code
 
@@ -580,11 +609,12 @@ keep the failed session and record the switch in `run.json`. The run summary, in
 the terminal and on the parent issue and the cumulative draft PR, gains a line
 such as `- backup: Claude Code Opus - High took over after a Codex engine failure
 (review session, child #12)`, kept when the backup failed too, and has no such
-line without an engine failure. The failed session counts toward the run budget;
-when it was the last session the budget allowed, no switch happens: the console
-and the run summary report the engine failure alone, such as `- engine failure:
-Codex in the review session for child #12`, and the child goes to human review
-as for any exhausted run budget. A failed correction and its replay count as one
+line without an engine failure. The failed session and its replay both count
+toward the child's session limit; when the failed session was the last one the
+limit allowed, no switch happens: the console and the run summary report the
+engine failure alone, such as `- engine failure: Codex in the review session
+for child #12`, and the child goes to human review as for any exhausted child
+session limit. A failed correction and its replay count as one
 correction. An engine failure of the backup stops the run, naming both failures;
 there is no second backup and no switch back. The next run starts on the regular
 profiles again.
@@ -666,8 +696,8 @@ published and checked.
 The **correction limit** allows each child at most **three correction
 sessions**, whatever their kind: issue corrections, local gate corrections, and
 CI corrections share one count, and each prompt shows it (`Correction attempt
-2/3`). Every correction also consumes the run budget. An exhausted correction
-limit or run budget, issue or CI corrections without a new commit,
+2/3`). Every correction also counts toward the child session limit. An exhausted
+correction limit or child session limit, issue or CI corrections without a new commit,
 and `blocked` or `failed` results stop the run and leave the child open with
 `human-review` as its only lifecycle label. The handoff comment includes the
 outstanding findings and, for local gate or CI failures, the last diagnostic.
@@ -695,8 +725,8 @@ count as its work. One choice applies to all of them:
   "agent working from an earlier or concurrent run", with the next action: if no
   other run is working on this parent, inspect the branch, relabel the child
   `ready-for-agent`, then rerun.
-- **Resume** relabels each of them `ready-for-agent` and the run continues; they
-  count in the default run budget.
+- **Resume** relabels each of them `ready-for-agent` and the run continues; each
+  gets a fresh child session limit.
 
 The choice uses the arrow keys and needs a terminal on both stdin and stdout.
 Without one (`nohup`, a scheduler, redirected output), Ralph takes the Stop path

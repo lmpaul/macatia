@@ -29,16 +29,17 @@ from .child_cycle import (
     HANDOFF_PREFIX,
     MAX_CORRECTIONS,
     ChildCycleAdapters,
+    ChildSessionLimit,
+    ChildSessionLimitExhausted,
     ChildWorkRejected,
     CIFailure,
     CIUnavailable,
     GateFailure,
     HandedToHumanReview,
     HandoffCause,
-    RunBudget,
-    RunBudgetExhausted,
     SessionRequest,
     SessionResult,
+    SessionTotal,
     run_child_cycle,
 )
 from .commands import RalphError, command as run_command
@@ -80,8 +81,6 @@ class RunMode:
     follow_up_commits: str
     gate_correction_scope: str
     unverified_warning: str
-    # The default run budget: a child's worst case under the correction limit, plus one.
-    sessions_per_ready_child: int
 
 
 DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
@@ -130,8 +129,6 @@ STANDARD_RUN = RunMode(
         "ℹ️ Ralph is running without automated verification: local gates and "
         "remote CI are explicitly disabled; human review is required before merge."
     ),
-    # One implementation session and three correction sessions, plus one.
-    sessions_per_ready_child=5,
 )
 
 
@@ -154,9 +151,6 @@ REVIEWED_RUN = RunMode(
         "⚠️ Ralph is running without automated verification: independent "
         "agent review is the only configured check."
     ),
-    # One implementation session, three correction sessions, and a review session
-    # after each of them, plus one.
-    sessions_per_ready_child=9,
 )
 
 
@@ -364,12 +358,12 @@ class RunSummary:
     parent: int | None = None
     implemented: int = 0
     remaining: int = 0
-    budget: RunBudget | None = None
+    session_total: SessionTotal | None = None
     infrastructure: InfrastructureRetryTracker | None = None
 
     @property
     def agent_sessions(self) -> int:
-        return self.budget.sessions if self.budget is not None else 0
+        return self.session_total.count if self.session_total is not None else 0
 
     @property
     def infra_retries(self) -> int:
@@ -474,6 +468,8 @@ class RunState:
     # The engine failure that ended a regular profile's session with a backup
     # configured; None while no such session ended in one.
     backup_switch: BackupSwitch | None = None
+    # The session limit of the child the run's latest child cycle started.
+    child_session_limit: ChildSessionLimit | None = None
     # Whether this run has already tried to label the parent work started.
     parent_work_started: bool = False
     # Warnings that did not stop the run, for the terminal summary.
@@ -552,10 +548,10 @@ def update_run_summary(
     state: RunState,
     parent_issue: int,
     children: Iterable[dict[str, Any]],
-    budget: RunBudget | None,
+    session_total: SessionTotal,
     infrastructure: InfrastructureRetryTracker,
 ) -> None:
-    """Count the children again; `budget` is None until the run has sized it."""
+    """Count the children again."""
     child_list = list(children)
     implemented_children = {
         int(child["number"])
@@ -568,7 +564,7 @@ def update_run_summary(
         parent=parent_issue,
         implemented=len(implemented_children - state.initial_implemented_children),
         remaining=sum(child_is_remaining(state, child) for child in child_list),
-        budget=budget,
+        session_total=session_total,
         infrastructure=infrastructure,
     )
 
@@ -753,11 +749,11 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
                 if isinstance(error, ChildHandedToHumanReview) and error.child_number == number
                 else None
             )
-            if cause is HandoffCause.RUN_BUDGET:
+            if cause is HandoffCause.CHILD_SESSION_LIMIT:
                 action = (
-                    f"#{number} was handed to human review because the run budget was "
-                    f"exhausted: relabel it {ready_label}, then {rerun}; each run starts "
-                    "with a fresh run budget."
+                    f"#{number} was handed to human review because its child session limit "
+                    f"was exhausted: relabel it {ready_label}, then {rerun}; each run gives "
+                    "a child a fresh child session limit."
                 )
             elif cause is HandoffCause.INFRASTRUCTURE:
                 action = (
@@ -931,7 +927,8 @@ class BackupSwitch:
     failure: EngineFailure
     role: str
     child: int
-    # False when the run budget left no session to replay the failed one, so no switch happened.
+    # False when the child session limit left no session to replay the failed one, so no
+    # switch happened.
     took_over: bool
 
     def summary_line(self, backup: AgentProfile) -> str:
@@ -1078,7 +1075,7 @@ class InfrastructureRetriesExhausted(RalphError):
 
 
 class InfrastructureRetryTracker:
-    """Retries remote operations without changing the implementation budget."""
+    """Retries remote operations without consuming an agent session."""
 
     maximum_retries = 3
 
@@ -1172,7 +1169,7 @@ def parse_arguments(
     parser = argparse.ArgumentParser(
         prog=None if prog is None else " ".join([prog, *flags]),
         description=(REVIEWED_RUN if "--review" in flags else STANDARD_RUN).description,
-        usage="%(prog)s [-h] [--config CONFIG] [ISSUE [RUN_BUDGET]]",
+        usage="%(prog)s [-h] [--config CONFIG] [ISSUE]",
     )
     parser.add_argument(
         "--config",
@@ -1180,9 +1177,7 @@ def parse_arguments(
         default=DEFAULT_CONFIG_PATH,
         help="repository-specific Ralph TOML configuration",
     )
-    # A single number is always the run target: a run budget needs an explicit run target.
     parser.add_argument("parent_issue", nargs="?", type=positive_integer, metavar="ISSUE")
-    parser.add_argument("run_budget", nargs="?", type=positive_integer, metavar="RUN_BUDGET")
     if len(flags) == 2:
         parser.error("argument --no-review: not allowed with argument --review")
     if len(sleep_lock_flags) == 2:
@@ -2955,23 +2950,24 @@ def run_session(state: RunState, request: SessionRequest) -> SessionResult:
 def switch_to_backup(
     state: RunState, request: SessionRequest, failure: EngineFailure, start_head: str
 ) -> None:
-    """Drop what the failed session left, then switch to the backup if the run budget allows its replay.
+    """Drop what the failed session left, then switch to the backup if the child session limit
+    allows its replay.
 
     Without a session left for the replay, the run reports the engine failure alone.
     """
     git(state, "reset", "--hard", start_head)
     # Ignored files, Ralph's diagnostics among them, stay.
     git(state, "clean", "-fd")
-    budget = state.summary.budget
+    session_limit = state.child_session_limit
     backup = state.config.backup
-    assert budget is not None and backup is not None and state.diagnostics is not None
+    assert session_limit is not None and backup is not None and state.diagnostics is not None
     announcement = (
         f"⚠️ {engine_name(failure.engine)} engine failure in the {request.role} session for "
         f"child #{request.child}: {failure.reason} ({failure.exit})."
     )
     try:
-        budget.start(request.role)
-    except RunBudgetExhausted as error:
+        session_limit.start(request.role)
+    except ChildSessionLimitExhausted as error:
         state.backup_switch = BackupSwitch(failure, request.role, request.child, took_over=False)
         print(announcement, flush=True)
         error.diagnostic = str(failure)
@@ -3167,12 +3163,11 @@ def main(
             print(f"No run target in {configuration.repository} is ready for an agent.", flush=True)
             return 0
         state.rerun_command = rerun_command(arguments, parent_issue)
-    return run_children(state, parent_issue, arguments.run_budget, quality, manifest)
+    return run_children(state, parent_issue, quality, manifest)
 
 
 def rerun_command(arguments: argparse.Namespace, parent_issue: int | None) -> str:
-    """How to start the run again on `parent_issue`; the run budget is left out, since each
-    run starts with a fresh one."""
+    """How to start the run again on `parent_issue`."""
     return shlex.join([
         "ralph-kit",
         "run",
@@ -3242,7 +3237,6 @@ def choose_run_target(state: RunState) -> int | None:
 def run_children(
     state: RunState,
     parent_issue: int,
-    run_budget: int | None,
     quality: Any,
     manifest: dict[str, Any] | None,
 ) -> int:
@@ -3254,6 +3248,7 @@ def run_children(
     """
     assert state.branch is not None
     infrastructure = InfrastructureRetryTracker(state)
+    session_total = SessionTotal()
     # The blocker checks of a standalone issue may retry their pull request lookups.
     state.summary = RunSummary(infrastructure=infrastructure)
     with spinner(f"Reading #{parent_issue}…"):
@@ -3269,19 +3264,16 @@ def run_children(
     branch = state.branch
     with spinner(f"Reading the children of #{parent_issue}…"):
         siblings = run_target_children(state, parent_issue)
-        update_run_summary(state, parent_issue, siblings, None, infrastructure)
+        update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
         while recover_published_child(state, siblings):
             siblings = run_target_children(state, parent_issue)
     if left_agent_working := [
         child for child in siblings if child_is_agent_working(state, child)
     ]:
-        update_run_summary(state, parent_issue, siblings, None, infrastructure)
+        update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
         resolve_left_agent_working(state, left_agent_working)
         siblings = run_target_children(state, parent_issue)
-    # The default counts the ready children once, after the startup choice.
-    ready_children = [child for child in siblings if child_is_ready(state, child)]
-    budget = RunBudget(run_budget or max(4, len(ready_children) * state.mode.sessions_per_ready_child))
-    update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+    update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
     adapters = state.adapters.child_cycle(
         ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
     )
@@ -3289,7 +3281,7 @@ def run_children(
     while True:
         with spinner("Selecting the next runnable child…"):
             siblings = run_target_children(state, parent_issue)
-            update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+            update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
             # Best-effort guard, not a lock: another run can still take a child
             # between this read and this run's own agent-working write. It precedes
             # recovery so that another run's published child is left to that run.
@@ -3314,7 +3306,7 @@ def run_children(
                         state,
                         parent_issue,
                         len(siblings),
-                        budget.sessions,
+                        session_total.count,
                     )
                 publish_terminal_summary(state, terminal_summary(state, "completed"))
                 mark_pull_request_ready(state, branch)
@@ -3331,8 +3323,12 @@ def run_children(
             else:
                 mark_parent_work_started(state, parent_issue)
         state.diagnostics.child_bases[child_number] = child_base.commit
+        # Each child gets a fresh count in every run, a resumed child included.
+        state.child_session_limit = ChildSessionLimit(
+            state.config.child_session_limits.for_run(review=state.mode.review), session_total
+        )
         cycle = run_child_cycle(
-            child_number, child_base.commit, budget, adapters,
+            child_number, child_base.commit, state.child_session_limit, adapters,
             review=state.mode.review, gate_base=child_base.recorded,
         )
         if isinstance(cycle, HandedToHumanReview):
@@ -3359,7 +3355,7 @@ def run_children(
         state.working_child = None
         print(f"✅ Completed child #{child_number}", flush=True)
         print("🔄 Selecting the next runnable child.", flush=True)
-        update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+        update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
 
     print(
         f"🎉 Standalone issue #{parent_issue} is implemented; "
@@ -3368,7 +3364,7 @@ def run_children(
         f"🎉 All {len(siblings)} children of #{parent_issue} are complete; "
         "the pull request is ready for review."
     )
-    update_run_summary(state, parent_issue, siblings, budget, infrastructure)
+    update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
     print_terminal_summary(state, "completed")
     return 0
 

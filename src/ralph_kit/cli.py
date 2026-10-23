@@ -15,9 +15,9 @@ if TYPE_CHECKING:
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] [ISSUE [RUN_BUDGET]]
+  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] [ISSUE]
       Standard run: implement the children of a parent ISSUE, or a standalone ISSUE,
-      with at most RUN_BUDGET agent sessions; a RUN_BUDGET needs an ISSUE before it.
+      giving each child at most 5 agent sessions (9 in a reviewed run).
       Without ISSUE, at a terminal, offers the startable run targets to choose from.
       --review starts a reviewed run, which adds an independent review session per child.
       --no-review starts a standard run, even when review_by_default = true in the configuration.
