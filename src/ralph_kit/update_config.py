@@ -10,11 +10,16 @@ import dataclasses
 import json
 import pathlib
 import re
-import shlex
 import sys
 import tomllib
 
-from .check import Readiness, confirm_with_arrows, create_labels, missing_labels
+from .check import (
+    Readiness,
+    confirm_with_arrows,
+    create_labels,
+    create_labels_by_hand,
+    missing_labels,
+)
 from .config import (
     DEFAULT_CHILD_SESSION_LIMITS,
     DEFAULT_LABELS,
@@ -208,16 +213,15 @@ def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=
     elif missing:
         print(f"ℹ {len(missing)} missing on {repository}: {', '.join(missing)}")
         count = f"{len(missing)} missing label{'s' if len(missing) > 1 else ''}"
+        roles_by_name = {label: role for role, label in config.labels.items()}
+        labels = {roles_by_name[label]: label for label in missing}
         if confirm and confirm(f"Create the {count} on {repository}?"):
-            roles_by_name = {label: role for role, label in config.labels.items()}
-            failed = create_labels(command, repository, {roles_by_name[label]: label for label in missing})
+            failed = create_labels(command, repository, labels)
             for label in missing:
                 print(f"✗ {label} not created" if label in failed else f"✓ {label} created")
             code = 1 if failed else 0
         else:
-            names = " ".join(shlex.quote(label) for label in missing)
-            fix = f"gh label create {names}" if len(missing) == 1 else f'for label in {names}; do gh label create "$label"; done'
-            print(f"  → create {'it' if len(missing) == 1 else 'them'} later: {fix}")
+            print(f"  → create {'it' if len(missing) == 1 else 'them'} later: {create_labels_by_hand(labels)}")
             code = 1
     if added:
         print(f"Commit {name} before the next run: ralph-kit run needs a clean working tree.")

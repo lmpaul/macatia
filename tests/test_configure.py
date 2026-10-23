@@ -384,7 +384,7 @@ class ConfigureTests(unittest.TestCase):
             if args[:3] == ("gh", "label", "create"):
                 self.assertIn('repository = "acme/other"', self.read())
                 self.assertEqual(args[4:6], ("--repo", "acme/other"))
-                created.append(args[3])
+                created.append((args[3], args[args.index("--color") + 1]))
                 return None if args[3] == "done" else ""
             return self.responses.get(args)
 
@@ -393,7 +393,11 @@ class ConfigureTests(unittest.TestCase):
         output = self.output.getvalue()
         self.assertIn("  ℹ Labels missing on acme/other: agent: standalone, agent: started, agent: working, done, human: ready, human: review, triage: info, won't fix", output)
         self.assertIn("? Create the 8 missing labels?", output)
-        self.assertEqual(created, ["triage: info", "human: ready", "won't fix", "agent: working", "human: review", "done", "agent: started", "agent: standalone"])
+        # Each renamed label carries its role's colour.
+        self.assertEqual(created, [
+            ("triage: info", "F9D0C4"), ("human: ready", "1D76DB"), ("won't fix", "CFD3D7"), ("agent: working", "5319E7"),
+            ("human: review", "D93F0B"), ("done", "C2E0C6"), ("agent: started", "E4E9F2"), ("agent: standalone", "E4E9F2"),
+        ])
         self.assertIn("   ✓ Label won't fix created\n", output)
         self.assertIn("   ✗ Label done not created\n", output)
         self.assertLess(output.index("✅ Wrote"), output.index("✓ Label"))

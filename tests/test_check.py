@@ -253,7 +253,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(questions, ["Create the 1 missing label on example/project?"])
         self.assertIn("✓ implemented created", output)
-        self.assertIn(("gh", "label", "create", "implemented", "--repo", "example/project", "--description", "Implemented by Ralph"), self.commands)
+        self.assertIn(("gh", "label", "create", "implemented", "--repo", "example/project", "--description", "Implemented by Ralph", "--color", "C2E0C6"), self.commands)
 
     def test_missing_agent_working_label_is_reported_and_created_once_confirmed(self):
         self.labels.remove("agent-working")
@@ -263,7 +263,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ agent-working created", output)
         self.assertIn(
             ("gh", "label", "create", "agent-working", "--repo", "example/project",
-             "--description", "A Ralph agent is working on this child"),
+             "--description", "A Ralph agent is working on this child", "--color", "5319E7"),
             self.commands,
         )
 
@@ -275,7 +275,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ work-started created", output)
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "example/project",
-             "--description", "Ralph has started work on this parent"),
+             "--description", "Ralph has started work on this parent", "--color", "E4E9F2"),
             self.commands,
         )
 
@@ -298,7 +298,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ standalone created", output)
         self.assertIn(
             ("gh", "label", "create", "standalone", "--repo", "example/project",
-             "--description", "Ralph has started work on this standalone issue"),
+             "--description", "Ralph has started work on this standalone issue", "--color", "E4E9F2"),
             self.commands,
         )
 
@@ -694,7 +694,7 @@ class ReadinessTests(unittest.TestCase):
         code, output = self.run_check()
         self.assertEqual(code, 1)
         self.assertIn("2 missing: implemented, wontfix", output)
-        self.assertIn('for label in implemented wontfix; do gh label create "$label"; done', " ".join(output.split()))
+        self.assertIn("gh label create implemented --color C2E0C6; gh label create wontfix --color CFD3D7", " ".join(output.split()))
 
     def test_command_failure_does_not_echo_cli_output(self):
         import subprocess

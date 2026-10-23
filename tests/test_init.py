@@ -455,7 +455,7 @@ class InitTests(unittest.TestCase):
         self.assertIn("✓ Label standalone created", self.output.getvalue())
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "acme/widget",
-             "--description", "Ralph has started work on this parent"),
+             "--description", "Ralph has started work on this parent", "--color", "E4E9F2"),
             commands,
         )
 

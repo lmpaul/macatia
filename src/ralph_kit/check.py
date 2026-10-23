@@ -62,6 +62,19 @@ LABEL_DESCRIPTIONS = {
     "work_started": "Ralph has started work on this parent",
     "standalone": "Ralph has started work on this standalone issue",
 }
+# Fixed, by who must act next; gh takes hex without #.
+LABEL_COLOURS = {
+    "needs_triage": "FBCA04",
+    "needs_info": "F9D0C4",
+    "ready_for_agent": "0E8A16",
+    "ready_for_human": "1D76DB",
+    "wontfix": "CFD3D7",
+    "agent_working": "5319E7",
+    "human_review": "D93F0B",
+    "implemented": "C2E0C6",
+    "work_started": "E4E9F2",
+    "standalone": "E4E9F2",
+}
 ERRORS = (OSError, ValueError, RuntimeError, KeyError, TypeError, AttributeError, ImportError, SyntaxError)
 # Older gh prints an empty job log, with success, when the run's log archive has no step logs.
 MINIMUM_GH_VERSION = (2, 70, 0)
@@ -166,12 +179,17 @@ def create_labels(command, repository, labels):
     failed = []
     for role, name in labels.items():
         try:
-            created = command("gh", "label", "create", name, "--repo", repository, "--description", LABEL_DESCRIPTIONS.get(role, ""))
+            created = command("gh", "label", "create", name, "--repo", repository, "--description", LABEL_DESCRIPTIONS.get(role, ""), "--color", LABEL_COLOURS[role])
         except RuntimeError:
             created = None
         if created is None:
             failed.append(name)
     return failed
+
+
+def create_labels_by_hand(labels):
+    """The shell commands that create each {role: name} label with its role's colour."""
+    return "; ".join(f"gh label create {shlex.quote(name)} --color {LABEL_COLOURS[role]}" for role, name in labels.items())
 
 
 def arrow_select(question, options, default):
@@ -494,8 +512,8 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             def labels():
                 wanted = set(config.labels.values())
                 missing[:] = missing_labels(command, config.repository, wanted)
-                names = " ".join(shlex.quote(name) for name in missing)
-                fix = f"gh label create {names}" if len(missing) == 1 else f'for label in {names}; do gh label create "$label"; done'
+                roles = {name: role for role, name in config.labels.items()}
+                fix = create_labels_by_hand({roles[name]: name for name in missing})
                 require(not missing, f"{len(missing)} missing: {', '.join(missing)}", fix)
                 return f"all {len(wanted)} present"
             report.check("Labels", labels)

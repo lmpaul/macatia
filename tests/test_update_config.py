@@ -105,7 +105,7 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertIn('✓ ralph.toml: added standalone = "standalone"', output)
         self.assertIn(
             ("gh", "label", "create", "standalone", "--repo", "lmpaul/buyr",
-             "--description", "Ralph has started work on this standalone issue"),
+             "--description", "Ralph has started work on this standalone issue", "--color", "E4E9F2"),
             self.commands,
         )
         self.assertIn("✓ standalone created", output)
@@ -129,7 +129,7 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertEqual(questions, ["Create the 1 missing label on lmpaul/buyr?"])
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "lmpaul/buyr",
-             "--description", "Ralph has started work on this parent"),
+             "--description", "Ralph has started work on this parent", "--color", "E4E9F2"),
             self.commands,
         )
         self.assertIn("✓ work-started created", output)
@@ -143,7 +143,7 @@ class UpdateConfigTests(unittest.TestCase):
 
                 self.assertEqual(code, 1)
                 self.assertIn("1 missing on lmpaul/buyr: work-started", output)
-                self.assertIn("gh label create work-started", output)
+                self.assertIn("gh label create work-started --color E4E9F2", output)
                 self.assertFalse(any(args[:3] == ("gh", "label", "create") for args in self.commands))
 
     def test_nothing_to_do_leaves_the_file_alone(self):
