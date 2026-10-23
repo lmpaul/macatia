@@ -1,4 +1,4 @@
-"""Readiness checks; never run agents or project checks. The only GitHub write is creating missing labels, once confirmed."""
+"""Readiness checks; never run agents or project checks. The only GitHub writes are creating missing labels and recolouring labels with the wrong colour, once confirmed."""
 
 from __future__ import annotations
 
@@ -165,10 +165,20 @@ def check_engine_flags(command, engine):
     return f"{len(flags)} flags listed"
 
 
-def missing_labels(command, repository, wanted):
+def listed_labels(command, repository):
+    """{name: colour} for every label on the repository."""
     pages = json.loads(command("gh", "api", "--paginate", "--slurp", f"repos/{repository}/labels"))
-    present = {label["name"] for page in pages for label in page}
-    return sorted(set(wanted) - present)
+    return {label["name"]: label.get("color") or "" for page in pages for label in page}
+
+
+def missing_labels(command, repository, wanted):
+    return sorted(set(wanted) - set(listed_labels(command, repository)))
+
+
+def miscoloured_labels(listed, labels):
+    """The present {role: name} labels whose colour differs from their role's colour, ignoring case and a leading #."""
+    wrong = {role: name for role, name in labels.items() if name in listed and listed[name].lstrip("#").lower() != LABEL_COLOURS[role].lower()}
+    return dict(sorted(wrong.items(), key=lambda item: item[1]))
 
 
 def create_labels(command, repository, labels):
@@ -185,6 +195,22 @@ def create_labels(command, repository, labels):
         if created is None:
             failed.append(name)
     return failed
+
+
+def recolour_labels(command, repository, labels):
+    """Set each {role: name} label to its role's colour, leaving its name and description; return the names gh could not recolour."""
+    failed = []
+    for role, name in labels.items():
+        try:
+            command("gh", "label", "edit", name, "--repo", repository, "--color", LABEL_COLOURS[role])
+        except RuntimeError:
+            failed.append(name)
+    return failed
+
+
+def label_recolouring_commands(repository, labels):
+    """The shell commands that set each {role: name} label to its role's colour."""
+    return "; ".join(f"gh label edit {shlex.quote(name)} --repo {shlex.quote(repository)} --color {LABEL_COLOURS[role]}" for role, name in labels.items())
 
 
 def label_creation_commands(labels):
@@ -357,7 +383,7 @@ def check_policy(config, root):
 
 
 def run(root, config_path, *, with_review=False, console=None, confirm=None, command=None):
-    """confirm(question) -> bool offers to create missing labels; None never writes to GitHub.
+    """confirm(question) -> bool offers to create missing labels and recolour the others; None never writes to GitHub.
 
     command(*args) -> stdout runs git, gh and engine help commands; it raises on failure.
     A terminal sees a spinner until the report is ready.
@@ -483,6 +509,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
 
     report.section("GitHub")
     missing = []
+    miscoloured = {}
     if "gh" not in available:
         for label in ("Repository", "gh account", "Trusted account", "Write access", "Labels"):
             report.skip(label, "gh missing")
@@ -511,12 +538,18 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
 
             def labels():
                 wanted = set(config.labels.values())
-                missing[:] = missing_labels(command, config.repository, wanted)
+                listed = listed_labels(command, config.repository)
+                missing[:] = sorted(wanted - set(listed))
+                miscoloured.update(miscoloured_labels(listed, config.labels))
                 roles = {name: role for role, name in config.labels.items()}
                 fix = label_creation_commands({roles[name]: name for name in missing})
                 require(not missing, f"{len(missing)} missing: {', '.join(missing)}", fix)
                 return f"all {len(wanted)} present"
             report.check("Labels", labels)
+            if miscoloured:
+                # Cosmetic, so it only warns.
+                names = ", ".join(miscoloured.values())
+                report.add("warn", "Label colours", f"{len(miscoloured)} with the wrong colour: {names}", label_recolouring_commands(config.repository, miscoloured))
         else:
             for label in ("Trusted account", "Write access", "Labels"):
                 report.skip(label, "gh account unavailable")
@@ -557,6 +590,17 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             errors -= not failed
         else:
             console.print("Labels not created; ralph-kit check will offer again.", style="dim")
+    # Labels just created already have their role's colour, so only labels that were present are listed.
+    if miscoloured and confirm:
+        console.print()
+        count = f"{len(miscoloured)} label{'s' if len(miscoloured) > 1 else ''}"
+        if confirm(f"Recolour {count} with the wrong colour on {config.repository} ({', '.join(miscoloured.values())})?"):
+            with spinner(f"Recolouring {count} on {config.repository}…", console):
+                failed = recolour_labels(command, config.repository, miscoloured)
+            for name in miscoloured.values():
+                console.print(Text(f"✗ {name} not recoloured", style="red") if name in failed else Text(f"✓ {name} recoloured", style="green"))
+        else:
+            console.print("Labels not recoloured; ralph-kit check will offer again.", style="dim")
     return int(bool(errors))
 
 
