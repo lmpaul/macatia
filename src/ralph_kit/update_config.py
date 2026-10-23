@@ -58,16 +58,17 @@ def with_roles(text: str, roles: dict[str, str]) -> str:
     return "".join(lines[:end] + added + lines[end:])
 
 
-def completed(path: pathlib.Path) -> tuple[str | None, dict[str, str]]:
-    """The file's text with the missing roles added, and those roles; (None, {}) when it declares every role."""
+def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
+    """The file's text with the missing roles added, and those roles; empty when it declares every role."""
     values = _load_toml(path)
     labels = values.get("labels")
     if not isinstance(labels, dict):
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     roles = missing_roles(labels)
+    text = path.read_text(encoding="utf-8")
     if not roles:
-        return None, roles
-    text = with_roles(path.read_text(encoding="utf-8"), roles)
+        return text, roles
+    text = with_roles(text, roles)
     if not set(DEFAULT_LABELS) <= set(tomllib.loads(text).get("labels", {})):
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     return text, roles
@@ -75,18 +76,17 @@ def completed(path: pathlib.Path) -> tuple[str | None, dict[str, str]]:
 
 def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[RalphConfig, dict[str, str]]:
     """Complete the file, writing it only once the completed text loads; return its configuration and the added roles."""
-    text, roles = completed(path)
-    if text is None:
+    text, roles = completed_text(path)
+    if not roles:
         return load_config(path, root, require_review=False), roles
     # Validated next to the target before replacing it, so a file still invalid once completed is left as it was.
     staged = path.with_name(f".{path.name}.update-config")
-    staged.write_text(text, encoding="utf-8")
     try:
+        staged.write_text(text, encoding="utf-8")
         config = load_config(staged, root, require_review=False)
-    except BaseException:
-        staged.unlink()
-        raise
-    staged.replace(path)
+        staged.replace(path)
+    finally:
+        staged.unlink(missing_ok=True)
     return config, roles
 
 
