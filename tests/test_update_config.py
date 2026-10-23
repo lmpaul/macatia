@@ -32,6 +32,11 @@ CAFFEINATE = """\
 caffeinate_by_default = false
 """
 TOP_LEVEL = REVIEW + CAFFEINATE
+LIMITS_COMMENT = """\
+# The most agent sessions one child may receive in a run. The correction limit (three corrections)
+# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.
+"""
+LIMITS = "\n[child_session_limit]\n" + LIMITS_COMMENT + "standard = 5\nreviewed = 9\n"
 
 
 class UpdateConfigTests(unittest.TestCase):
@@ -44,6 +49,7 @@ class UpdateConfigTests(unittest.TestCase):
         self.labels = list(ALL_LABELS)
         self.commands = []
         self.declare_top_level_settings()
+        self.config.write_text(self.config.read_text() + LIMITS)
 
     def command(self, *args):
         self.commands.append(args)
@@ -74,6 +80,7 @@ class UpdateConfigTests(unittest.TestCase):
     def test_a_missing_label_role_is_added_at_the_end_of_labels_and_nothing_else_changes(self):
         text = self.config.read_text().replace('work_started = "work-started"\n', "")
         text = text.replace("[labels]\n", "[labels]\n# Our own names.\n")
+        text = text.replace("\n[models.implementation]\n", "\n# Our models.\n[models.implementation]\n")
         self.config.write_text(text)
 
         code, output = self.run_update()
@@ -254,6 +261,69 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertNotIn("[models.review]", completed)
         self.assertNotIn("[models.backup]", completed)
         self.assertNotIn("models", output)
+
+    def test_a_missing_child_session_limit_table_is_added_at_the_end_of_the_file(self):
+        declared = self.config.read_text()
+        text = declared.replace(LIMITS, "")
+        text = text.replace("[verification]\n", "# Our checks.\n[verification]\n")
+        self.config.write_text(text)
+        limits = config.load_config(self.config, self.root, require_review=False).child_session_limits
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.config.read_text(), text + LIMITS)
+        self.assertEqual(
+            [line for line in output.splitlines() if "added" in line],
+            ["✓ ralph.toml: added child_session_limit.standard = 5", "✓ ralph.toml: added child_session_limit.reviewed = 9"],
+        )
+        self.assertIn("Commit ralph.toml", output)
+        self.assertEqual(config.load_config(self.config, self.root, require_review=False).child_session_limits, limits)
+
+    def test_a_partial_child_session_limit_table_gets_the_other_limit_at_its_end(self):
+        declared = self.config.read_text()
+        for kept, added in (("standard = 3\n", "reviewed = 9\n"), ("reviewed = 7\n", "standard = 5\n")):
+            with self.subTest(kept=kept):
+                text = declared.replace(LIMITS, f"\n[child_session_limit]  # ours\n{kept}\n")
+                self.config.write_text(text)
+                limits = config.load_config(self.config, self.root, require_review=False).child_session_limits
+
+                code, output = self.run_update()
+
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.config.read_text(), text.replace(kept, kept + added))
+                key, value = added.strip().split(" = ")
+                self.assertEqual(
+                    [line for line in output.splitlines() if "added" in line],
+                    [f"✓ ralph.toml: added child_session_limit.{key} = {value}"],
+                )
+                self.assertEqual(config.load_config(self.config, self.root, require_review=False).child_session_limits, limits)
+
+    def test_a_partial_child_session_limit_table_before_another_table_is_completed_in_place(self):
+        text = self.config.read_text().replace(LIMITS, "")
+        text = text.replace("[verification]\n", "[child_session_limit]\nreviewed = 7\n\n# Our checks.\n[verification]\n")
+        self.config.write_text(text)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.config.read_text(), text.replace("reviewed = 7\n", "reviewed = 7\nstandard = 5\n"))
+
+    def test_child_session_limits_that_are_not_a_table_are_left_for_a_fix_by_hand(self):
+        base = self.config.read_text().replace(LIMITS, "")
+        for name, text in (
+            ("inline table", base.replace("[labels]\n", "child_session_limit = { standard = 5 }\n\n[labels]\n")),
+            ("dotted keys", base.replace("[labels]\n", "child_session_limit.reviewed = 9\n\n[labels]\n")),
+        ):
+            with self.subTest(name):
+                self.config.write_text(text)
+
+                code, output = self.run_update()
+
+                self.assertEqual(code, 1)
+                self.assertIn("as an inline table or dotted keys: write it as a [child_session_limit] table by hand", output)
+                self.assertEqual(self.config.read_text(), text)
+                self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
 
     def test_a_default_name_another_role_uses_is_refused(self):
         self.remove_line('work_started = "work-started"\n')

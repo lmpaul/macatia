@@ -182,12 +182,15 @@ committed from another machine): the error suggests `uv tool upgrade ralph-kit -
 A newer ralph-kit can add a setting. `ralph-kit update-config [--config PATH]`
 writes each defaulted setting the file leaves out, with its default value and the
 comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
-after the last top-level setting, before the first table, and each label role at
-the end of `[labels]` with its default name. The rest of the file and its comments
+after the last top-level setting, before the first table, each label role at
+the end of `[labels]` with its default name, and a `[child_session_limit]` table
+with `standard` and `reviewed` at the end of the file, or the limit a partial
+table leaves out at the end of that table. The rest of the file and its comments
 stay as they are; `[models.review]` and `[models.backup]` are never added. It lists
 each added setting as `key = value`, and with nothing to add says so and writes
-nothing. It refuses when the default name is already another role's label, or when
-the labels are not in a `[labels]` table, and then writes nothing. It validates the
+nothing. It refuses when the default name is already another role's label, when
+the labels are not in a `[labels]` table, or when a partial `child_session_limit`
+is written as an inline table or with dotted keys, and then writes nothing. It validates the
 completed file before writing it and, like `check`, offers to create the labels
 missing on GitHub (Yes / Later; without a terminal it only prints the command). Commit the file afterwards: a run needs a
 clean working tree.
@@ -504,7 +507,7 @@ infrastructure retries, then stops the run.
   at 4 sessions in a standard run and 8 in a reviewed run, so a value above
   that has no effect beyond room for a backup replay (see
   [the loop](#the-loop-run-and-run---review)); a lower value stops a child
-  earlier:
+  earlier. `ralph-kit update-config` writes the table, or the limit it leaves out:
 
   ```toml
   [child_session_limit]

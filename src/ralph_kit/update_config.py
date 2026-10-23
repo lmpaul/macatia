@@ -16,19 +16,26 @@ import tomllib
 
 from .check import Readiness, confirm_with_arrows, create_labels, missing_labels
 from .config import (
+    DEFAULT_CHILD_SESSION_LIMITS,
     DEFAULT_LABELS,
+    ChildSessionLimits,
     RalphConfig,
     RalphConfigError,
     _load_toml,
     load_config,
 )
-from .init import TOP_LEVEL_COMMENTS, top_level_setting
+from .init import (
+    CHILD_SESSION_LIMIT_HEADER,
+    TOP_LEVEL_COMMENTS,
+    child_session_limit_table,
+    top_level_setting,
+)
 
 
 TABLE_HEADER = re.compile(r"\s*\[")
 COMMENT = re.compile(r"\s*#")
 DEFAULTS = {field.name: field.default for field in dataclasses.fields(RalphConfig)}
-LABELS_HEADER = re.compile(r"\s*\[\s*labels\s*\]\s*(#.*)?")
+LIMITS = "child_session_limit"
 
 
 class UpdateError(RuntimeError):
@@ -70,16 +77,49 @@ def with_top_level(text: str, keys: list[str]) -> str:
     return inserted(lines, end, [line for key in keys for line in top_level_setting(key, DEFAULTS[key])])
 
 
+def table_end(lines: list[str], name: str) -> int | None:
+    """The index after the last non-blank line of the [name] table, or None when the file has no such header.
+
+    A comment block directly above the next table belongs to that table and stays with it.
+    """
+    header = re.compile(rf"\s*\[\s*{re.escape(name)}\s*\]\s*(#.*)?")
+    start = next((index for index, line in enumerate(lines) if header.fullmatch(line.rstrip("\r\n"))), None)
+    if start is None:
+        return None
+    end = next((index for index in range(start + 1, len(lines)) if TABLE_HEADER.match(lines[index])), len(lines))
+    if end < len(lines):
+        while end > start + 1 and COMMENT.match(lines[end - 1]):
+            end -= 1
+    while end > start + 1 and not lines[end - 1].strip():
+        end -= 1
+    return end
+
+
 def with_roles(text: str, roles: dict[str, str]) -> str:
     """text with one line per role at the end of its [labels] table, after the last non-blank line."""
     lines = text.splitlines(keepends=True)
-    start = next((index for index, line in enumerate(lines) if LABELS_HEADER.fullmatch(line.rstrip("\r\n"))), None)
-    if start is None:
+    end = table_end(lines, "labels")
+    if end is None:
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
-    end = next((index for index in range(start + 1, len(lines)) if TABLE_HEADER.match(lines[index])), len(lines))
-    while end > start + 1 and not lines[end - 1].strip():
-        end -= 1
     return inserted(lines, end, [f"{role} = {json.dumps(name, ensure_ascii=False)}" for role, name in roles.items()])
+
+
+def with_limits(text: str, limits: dict | None) -> str:
+    """text with the child session limits limits leaves out: at the end of their table, or the whole table at the end of the file."""
+    lines = text.splitlines(keepends=True)
+    if limits is None:
+        end = len(lines)
+        while end > 0 and not lines[end - 1].strip():
+            end -= 1
+        return inserted(lines, end, ["", *child_session_limit_table(ChildSessionLimits())])
+    keys = [key for key in DEFAULT_CHILD_SESSION_LIMITS if key not in limits]
+    end = table_end(lines, LIMITS)
+    if end is None:
+        raise UpdateError(
+            f"cannot add {', '.join(f'{LIMITS}.{key}' for key in keys)} to a {LIMITS} written as an inline table or dotted keys: "
+            f"write it as a {CHILD_SESSION_LIMIT_HEADER} table by hand"
+        )
+    return inserted(lines, end, [f"{key} = {DEFAULT_CHILD_SESSION_LIMITS[key]}" for key in keys])
 
 
 def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
@@ -90,23 +130,40 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     keys = [key for key in TOP_LEVEL_COMMENTS if key not in values]
     roles = missing_roles(labels)
+    # A child_session_limit that is not a table is the loader's to report.
+    limits = values.get(LIMITS)
+    limit_keys = [key for key in DEFAULT_CHILD_SESSION_LIMITS if isinstance(limits, dict) and key not in limits]
+    add_limits = limits is None or bool(limit_keys)
     text = path.read_bytes().decode("utf-8")  # Not read_text, which would turn CRLF line endings into LF.
     if keys:
         text = with_top_level(text, keys)
     if roles:
         text = with_roles(text, roles)
-    if not keys and not roles:
+    if add_limits:
+        text = with_limits(text, limits)
+    if not keys and not roles and not add_limits:
         return text, {}
+    limit_values = {
+        f"{LIMITS}.{key}": str(value)
+        for key, value in DEFAULT_CHILD_SESSION_LIMITS.items()
+        if limits is None or key in limit_keys
+    }
     try:
         completed = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
-        raise UpdateError(f"cannot add {', '.join([*keys, *roles])} to this file's layout: add them by hand") from None
+        raise UpdateError(f"cannot add {', '.join([*keys, *roles, *limit_values])} to this file's layout: add them by hand") from None
     if not set(DEFAULT_LABELS) <= set(completed.get("labels", {})):
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     if any(completed.get(key) != DEFAULTS[key] for key in keys):
         raise UpdateError(f"cannot add {', '.join(keys)} before the first table: add {'it' if len(keys) == 1 else 'them'} by hand")
+    completed_limits = completed.get(LIMITS)
+    if add_limits and (
+        not isinstance(completed_limits, dict)
+        or any(completed_limits.get(key) != (limits or {}).get(key, value) for key, value in DEFAULT_CHILD_SESSION_LIMITS.items())
+    ):
+        raise UpdateError(f"cannot add {', '.join(limit_values)} to this file's layout: add them by hand")
     added = {key: str(DEFAULTS[key]).lower() for key in keys}
-    return text, added | {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()}
+    return text, added | {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()} | limit_values
 
 
 def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[RalphConfig, dict[str, str]]:

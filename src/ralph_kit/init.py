@@ -17,10 +17,12 @@ from .check import AGENT_CLIS as ENGINES, create_labels, missing_labels, prerequ
 from .config import (
     BACKUP_MODEL_KEY,
     CLAUDE_REASONING_EFFORTS,
+    DEFAULT_CHILD_SESSION_LIMITS,
     DEFAULT_LABELS,
     DIAGNOSTICS_DIRECTORY,
     MODEL_ROLES,
     AgentProfile,
+    ChildSessionLimits,
     RalphConfig,
     RalphConfigError,
     VerificationConfig,
@@ -500,6 +502,19 @@ def top_level_setting(key: str, value: bool) -> list[str]:
     return [TOP_LEVEL_COMMENTS[key], f"{key} = {str(value).lower()}"]
 
 
+CHILD_SESSION_LIMIT_HEADER = "[child_session_limit]"
+
+
+def child_session_limit_table(limits: ChildSessionLimits) -> list[str]:
+    """The lines init writes for the child session limits: the table header, its comment, then each limit."""
+    return [
+        CHILD_SESSION_LIMIT_HEADER,
+        "# The most agent sessions one child may receive in a run. The correction limit (three corrections)",
+        "# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.",
+        *(f"{key} = {getattr(limits, key)}" for key in DEFAULT_CHILD_SESSION_LIMITS),
+    ]
+
+
 def configuration(values: dict, root: pathlib.Path) -> RalphConfig:
     """The configuration init collected, in the shape load_config returns."""
     models = {role: AgentProfile(**profile) for role, profile in values["models"].items()}
@@ -559,11 +574,7 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
         f"quality_module = {_string(verification.quality_module.relative_to(root).as_posix())}",
         f"quality_manifest = {_string(verification.quality_manifest.relative_to(root).as_posix())}",
         "",
-        "[child_session_limit]",
-        "# The most agent sessions one child may receive in a run. The correction limit (three corrections)",
-        "# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.",
-        f"standard = {config.child_session_limits.standard}",
-        f"reviewed = {config.child_session_limits.reviewed}",
+        *child_session_limit_table(config.child_session_limits),
     ]
     return "\n".join(lines) + "\n"
 
