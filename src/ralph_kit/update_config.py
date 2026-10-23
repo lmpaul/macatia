@@ -14,7 +14,13 @@ import sys
 import tomllib
 
 from .check import Readiness, confirm_with_arrows, create_labels, missing_labels
-from .config import DEFAULT_LABELS, RalphConfigError, _load_toml, load_config
+from .config import (
+    DEFAULT_LABELS,
+    RalphConfig,
+    RalphConfigError,
+    _load_toml,
+    load_config,
+)
 
 
 TABLE_HEADER = re.compile(r"\s*\[")
@@ -52,19 +58,36 @@ def with_roles(text: str, roles: dict[str, str]) -> str:
     return "".join(lines[:end] + added + lines[end:])
 
 
-def complete_file(path: pathlib.Path) -> dict[str, str]:
-    """Add the missing roles to the file; return them, empty when it already declares every role."""
+def completed(path: pathlib.Path) -> tuple[str | None, dict[str, str]]:
+    """The file's text with the missing roles added, and those roles; (None, {}) when it declares every role."""
     values = _load_toml(path)
     labels = values.get("labels")
     if not isinstance(labels, dict):
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     roles = missing_roles(labels)
-    if roles:
-        text = with_roles(path.read_text(encoding="utf-8"), roles)
-        if not set(DEFAULT_LABELS) <= set(tomllib.loads(text).get("labels", {})):
-            raise UpdateError("no [labels] table to complete: add the missing roles by hand")
-        path.write_text(text, encoding="utf-8")
-    return roles
+    if not roles:
+        return None, roles
+    text = with_roles(path.read_text(encoding="utf-8"), roles)
+    if not set(DEFAULT_LABELS) <= set(tomllib.loads(text).get("labels", {})):
+        raise UpdateError("no [labels] table to complete: add the missing roles by hand")
+    return text, roles
+
+
+def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[RalphConfig, dict[str, str]]:
+    """Complete the file, writing it only once the completed text loads; return its configuration and the added roles."""
+    text, roles = completed(path)
+    if text is None:
+        return load_config(path, root, require_review=False), roles
+    # Validated next to the target before replacing it, so a file still invalid once completed is left as it was.
+    staged = path.with_name(f".{path.name}.update-config")
+    staged.write_text(text, encoding="utf-8")
+    try:
+        config = load_config(staged, root, require_review=False)
+    except BaseException:
+        staged.unlink()
+        raise
+    staged.replace(path)
+    return config, roles
 
 
 def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=None) -> int:
@@ -75,16 +98,15 @@ def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=
     command = command or Readiness(root).command
     name = config_path.name
     try:
-        roles = complete_file(config_path)
-        if roles:
-            for role, label in roles.items():
-                print(f'✓ {name}: added {role} = "{label}"')
-        else:
-            print(f"✓ {name} declares all {len(DEFAULT_LABELS)} label roles")
-        config = load_config(config_path, root, require_review=False)
+        config, roles = load_completed(config_path, root)
     except (UpdateError, RalphConfigError, tomllib.TOMLDecodeError) as error:
         print(f"❌ {error}", file=sys.stderr)
         return 1
+    if roles:
+        for role, label in roles.items():
+            print(f'✓ {name}: added {role} = "{label}"')
+    else:
+        print(f"✓ {name} declares all {len(DEFAULT_LABELS)} label roles")
 
     code = 0
     repository = config.repository

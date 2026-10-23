@@ -165,14 +165,37 @@ class UpdateConfigTests(unittest.TestCase):
 
     def test_another_configuration_problem_is_reported_after_the_labels_are_added(self):
         self.remove_line('work_started = "work-started"\n')
-        self.config.write_text(self.config.read_text().replace('remote = "origin"', 'remote = "-x"'))
+        text = self.config.read_text().replace('remote = "origin"', 'remote = "-x"')
+        self.config.write_text(text)
 
         code, output = self.run_update()
 
         self.assertEqual(code, 1)
-        self.assertIn('work_started = "work-started"', self.config.read_text())
+        self.assertEqual(self.config.read_bytes(), text.encode())
         self.assertIn("configuration.remote is not a safe Git name", output)
+        self.assertNotIn("added", output)
         self.assertEqual(self.commands, [])
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
+
+    def test_a_missing_setting_without_a_default_leaves_the_file_unchanged(self):
+        self.remove_line('work_started = "work-started"\n')
+        self.remove_line('remote = "origin"\n')
+        text = self.config.read_text()
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 1)
+        self.assertEqual(self.config.read_bytes(), text.encode())
+        self.assertIn("missing keys: remote", output)
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
+
+    def test_no_staged_copy_is_left_once_the_completed_file_is_written(self):
+        self.remove_line('work_started = "work-started"\n')
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
 
     def test_the_command_is_dispatched_with_its_own_arguments(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
