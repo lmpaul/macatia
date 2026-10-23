@@ -47,37 +47,39 @@ def missing_roles(labels: dict) -> dict[str, str]:
     return missing
 
 
+def inserted(lines: list[str], end: int, added: list[str]) -> str:
+    """The text of lines with added before lines[end], in the file's line endings."""
+    newline = "\r\n" if lines and lines[0].endswith("\r\n") else "\n"
+    if end == len(lines) and lines and not lines[-1].endswith("\n"):
+        lines = [*lines[:-1], lines[-1] + newline]  # Only a line followed by added ones gains a line break.
+    return "".join(lines[:end] + [line + newline for line in added] + lines[end:])
+
+
 def with_top_level(text: str, keys: list[str]) -> str:
     """text with each key, under its comment, after the last top-level setting, before the first table.
 
     A comment block directly above the first table belongs to that table and stays with it.
     """
     lines = text.splitlines(keepends=True)
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
     end = next((index for index, line in enumerate(lines) if TABLE_HEADER.match(line)), len(lines))
     if end < len(lines):
         while end > 0 and COMMENT.match(lines[end - 1]):
             end -= 1
     while end > 0 and not lines[end - 1].strip():
         end -= 1
-    added = [f"{line}\n" for key in keys for line in top_level_setting(key, DEFAULTS[key])]
-    return "".join(lines[:end] + added + lines[end:])
+    return inserted(lines, end, [line for key in keys for line in top_level_setting(key, DEFAULTS[key])])
 
 
 def with_roles(text: str, roles: dict[str, str]) -> str:
     """text with one line per role at the end of its [labels] table, after the last non-blank line."""
     lines = text.splitlines(keepends=True)
-    if lines and not lines[-1].endswith("\n"):
-        lines[-1] += "\n"
-    start = next((index for index, line in enumerate(lines) if LABELS_HEADER.fullmatch(line.rstrip("\n"))), None)
+    start = next((index for index, line in enumerate(lines) if LABELS_HEADER.fullmatch(line.rstrip("\r\n"))), None)
     if start is None:
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     end = next((index for index in range(start + 1, len(lines)) if TABLE_HEADER.match(lines[index])), len(lines))
     while end > start + 1 and not lines[end - 1].strip():
         end -= 1
-    added = [f"{role} = {json.dumps(name, ensure_ascii=False)}\n" for role, name in roles.items()]
-    return "".join(lines[:end] + added + lines[end:])
+    return inserted(lines, end, [f"{role} = {json.dumps(name, ensure_ascii=False)}" for role, name in roles.items()])
 
 
 def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
@@ -88,14 +90,17 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     keys = [key for key in TOP_LEVEL_COMMENTS if key not in values]
     roles = missing_roles(labels)
-    text = path.read_text(encoding="utf-8")
+    text = path.read_bytes().decode("utf-8")  # Not read_text, which would turn CRLF line endings into LF.
     if keys:
         text = with_top_level(text, keys)
     if roles:
         text = with_roles(text, roles)
     if not keys and not roles:
         return text, {}
-    completed = tomllib.loads(text)
+    try:
+        completed = tomllib.loads(text)
+    except tomllib.TOMLDecodeError:
+        raise UpdateError(f"cannot add {', '.join([*keys, *roles])} to this file's layout: add them by hand") from None
     if not set(DEFAULT_LABELS) <= set(completed.get("labels", {})):
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     if any(completed.get(key) != DEFAULTS[key] for key in keys):
@@ -112,7 +117,7 @@ def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[RalphConfig,
     # Validated next to the target before replacing it, so a file still invalid once completed is left as it was.
     staged = path.with_name(f".{path.name}.update-config")
     try:
-        staged.write_text(text, encoding="utf-8")
+        staged.write_bytes(text.encode("utf-8"))
         config = load_config(staged, root, require_review=False)
         staged.replace(path)
     finally:

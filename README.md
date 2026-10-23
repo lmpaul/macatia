@@ -188,8 +188,8 @@ stay as they are; `[models.review]` and `[models.backup]` are never added. It li
 each added setting as `key = value`, and with nothing to add says so and writes
 nothing. It refuses when the default name is already another role's label, or when
 the labels are not in a `[labels]` table, and then writes nothing. It validates the
-completed file before writing it and, like `check`, offers to create the labels missing on GitHub (Yes / Later; without
-a terminal it only prints the command). Commit the file afterwards: a run needs a
+completed file before writing it and, like `check`, offers to create the labels
+missing on GitHub (Yes / Later; without a terminal it only prints the command). Commit the file afterwards: a run needs a
 clean working tree.
 
 For a variant of an existing configuration, copy the file, then change the copy:

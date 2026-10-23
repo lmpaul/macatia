@@ -196,6 +196,32 @@ class UpdateConfigTests(unittest.TestCase):
             text.replace('# Labels follow.\n', '# Labels follow.\n' + TOP_LEVEL),
         )
 
+    def test_line_endings_and_a_missing_final_line_break_are_kept(self):
+        declared = self.config.read_text()
+        removed = declared.replace(TOP_LEVEL, "").replace('standalone = "standalone"\n', "")
+        for name, text, completed in (
+            ("crlf", removed.replace("\n", "\r\n"), declared.replace("\n", "\r\n")),
+            ("no final line break", removed.removesuffix("\n"), declared.removesuffix("\n")),
+        ):
+            with self.subTest(name):
+                self.config.write_bytes(text.encode())
+
+                code, output = self.run_update()
+
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.config.read_bytes(), completed.encode())
+
+    def test_a_layout_the_settings_cannot_be_added_to_is_left_for_a_fix_by_hand(self):
+        text = self.config.read_text().replace(TOP_LEVEL, "")
+        text = text.replace('trusted_authors = ["lmpaul"]\n', 'trusted_authors = [\n["lmpaul"],\n]\n')
+        self.config.write_text(text)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 1)
+        self.assertIn("cannot add review_by_default, caffeinate_by_default to this file's layout: add them by hand", output)
+        self.assertEqual(self.config.read_text(), text)
+
     def test_top_level_settings_and_label_roles_are_added_together(self):
         text = self.config.read_text().replace(TOP_LEVEL, "").replace('standalone = "standalone"\n', "")
         self.config.write_text(text)
