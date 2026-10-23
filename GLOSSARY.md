@@ -12,6 +12,10 @@ _Avoid_: Runnable issue, eligible issue
 A run target a run would start on now and that has work left: a parent issue that passes the run's startup checks and has a ready child or a child left agent working, or a standalone issue that is itself ready or agent working and waits on no unsatisfied blocker. A run started without a run target offers these to choose from.
 _Avoid_: Eligible issue, available issue, candidate
 
+**Closable run target**:
+A run target whose closure passes every check now, so `close` would close it without `--force`. A closure started without a run target offers these to choose from.
+_Avoid_: Finished issue, done issue, candidate
+
 **Parent issue**:
 A run target with sub-issues; its sub-issues are the children Ralph works through.
 _Avoid_: Epic, spec issue
