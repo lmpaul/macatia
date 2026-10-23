@@ -96,6 +96,9 @@ class ReadinessTests(unittest.TestCase):
         self.permission = True
         self.gh_version = "gh version 2.70.0 (2025-04-15)\nhttps://github.com/cli/cli/releases/tag/v2.70.0"
         self.labels = ["needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix", "agent-working", "human-review", "implemented", "work-started", "standalone"]
+        # GitHub lists colours as lowercase hex without #; each default label starts with its role's colour.
+        self.colours = {role.replace("_", "-"): colour.lower() for role, colour in check.LABEL_COLOURS.items()}
+        self.unrecolourable = set()
         self.commands = []
         self.help = {
             ("codex", "exec", "--help"): CODEX_HELP,
@@ -113,7 +116,7 @@ class ReadinessTests(unittest.TestCase):
             ("gh", "api", "user"): json.dumps({"login": self.login}),
             ("gh", "--version"): self.gh_version,
             ("gh", "api", "repos/example/project"): json.dumps({"permissions": {"push": self.permission}}),
-            ("gh", "api", "--paginate", "--slurp", "repos/example/project/labels"): json.dumps([[{"name": name} for name in self.labels]]),
+            ("gh", "api", "--paginate", "--slurp", "repos/example/project/labels"): json.dumps([[{"name": name, "color": self.colours.get(name, "ededed")} for name in self.labels]]),
         }
         if args[-1] == "--help":
             if isinstance(self.help[args], Exception):
@@ -131,8 +134,14 @@ class ReadinessTests(unittest.TestCase):
             if args[3] == "broken":
                 raise RuntimeError("gh label create failed")
             self.labels.append(args[3])
+            self.colours[args[3]] = args[args.index("--color") + 1].lower()
             return ""
-        # Only the explicit read-only allowlist, plus label creation, is accepted by the fixture.
+        if args[:3] == ("gh", "label", "edit"):
+            if args[3] in self.unrecolourable:
+                raise RuntimeError("gh label edit failed")
+            self.colours[args[3]] = args[args.index("--color") + 1].lower()
+            return ""
+        # Only the explicit read-only allowlist, plus label creation and recolouring, is accepted by the fixture.
         return responses[args]
 
     def run_check(self, missing=None, confirm=None, with_review=False, terminal=False):
@@ -253,7 +262,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(questions, ["Create the 1 missing label on example/project?"])
         self.assertIn("✓ implemented created", output)
-        self.assertIn(("gh", "label", "create", "implemented", "--repo", "example/project", "--description", "Implemented by Ralph"), self.commands)
+        self.assertIn(("gh", "label", "create", "implemented", "--repo", "example/project", "--description", "Implemented by Ralph", "--color", "C2E0C6"), self.commands)
 
     def test_missing_agent_working_label_is_reported_and_created_once_confirmed(self):
         self.labels.remove("agent-working")
@@ -263,7 +272,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ agent-working created", output)
         self.assertIn(
             ("gh", "label", "create", "agent-working", "--repo", "example/project",
-             "--description", "A Ralph agent is working on this child"),
+             "--description", "A Ralph agent is working on this child", "--color", "5319E7"),
             self.commands,
         )
 
@@ -275,7 +284,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ work-started created", output)
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "example/project",
-             "--description", "Ralph has started work on this parent"),
+             "--description", "Ralph has started work on this parent", "--color", "E4E9F2"),
             self.commands,
         )
 
@@ -298,7 +307,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ standalone created", output)
         self.assertIn(
             ("gh", "label", "create", "standalone", "--repo", "example/project",
-             "--description", "Ralph has started work on this standalone issue"),
+             "--description", "Ralph has started work on this standalone issue", "--color", "E4E9F2"),
             self.commands,
         )
 
@@ -394,6 +403,93 @@ class ReadinessTests(unittest.TestCase):
         code, output = self.run_check(confirm=lambda question: True)
         self.assertEqual(code, 1)
         self.assertIn("✗ broken not created", output)
+
+    def label_edits(self):
+        return [args for args in self.commands if args[:3] == ("gh", "label", "edit")]
+
+    def test_a_label_with_the_wrong_colour_warns_without_blocking(self):
+        self.colours["implemented"] = "ededed"
+        self.colours["wontfix"] = "ffffff"
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        output = " ".join(output.split())
+        self.assertIn("Labels all 10 present", output)
+        self.assertIn("Label colours 2 with the wrong colour: implemented, wontfix", output)
+        self.assertIn("No blockers", output)
+        self.assertIn("1 warning", output)
+
+    def test_without_a_terminal_the_wrong_colour_shows_the_hand_run_command_and_is_not_fixed(self):
+        self.colours["implemented"] = "ededed"
+        self.colours["wontfix"] = "ffffff"
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertIn(
+            "gh label edit implemented --repo example/project --color C2E0C6; gh label edit wontfix --repo example/project --color CFD3D7",
+            " ".join(output.split()),
+        )
+        self.assertEqual(self.label_edits(), [])
+
+    def test_colours_differing_only_in_case_or_by_a_leading_hash_are_not_reported(self):
+        self.colours["implemented"] = "C2E0C6"
+        self.colours["wontfix"] = "#cfd3d7"
+        code, output = self.run_check(confirm=lambda question: self.fail(question))
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("Label colours", output)
+
+    def test_a_renamed_role_is_compared_against_its_role_colour(self):
+        self.config.write_text(self.config.read_text().replace('implemented = "implemented"', 'implemented = "done"'))
+        self.labels[self.labels.index("implemented")] = "done"
+        self.colours["done"] = "c2e0c6"
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("Label colours", output)
+        self.colours["done"] = "cfd3d7"
+        code, output = self.run_check()
+        self.assertIn("Label colours 1 with the wrong colour: done", " ".join(output.split()))
+        self.assertIn("gh label edit done --repo example/project --color C2E0C6", " ".join(output.split()))
+
+    def test_wrong_colours_are_recoloured_once_confirmed_after_the_missing_labels_question(self):
+        self.labels.remove("human-review")
+        self.colours["implemented"] = "ededed"
+        self.colours["wontfix"] = "ffffff"
+        questions = []
+        code, output = self.run_check(confirm=lambda question: questions.append(question) or True)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(questions, [
+            "Create the 1 missing label on example/project?",
+            "Recolour 2 labels with the wrong colour on example/project (implemented, wontfix)?",
+        ])
+        self.assertEqual(self.label_edits(), [
+            ("gh", "label", "edit", "implemented", "--repo", "example/project", "--color", "C2E0C6"),
+            ("gh", "label", "edit", "wontfix", "--repo", "example/project", "--color", "CFD3D7"),
+        ])
+        self.assertIn("✓ implemented recoloured", output)
+        self.assertIn("✓ wontfix recoloured", output)
+
+    def test_a_label_just_created_is_not_offered_for_recolouring(self):
+        self.labels.remove("implemented")
+        self.colours["wontfix"] = "ffffff"
+        questions = []
+        self.run_check(confirm=lambda question: questions.append(question) or True)
+        self.assertEqual(questions[1], "Recolour 1 label with the wrong colour on example/project (wontfix)?")
+        self.assertEqual([args[3] for args in self.label_edits()], ["wontfix"])
+
+    def test_a_failed_recolouring_is_reported_by_name_and_the_others_are_recoloured(self):
+        self.colours["implemented"] = "ededed"
+        self.colours["wontfix"] = "ffffff"
+        self.unrecolourable = {"implemented"}
+        code, output = self.run_check(confirm=lambda question: True)
+        self.assertEqual(code, 0, output)
+        self.assertIn("✗ implemented not recoloured", output)
+        self.assertIn("✓ wontfix recoloured", output)
+        self.assertEqual(self.colours["wontfix"], "cfd3d7")
+
+    def test_declining_the_recolouring_writes_nothing(self):
+        self.colours["implemented"] = "ededed"
+        code, output = self.run_check(confirm=lambda question: False)
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.label_edits(), [])
+        self.assertIn("Labels not recoloured; ralph-kit check will offer again.", output)
 
     def test_broken_claude_skill_link_blocks(self):
         self.config.write_text(self.config.read_text().replace('engine = "codex"', 'engine = "claude"'))
@@ -694,7 +790,7 @@ class ReadinessTests(unittest.TestCase):
         code, output = self.run_check()
         self.assertEqual(code, 1)
         self.assertIn("2 missing: implemented, wontfix", output)
-        self.assertIn('for label in implemented wontfix; do gh label create "$label"; done', " ".join(output.split()))
+        self.assertIn("gh label create implemented --color C2E0C6; gh label create wontfix --color CFD3D7", " ".join(output.split()))
 
     def test_command_failure_does_not_echo_cli_output(self):
         import subprocess

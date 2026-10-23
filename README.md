@@ -32,7 +32,7 @@ ralph-kit init                 # writes ./ralph.toml (detects what it can, asks 
 ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
 ralph-kit configure            # change sections of ./ralph.toml from a menu
 ralph-kit update-config        # add the defaulted settings ./ralph.toml leaves out, then their GitHub labels
-ralph-kit check                # readiness check (offers to create missing labels)
+ralph-kit check                # readiness check (offers to create or recolour labels)
 ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
 ralph-kit run                  # at a terminal, pick among the startable run targets
 ralph-kit run 123              # standard run: implement the children of parent issue #123
@@ -898,10 +898,13 @@ Settings the configuration leaves out and that take their default value are
 listed as information (`ℹ`), pointing to `ralph-kit update-config`; they never fail
 the check. Defaulted label roles are a warning instead, since the label may be
 missing on GitHub.
+Labels whose colour differs from their label role's fixed colour are a warning,
+with the `gh label edit … --color …` commands as the fix.
 A nonzero exit code means a blocking check failed. In a terminal, missing labels
-are offered for creation after the report (Yes / Later); that is the only GitHub
-write. Engines only print their help; no agent session, project check, CI run, push,
-issue or PR mutation occurs. The configured
+are offered for creation after the report (Yes / Later), then labels with the
+wrong colour are offered for recolouring (colour only, never name or description);
+those are the only GitHub writes. Engines only print their help; no agent session,
+project check, CI run, push, issue or PR mutation occurs. The configured
 quality module is imported: it must be trusted and have no import-time side effects.
 
 A successful readiness check does not validate agent authentication/model access,
