@@ -209,7 +209,7 @@ The label role marking a standalone issue on which a run has started; it is neve
 _Avoid_: Standalone label, single-issue flag
 
 **Label role**:
-One of Ralph's ten canonical meanings for a label, mapped to a label name in each repository.
+One of Ralph's ten canonical meanings for a label, mapped to a label name in each repository. Each label role has a fixed colour, chosen by who must act next, whatever name the repository gives it.
 
 **Triage labels**:
 The label roles that say whether a child is ready for an agent: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix. A run also refuses to start on a parent carrying any of them other than ready-for-agent.
