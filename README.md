@@ -182,9 +182,9 @@ committed from another machine): the error suggests `uv tool upgrade ralph-kit -
 A newer ralph-kit can add a setting. `ralph-kit check` lists the defaulted
 settings the file leaves out other than label roles (`review_by_default`,
 `caffeinate_by_default`, each `child_session_limit` key) as information that
-does not fail the check, and warns about defaulted label roles. `ralph-kit update-config [--config PATH]`
-writes each defaulted setting the file leaves out, with its default value and the
-comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
+does not fail the check, and warns about defaulted label roles.
+`ralph-kit update-config [--config PATH]` writes each defaulted setting the file
+leaves out, with its default value and the comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
 after the last top-level setting, before the first table, each label role at
 the end of `[labels]` with its default name, and a `[child_session_limit]` table
 with `standard` and `reviewed` at the end of the file, or the limit a partial
@@ -879,6 +879,10 @@ Results are grouped by section with what was found; each failure shows the fix
 (often a command to run), and checks that depend on a missing tool are reported
 as not verified instead of failing. Colors are dropped when the output is not a
 terminal (or with `NO_COLOR`).
+Settings the configuration leaves out and that take their default value are
+listed as information (`ℹ`), pointing to `ralph-kit update-config`; they never fail
+the check. Defaulted label roles are a warning instead, since the label may be
+missing on GitHub.
 A nonzero exit code means a blocking check failed. In a terminal, missing labels
 are offered for creation after the report (Yes / Later); that is the only GitHub
 write. Engines only print their help; no agent session, project check, CI run, push,
