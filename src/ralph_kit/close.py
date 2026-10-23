@@ -8,10 +8,11 @@ import pathlib
 import shlex
 import sys
 from collections.abc import Callable
+from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-from .commands import RalphError
-from .config import RalphConfig, RalphConfigError, load_config
+from .commands import RalphError, command
+from .config import RUN_BRANCH_PREFIX, RalphConfig, RalphConfigError, load_config
 from .github import GitHub
 from .loop_core import (
     DEFAULT_CONFIG_PATH,
@@ -52,7 +53,41 @@ class CloseCancelled(Exception):
     """Ctrl-C at the confirmation: nothing was written."""
 
 
-def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
+@dataclass(frozen=True)
+class ClosableRunTarget:
+    """A closable run target as the closable run target picker offers it."""
+
+    number: int
+    title: str
+    # The open children of a parent issue; None for a standalone issue.
+    open_children: int | None
+
+    @property
+    def label(self) -> str:
+        kind = (
+            "standalone" if self.open_children is None
+            else f"parent · {self.open_children} open children"
+        )
+        return f"#{self.number}  {self.title}  ({kind})"
+
+
+class Inspection(NamedTuple):
+    """What closing an open issue would do, and every reason it cannot."""
+
+    parent: dict[str, Any] | None
+    children: list[dict[str, Any]]
+    # The open children's details, comments included.
+    open_children: list[dict[str, Any]]
+    # The issue itself when it is a standalone issue.
+    standalone: dict[str, Any] | None
+    failures: list[Failure]
+    without_evidence: list[dict[str, Any]]
+    merged_by: dict[int, int]
+
+
+def parse_arguments(argv: list[str], prog: str, *, issue_required: bool = True) -> argparse.Namespace:
+    """Read close's arguments. Without `ISSUE`, `issue` is None, a usage error when
+    `issue_required` or with `--force`."""
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(
@@ -73,8 +108,13 @@ def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
         action="store_true",
         help="close despite failed checks, after typing the issue number at a terminal",
     )
-    parser.add_argument("issue", type=positive_integer)
-    return parser.parse_args(argv)  # Exits with status 2 on usage errors.
+    parser.add_argument("issue", type=positive_integer, nargs="?", metavar="ISSUE")
+    arguments = parser.parse_args(argv)  # Exits with status 2 on usage errors.
+    if arguments.issue is None and arguments.force:
+        parser.error("--force needs the issue to close: ralph-kit close --force ISSUE")
+    if arguments.issue is None and issue_required:
+        parser.error("pass the issue to close: ralph-kit close ISSUE")
+    return arguments
 
 
 def is_open(issue: dict[str, Any]) -> bool:
@@ -220,6 +260,107 @@ def confirm_typed(number: int, type_answer: Callable[[str], str] | None) -> None
         raise CloseRefused(f"Did not type {number}. Nothing closed.")
 
 
+def inspect(github: Any, config: RalphConfig, target: dict[str, Any]) -> Inspection:
+    """Check the open issue `target` for its closure.
+
+    An issue without a parent or sub-issues is a standalone issue, checked as a child.
+    An issue with a parent fails a check naming it: the parent is the run target.
+    """
+    number = int(target["number"])
+    try:
+        parent = github.parent(number)
+    except RalphError as error:
+        raise RalphError(f"Cannot read the parent of #{number}, nothing closed: {error}") from error
+    children = github.sub_issues(number)
+    standalone = target if parent is None and not children else None
+    # Sub-issue listings carry no comments: each open child's evidence is in its details.
+    open_children = [github.issue(int(child["number"])) for child in children if is_open(child)]
+    failures, without_evidence, merged_by = failed_checks(
+        github,
+        config,
+        target,
+        open_children if standalone is None else [target],
+        standalone=standalone is not None,
+    )
+    if parent is not None:
+        failures.insert(0, Failure(
+            f"#{number} is a sub-issue of #{parent['number']}",
+            f"close #{parent['number']} instead",
+        ))
+    return Inspection(
+        parent, children, open_children, standalone, failures, without_evidence, merged_by
+    )
+
+
+def closable_run_targets(github: Any, config: RalphConfig) -> list[ClosableRunTarget]:
+    """The closable run targets of the repository, by ascending number: the open issues
+    whose closure passes every check.
+
+    Open issues are first narrowed by their listing to trusted ones that could pass:
+    a parent issue in human review, or an issue implemented as a standalone issue must be.
+    A failed GitHub lookup raises.
+    """
+    human_review = config.labels["human_review"]
+    implemented = config.labels["implemented"]
+    targets = []
+    for issue in sorted(github.open_issues(), key=lambda issue: int(issue["number"])):
+        if (
+            not is_open(issue)
+            or author_login(issue) not in config.trusted_authors
+            or not (
+                human_review in labels(issue)
+                or labels(issue) & config.lifecycle_labels == {implemented}
+            )
+        ):
+            continue
+        # The listing carries no comments: a standalone issue's evidence is in its details.
+        inspection = inspect(github, config, github.issue(int(issue["number"])))
+        if not inspection.failures:
+            targets.append(ClosableRunTarget(
+                int(issue["number"]),
+                str(issue.get("title", "")),
+                None if inspection.standalone is not None else len(inspection.open_children),
+            ))
+    return targets
+
+
+def choose_close_target(
+    github: Any,
+    config: RalphConfig,
+    choose: Callable[[list[ClosableRunTarget], int | None], int],
+    branch: str | None,
+) -> int | None:
+    """The run target the person at the terminal picks among the closable run targets, or
+    None when there is none to offer. On the run branch of a listed issue, the picker
+    preselects that issue, and otherwise its first entry. Ctrl-C in the picker cancels."""
+    with spinner("Reading the closable run targets…"):
+        targets = closable_run_targets(github, config)
+    if not targets:
+        return None
+    numbers = {target.number for target in targets}
+    preselected = next(
+        (number for number in numbers if branch == f"{RUN_BRANCH_PREFIX}{number}"), None
+    )
+    try:
+        chosen = choose(targets, preselected)
+    except KeyboardInterrupt:
+        raise CloseCancelled from None
+    if chosen not in numbers:
+        raise RalphError(f"#{chosen} is not one of the closable run targets")
+    return chosen
+
+
+def current_branch(repository_root: pathlib.Path) -> str | None:
+    """The checked-out branch, or None outside a Git checkout or on a detached HEAD."""
+    try:
+        result = command(
+            repository_root, ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], check=False
+        )
+    except OSError:
+        return None
+    return result.stdout.strip() if result.returncode == 0 else None
+
+
 def close_target(
     github: Any,
     config: RalphConfig,
@@ -233,8 +374,7 @@ def close_target(
 ) -> None:
     """Check everything, confirm, then close the open children, comment on and close the issue.
 
-    An issue without a parent or sub-issues is a standalone issue, checked as a child and
-    closed alone. An issue with a parent fails a check naming it: the parent is the run target.
+    A standalone issue is closed alone; see `inspect` for the checks.
     Under `force`, failed checks are warnings and the confirmation is the typed issue number.
     """
     with spinner(f"Checking #{number} and any sub-issues before closing…"):
@@ -245,30 +385,9 @@ def close_target(
         if int(target.get("number", 0)) != number:
             raise RalphError(f"GitHub returned the wrong issue for #{number}")
         if is_open(target):
-            try:
-                parent = github.parent(number)
-            except RalphError as error:
-                raise RalphError(
-                    f"Cannot read the parent of #{number}, nothing closed: {error}"
-                ) from error
-            children = github.sub_issues(number)
-            standalone = target if parent is None and not children else None
-            # Sub-issue listings carry no comments: each open child's evidence is in its details.
-            open_children = [
-                github.issue(int(child["number"])) for child in children if is_open(child)
-            ]
-            failures, without_evidence, merged_by = failed_checks(
-                github,
-                config,
-                target,
-                open_children if standalone is None else [target],
-                standalone=standalone is not None,
+            _, children, open_children, standalone, failures, without_evidence, merged_by = (
+                inspect(github, config, target)
             )
-            if parent is not None:
-                failures.insert(0, Failure(
-                    f"#{number} is a sub-issue of #{parent['number']}",
-                    f"close #{parent['number']} instead",
-                ))
     if not is_open(target):
         print(f"#{number} is already closed.")
         return
@@ -356,30 +475,48 @@ def run(
     github: Callable[[pathlib.Path, str], Any] = GitHub,
     confirm: Callable[[str], bool] | None = None,
     type_answer: Callable[[str], str] | None = None,
+    choose_run_target: Callable[[list[ClosableRunTarget], int | None], int] | None = None,
+    branch: Callable[[pathlib.Path], str | None] = current_branch,
     repository_root: pathlib.Path | None = None,
     prog: str = "ralph-kit close",
 ) -> int:
-    """Run `ralph-kit close`; `confirm` asks a Yes/No question and `type_answer` reads a typed
-    answer, both None without a terminal.
+    """Run `ralph-kit close`; `confirm` asks a Yes/No question, `type_answer` reads a typed
+    answer and `choose_run_target` picks among the closable run targets
+    (by ascending number, preselected number or None), all None without a terminal.
+    Only the picker lets close start without `ISSUE`; `branch` reads the checked-out
+    branch it preselects from.
 
-    Exits 0 once closed or already closed, 1 on a refusal, a declined
-    confirmation or a GitHub error, 2 on a usage error, 130 on Ctrl-C.
+    Exits 0 once closed, already closed or with no closable run target, 1 on a refusal,
+    a declined confirmation or a GitHub error, 2 on a usage error, 130 on Ctrl-C.
     """
-    arguments = parse_arguments(argv, prog)
+    arguments = parse_arguments(argv, prog, issue_required=choose_run_target is None)
     root = (repository_root or pathlib.Path.cwd()).resolve()
     config_path = arguments.config if arguments.config.is_absolute() else root / arguments.config
-    rerun = shlex.join([
-        *prog.split(),
-        *(["--force"] if arguments.force else []),
-        *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
-        str(arguments.issue),
-    ])
+
+    def rerun_command(issue: int | None) -> str:
+        return shlex.join([
+            *prog.split(),
+            *(["--force"] if arguments.force else []),
+            *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
+            *([str(issue)] if issue is not None else []),
+        ])
+
+    rerun = rerun_command(arguments.issue)
     try:
         config = load_config(config_path.resolve(), root, require_review=False)
+        access = github(root, config.repository)
+        issue = arguments.issue
+        if issue is None:
+            assert choose_run_target is not None
+            issue = choose_close_target(access, config, choose_run_target, branch(root))
+            if issue is None:
+                print(f"No run target in {config.repository} is ready to close.")
+                return 0
+            rerun = rerun_command(issue)
         close_target(
-            github(root, config.repository),
+            access,
             config,
-            arguments.issue,
+            issue,
             yes=arguments.yes,
             force=arguments.force,
             confirm=confirm,

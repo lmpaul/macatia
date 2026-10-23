@@ -8,13 +8,14 @@ import shutil
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 
 TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent / "src"))
 sys.path.insert(0, str(TESTS))
 
-from ralph_kit import cli, close  # noqa: E402
+from ralph_kit import check, cli, close  # noqa: E402
 from ralph_kit.commands import RalphError  # noqa: E402
 from ralph_kit.loop_core import REVIEWED_RUN, STANDARD_RUN  # noqa: E402
 from run_support import (  # noqa: E402
@@ -50,6 +51,22 @@ class ScriptedConfirmer:
         return answer
 
 
+class ScriptedPicker:
+    """Picks `answer` among the closable run targets, or raises it; keeps what it was offered."""
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.offered = []
+        self.preselected = []
+
+    def __call__(self, targets, preselected):
+        self.offered.append([target.label for target in targets])
+        self.preselected.append(preselected)
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
 class TerminalOutput(io.StringIO):
     def isatty(self):
         return True
@@ -78,16 +95,25 @@ class CloseTests(unittest.TestCase):
         self.github.on_branch[verified_head] = merged
         return implementation_evidence(mode, sha(f"implementation-{number}-{version}"), verified_head)
 
-    def close(self, *arguments, confirm=None, typed=None):
-        """Run `ralph-kit close`; confirm=None and typed=None stand for no terminal."""
+    def close(self, *arguments, confirm=None, typed=None, choose=None, branch=None):
+        """Run `ralph-kit close`; confirm=None, typed=None and choose=None stand for no
+        terminal, and `branch` is the checked-out branch."""
         stdout, stderr = io.StringIO(), io.StringIO()
+        self.opened = 0
+
+        def github(_root, _repository):
+            self.opened += 1
+            return self.github
+
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
                 code = close.run(
                     list(arguments),
-                    github=lambda _root, _repository: self.github,
+                    github=github,
                     confirm=confirm,
                     type_answer=typed,
+                    choose_run_target=choose,
+                    branch=lambda _root: branch,
                     repository_root=self.root,
                 )
             except SystemExit as error:  # argparse usage errors.
@@ -726,7 +752,7 @@ class CloseTests(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(cli.main(["--help"]), 0)
-        self.assertIn("close [--yes | --force] [--config PATH] ISSUE", stdout.getvalue())
+        self.assertIn("close [--yes | --force] [--config PATH] [ISSUE]", stdout.getvalue())
         with (
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
@@ -916,6 +942,217 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 1)
 
         self.assertIn(f"ralph-kit close --force {PARENT}", self.stderr)
+
+
+    # Without ISSUE: the closable run target picker.
+
+    def add_closable_and_refused_run_targets(self):
+        """A closable parent #69 and standalone #80, among run targets and issues that are not."""
+        self.add_parent()
+        self.add_child(70)
+        self.add_standalone(80)
+        # Refused: not in human review, unmerged, untrusted, and not implemented.
+        self.github.add_issue(90, labels=("ready-for-agent",))
+        self.github.add_issue(91, parent=90, labels=("implemented",), comments=[self.evidence(91)])
+        self.add_standalone(81, comments=[self.evidence(81, merged=False)])
+        self.add_standalone(82, author="stranger")
+        self.github.add_issue(83, labels=("ready-for-agent",))
+
+    def test_without_issue_the_picker_offers_only_the_closable_run_targets(self):
+        self.add_closable_and_refused_run_targets()
+        picker = ScriptedPicker(80)
+
+        code = self.close("--yes", choose=picker)
+
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual(picker.offered, [[
+            "#69  Issue 69  (parent · 1 open children)",
+            "#80  Issue 80  (standalone)",
+        ]])
+
+    def test_the_picked_run_target_closes_as_if_its_number_had_been_passed(self):
+        self.add_closable_and_refused_run_targets()
+        confirmer = ScriptedConfirmer(True)
+
+        code = self.close(choose=ScriptedPicker(PARENT), confirm=confirmer)
+
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual(confirmer.questions, ["Close these 2 issues?"])
+        for number in (70, PARENT):
+            self.assertEqual(self.state(number), ("CLOSED", "COMPLETED"))
+        self.assertEqual(self.state(80), ("OPEN", None))
+
+    def test_a_parent_whose_children_are_all_closed_is_closable(self):
+        self.add_parent()
+        self.add_child(70, state="closed")
+
+        self.assertEqual(self.close("--yes", choose=(picker := ScriptedPicker(PARENT))), 0)
+
+        self.assertEqual(picker.offered, [["#69  Issue 69  (parent · 0 open children)"]])
+
+    def test_a_parent_with_a_child_without_evidence_is_closable_after_the_confirmation(self):
+        self.add_parent()
+        self.add_child(70, comments=[])
+        confirmer = ScriptedConfirmer(True)
+
+        code = self.close("--yes", choose=ScriptedPicker(PARENT), confirm=confirmer)
+
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual(len(confirmer.questions), 1)
+        self.assertEqual(self.state(70), ("CLOSED", "COMPLETED"))
+
+    def test_without_a_closable_run_target_close_says_so_without_the_picker(self):
+        self.add_failing_parent()
+        picker = ScriptedPicker(PARENT)
+
+        code = self.close(choose=picker)
+
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual(picker.offered, [])
+        self.assertIn("No run target in", self.stdout)
+        self.assertIn("is ready to close", self.stdout)
+        self.assert_nothing_written(70, 71, 72)
+
+    def test_the_picker_preselects_the_run_branch_issue_when_it_is_listed(self):
+        self.add_closable_and_refused_run_targets()
+        for branch, preselected in (
+            ("ralph-kit/issue-80", 80),
+            ("ralph-kit/issue-8", None),
+            ("ralph-kit/issue-81", None),
+            ("main", None),
+            (None, None),
+        ):
+            with self.subTest(branch=branch):
+                picker = ScriptedPicker(KeyboardInterrupt())
+                self.close(choose=picker, branch=branch)
+                self.assertEqual(picker.preselected, [preselected])
+
+    def test_ctrl_c_in_the_picker_cancels_and_writes_nothing(self):
+        self.add_parent()
+        self.add_child(70)
+
+        code = self.close(choose=ScriptedPicker(KeyboardInterrupt()))
+
+        self.assertEqual(code, 130)
+        self.assertIn("Cancelled. Nothing closed.", self.stderr)
+        self.assert_nothing_written(70, PARENT)
+
+    def test_a_github_error_while_listing_exits_1_and_writes_nothing(self):
+        self.add_parent()
+        self.add_child(70)
+        self.github.open_issues_error = RalphError("command failed (gh api): HTTP 502")
+        picker = ScriptedPicker(PARENT)
+
+        self.assertEqual(self.close(choose=picker), 1)
+
+        self.assertIn("HTTP 502", self.stderr)
+        self.assertEqual(picker.offered, [])
+        self.assert_nothing_written(70, PARENT)
+
+    def test_a_number_outside_the_closable_run_targets_is_refused(self):
+        self.add_closable_and_refused_run_targets()
+
+        self.assertEqual(self.close("--yes", choose=ScriptedPicker(81)), 1)
+
+        self.assertIn("#81 is not one of the closable run targets", self.stderr)
+        self.assertEqual(self.state(81), ("OPEN", None))
+
+    def test_a_rerun_after_a_failure_names_the_picked_run_target(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71)
+        self.github.close_error = {71: RalphError("command failed (gh issue close 71): HTTP 502")}
+
+        shutil.copyfile(self.root / "ralph.toml", self.root / "other.toml")
+
+        self.assertEqual(self.close("--yes", "--config", "other.toml", choose=ScriptedPicker(PARENT)), 1)
+
+        self.assertIn(f"ralph-kit close --config other.toml {PARENT}", self.stderr)
+
+    def test_without_issue_or_the_picker_close_asks_for_the_issue_before_reading_github(self):
+        self.assertEqual(self.close("--yes"), 2)
+
+        self.assertIn("pass the issue to close", self.stderr)
+        self.assertEqual(self.opened, 0)
+
+    def test_force_without_issue_is_a_usage_error_even_with_the_picker(self):
+        self.add_failing_parent()
+        picker = ScriptedPicker(PARENT)
+
+        code = self.close("--force", choose=picker, typed=ScriptedConfirmer(str(PARENT)))
+
+        self.assertEqual(code, 2)
+        self.assertIn("--force needs the issue to close", self.stderr)
+        self.assertEqual(picker.offered, [])
+        self.assertEqual(self.opened, 0)
+
+    def test_an_explicit_issue_never_opens_the_picker(self):
+        self.add_closable_and_refused_run_targets()
+        picker = ScriptedPicker(80)
+
+        self.assertEqual(self.close("--yes", str(PARENT), choose=picker), 0, self.stderr)
+
+        self.assertEqual(picker.offered, [])
+
+    def test_a_terminal_sees_the_listing_in_progress(self):
+        self.add_parent()
+        self.add_child(70)
+        terminal = TerminalOutput()
+        with contextlib.redirect_stdout(terminal), contextlib.redirect_stderr(io.StringIO()):
+            close.run(
+                ["--yes"],
+                github=lambda _root, _repository: self.github,
+                choose_run_target=ScriptedPicker(PARENT),
+                branch=lambda _root: None,
+                repository_root=self.root,
+            )
+        self.assertIn("Reading the closable run targets", terminal.getvalue())
+
+    def test_the_current_branch_is_read_from_git_and_is_none_outside_a_checkout(self):
+        self.assertIsNone(close.current_branch(self.root))
+
+
+class CloseCommandLineTests(unittest.TestCase):
+    """`ralph-kit close` picks its run target with the arrow keys only in a terminal."""
+
+    def picker_passed(self, *, stdin_tty, stdout_tty):
+        with (
+            mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
+            mock.patch.object(sys.stdout, "isatty", return_value=stdout_tty),
+            mock.patch.object(close, "run", return_value=0) as run,
+            mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
+        ):
+            self.assertEqual(cli.main(["close"]), 0)
+        return run.call_args.kwargs["choose_run_target"]
+
+    def test_both_terminals_get_the_arrow_key_picker(self):
+        self.assertIs(self.picker_passed(stdin_tty=True, stdout_tty=True), cli.close_target_with_arrows)
+
+    def test_without_both_terminals_there_is_no_picker(self):
+        for stdin_tty, stdout_tty in ((False, True), (True, False), (False, False)):
+            with self.subTest(stdin_tty=stdin_tty, stdout_tty=stdout_tty):
+                self.assertIsNone(self.picker_passed(stdin_tty=stdin_tty, stdout_tty=stdout_tty))
+
+    def test_the_picker_offers_the_entries_and_returns_the_picked_number(self):
+        targets = [
+            close.ClosableRunTarget(12, "Add a cart", 3),
+            close.ClosableRunTarget(20, "Fix login", None),
+        ]
+        for preselected, default in ((None, "#12  Add a cart  (parent · 3 open children)"),
+                                     (20, "#20  Fix login  (standalone)")):
+            with (
+                self.subTest(preselected=preselected),
+                mock.patch.object(
+                    check, "arrow_select", return_value="#20  Fix login  (standalone)"
+                ) as select,
+            ):
+                self.assertEqual(cli.close_target_with_arrows(targets, preselected), 20)
+                select.assert_called_once_with(
+                    "Which run target should Ralph close?",
+                    [("#12  Add a cart  (parent · 3 open children)", ""),
+                     ("#20  Fix login  (standalone)", "")],
+                    default,
+                )
 
 
 if __name__ == "__main__":
