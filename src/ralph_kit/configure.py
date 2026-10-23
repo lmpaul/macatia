@@ -551,12 +551,10 @@ def run(
     if set(_comments(target.read_text(encoding="utf-8"))) - set(_comments(rendered)):
         prompter.say(f"ℹ {display_path} has comments that ralph-kit does not write: saving will drop them.")
     if defaulted := sorted(original.defaulted_settings):
+        one = len(defaulted) == 1
         prompter.say(
-            f"ℹ {display_path} has defaulted settings, which take their default value: {', '.join(defaulted)}; "
-            f"`ralph-kit update-config{option_text}` writes them."
-            if len(defaulted) > 1 else
-            f"ℹ {display_path} has a defaulted setting, which takes its default value: {defaulted[0]}; "
-            f"`ralph-kit update-config{option_text}` writes it."
+            f"ℹ {display_path} leaves out {', '.join(defaulted)}, so {'its default value is' if one else 'their default values are'} used: "
+            f"`ralph-kit update-config{option_text}` writes {'it' if one else 'them'}."
         )
 
     edited = original

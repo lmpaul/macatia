@@ -46,7 +46,6 @@ WITHOUT_BACKUP = DEFAULT_CONFIGURATION.replace(BACKUP_SECTION, "")
 _start, _review = CUSTOM_CONFIGURATION.split("# Used by reviewed runs", 1)
 WITHOUT_REVIEW = _start + _review.split("\n\n", 1)[1]
 REVIEWED_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("review_by_default = false\n", "review_by_default = true\n")
-REVIEW_LINES = "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.\nreview_by_default = false\n"
 SLEEP_LOCK_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", "caffeinate_by_default = true\n")
 
 
@@ -215,28 +214,29 @@ class ConfigureTests(unittest.TestCase):
                     name=name,
                 )
                 self.run_configure(answers=["10"], config=config)
-                lines = [line for line in self.output.getvalue().splitlines() if "defaulted settings" in line]
+                lines = [line for line in self.output.getvalue().splitlines() if "leaves out" in line]
                 self.assertEqual(lines, [
-                    f"ℹ {name} has defaulted settings, which take their default value: "
-                    f"child_session_limit.reviewed, labels.standalone, review_by_default; {suggestion} writes them."
+                    f"ℹ {name} leaves out child_session_limit.reviewed, labels.standalone, review_by_default, "
+                    f"so their default values are used: {suggestion} writes them."
                 ])
 
     def test_one_defaulted_setting_is_announced_in_the_singular(self):
         self.write(DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", ""))
         self.run_configure(answers=["10"])
         self.assertIn(
-            "ℹ ralph.toml has a defaulted setting, which takes its default value: caffeinate_by_default; "
+            "ℹ ralph.toml leaves out caffeinate_by_default, so its default value is used: "
             "`ralph-kit update-config` writes it.",
             self.output.getvalue(),
         )
 
     def test_a_file_declaring_every_setting_announces_no_defaulted_setting(self):
         self.run_configure(answers=["10"])
-        self.assertNotIn("defaulted", self.output.getvalue())
+        self.assertNotIn("leaves out", self.output.getvalue())
 
     def test_a_file_completed_by_update_config_opens_without_announcements(self):
+        review = "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.\nreview_by_default = false\n"
         self.write(
-            DEFAULT_CONFIGURATION.replace(REVIEW_LINES, "")
+            DEFAULT_CONFIGURATION.replace(review, "")
             .replace('work_started = "work-started"\nstandalone = "standalone"\n', "")
             .split("\n[child_session_limit]\n", 1)[0]
         )
@@ -246,7 +246,7 @@ class ConfigureTests(unittest.TestCase):
 
         self.assertFalse(self.run_configure(answers=["9"]))  # Save without a change.
         output = self.output.getvalue()
-        self.assertNotIn("defaulted", output)
+        self.assertNotIn("leaves out", output)
         self.assertNotIn("comments", output)
         self.assertIn("No changes: nothing written.", output)
 

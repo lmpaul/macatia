@@ -175,9 +175,10 @@ saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses
 comments added by hand are dropped (`configure` says so when it opens the file). When it
 opens a file with defaulted settings (settings the file leaves out, which take their
 default value), it lists them and points to `ralph-kit update-config`, which writes them;
-Save does not write them unless a value changes. It needs a terminal; without one, edit the TOML directly. An invalid configuration is
-refused with the error: fix the file by hand (a missing label key names the line to
-add); `ralph-kit init --force` would start over and lose its settings.
+Save does not write them unless a value changes. It needs a terminal; without one, edit
+the TOML directly. An invalid configuration is refused with the error: fix the file by
+hand (a missing label key names the line to add); `ralph-kit init --force` would start
+over and lose its settings.
 Unknown keys usually mean the file was written by a newer ralph-kit (for example
 committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
 
