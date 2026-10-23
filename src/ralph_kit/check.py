@@ -382,7 +382,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             "warn",
             "Label roles",
             f"{config_path.name} leaves out {', '.join(roles)}, so {names} {'is' if len(roles) == 1 else 'are'} used",
-            "ralph-kit update-labels writes it" if len(roles) == 1 else "ralph-kit update-labels writes them",
+            "ralph-kit update-config writes it" if len(roles) == 1 else "ralph-kit update-config writes them",
         )
 
     report.section("Tools")

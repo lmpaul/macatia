@@ -1,4 +1,4 @@
-"""ralph-kit update-labels: complete [labels] in the configuration, then the labels on GitHub."""
+"""ralph-kit update-config: complete [labels] in the configuration, then the labels on GitHub."""
 
 import contextlib
 import io
@@ -14,7 +14,7 @@ KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXTURES = KIT_ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import cli, update_labels
+from ralph_kit import cli, update_config
 
 
 ALL_LABELS = [
@@ -23,7 +23,7 @@ ALL_LABELS = [
 ]
 
 
-class UpdateLabelsTests(unittest.TestCase):
+class UpdateConfigTests(unittest.TestCase):
     def setUp(self):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
@@ -50,7 +50,7 @@ class UpdateLabelsTests(unittest.TestCase):
     def run_update(self, confirm=None):
         output = io.StringIO()
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
-            code = update_labels.run(self.root, self.config, confirm=confirm, command=self.command)
+            code = update_config.run(self.root, self.config, confirm=confirm, command=self.command)
         return code, output.getvalue()
 
     def test_a_missing_label_role_is_added_at_the_end_of_labels_and_nothing_else_changes(self):
@@ -176,12 +176,21 @@ class UpdateLabelsTests(unittest.TestCase):
 
     def test_the_command_is_dispatched_with_its_own_arguments(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:
-            cli.main(["update-labels", "--bogus"])
+            cli.main(["update-config", "--bogus"])
         self.assertEqual(raised.exception.code, 2)
         output = io.StringIO()
         with contextlib.redirect_stdout(output):
             cli.main(["--help"])
-        self.assertIn("update-labels [--config PATH]", output.getvalue())
+        self.assertIn("update-config [--config PATH]", output.getvalue())
+        self.assertNotIn("update-labels", output.getvalue())
+
+    def test_the_old_command_name_is_a_usage_error(self):
+        output = io.StringIO()
+        with contextlib.redirect_stderr(output):
+            code = cli.main(["update-labels"])
+        self.assertEqual(code, 2)
+        self.assertIn("unknown command 'update-labels'", output.getvalue())
+        self.assertIn("update-config [--config PATH]", output.getvalue())
 
 
 if __name__ == "__main__":

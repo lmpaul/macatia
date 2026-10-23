@@ -286,7 +286,7 @@ def load_config(
         lines = ", ".join(f'{key} = "{DEFAULT_LABELS[key]}"' for key in missing)
         raise RalphConfigError(
             f"configuration.labels is missing keys: {', '.join(missing)}"
-            f" (add {lines} under [labels], or run ralph-kit update-labels)"
+            f" (add {lines} under [labels], or run ralph-kit update-config)"
         )
     label_values = _mapping(
         values["labels"],

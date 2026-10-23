@@ -31,7 +31,7 @@ From the repository root:
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
 ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
 ralph-kit configure            # change sections of ./ralph.toml from a menu
-ralph-kit update-labels        # add the label roles ./ralph.toml leaves out, then their GitHub labels
+ralph-kit update-config        # add the label roles ./ralph.toml leaves out, then their GitHub labels
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
 ralph-kit run                  # at a terminal, pick among the startable run targets
@@ -179,7 +179,7 @@ add); `ralph-kit init --force` would start over and lose its settings.
 Unknown keys usually mean the file was written by a newer ralph-kit (for example
 committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
 
-A newer ralph-kit can add a label role. `ralph-kit update-labels [--config PATH]`
+A newer ralph-kit can add a label role. `ralph-kit update-config [--config PATH]`
 adds each role the file leaves out under `[labels]`, with its default name, one line
 at the end of the table: the rest of the file and its comments stay as they are. It
 refuses when the default name is already another role's label, or when the labels
@@ -225,8 +225,8 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
 - **Readiness check** (including the engine flag check): `tests/test_check.py`,
   with injected executable lookup and command runner. `tests/test_init.py`
   covers `ralph-kit init` the same way, `tests/test_configure.py` covers
-  `ralph-kit configure`, and `tests/test_update_labels.py` covers
-  `ralph-kit update-labels`.
+  `ralph-kit configure`, and `tests/test_update_config.py` covers
+  `ralph-kit update-config`.
 - **Closure** (every check, the confirmation, the writes and resuming
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
@@ -525,7 +525,7 @@ infrastructure retries, then stops the run.
   label, Ralph never reads it to decide anything, and nothing removes it.
   A `ralph.toml` written before `work_started` or `standalone` existed may leave
   them out and gets their default names; `check` warns about it, and
-  `ralph-kit update-labels` writes them. `init` and `check` offer to
+  `ralph-kit update-config` writes them. `init` and `check` offer to
   create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.

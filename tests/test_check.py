@@ -287,7 +287,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ work-started created", output)
         output = " ".join(output.split())  # The report wraps long details.
         self.assertIn("! Label roles ralph.toml leaves out work_started, so work-started is used", output)
-        self.assertIn("→ ralph-kit update-labels writes it", output)
+        self.assertIn("→ ralph-kit update-config writes it", output)
 
     def test_missing_standalone_marker_is_reported_and_created_once_confirmed(self):
         self.labels.remove("standalone")
@@ -318,7 +318,7 @@ class ReadinessTests(unittest.TestCase):
         code, output = self.run_check()
         output = " ".join(output.split())  # The report wraps long details.
         self.assertEqual(code, 1)
-        self.assertIn('add agent_working = "agent-working" under [labels], or run ralph-kit update-labels', output)
+        self.assertIn('add agent_working = "agent-working" under [labels], or run ralph-kit update-config', output)
         self.assertIn("edit ralph.toml by hand", output)
         self.assertNotIn("regenerate", output)
         self.assertEqual(self.config.read_text(), text)
