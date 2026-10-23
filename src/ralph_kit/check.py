@@ -255,7 +255,7 @@ class Readiness:
         return result.stdout.strip()
 
 
-ICONS = {"ok": ("✓", "green"), "warn": ("!", "yellow"), "fail": ("✗", "bold red"), "skip": ("○", "yellow"), "off": ("–", "dim")}
+ICONS = {"ok": ("✓", "green"), "info": ("ℹ", "blue"), "warn": ("!", "yellow"), "fail": ("✗", "bold red"), "skip": ("○", "yellow"), "off": ("–", "dim")}
 
 
 def render(console, report, repository=None, reminders=()):
@@ -383,6 +383,14 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             "Label roles",
             f"{config_path.name} leaves out {', '.join(roles)}, so {names} {'is' if len(roles) == 1 else 'are'} used",
             "ralph-kit update-config writes it" if len(roles) == 1 else "ralph-kit update-config writes them",
+        )
+    # Label roles warn above, since a label may be missing on GitHub; the other settings only inform.
+    if settings := sorted(setting for setting in config.defaulted_settings if not setting.startswith("labels.")):
+        report.add(
+            "info",
+            "Defaulted settings",
+            f"{config_path.name} leaves out {', '.join(settings)}, so {'its default value is' if len(settings) == 1 else 'their default values are'} used",
+            "ralph-kit update-config writes it" if len(settings) == 1 else "ralph-kit update-config writes them",
         )
 
     report.section("Tools")

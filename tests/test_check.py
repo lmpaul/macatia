@@ -4,6 +4,7 @@ import contextlib
 import io
 import json
 import pathlib
+import re
 import shutil
 import sys
 import tempfile
@@ -311,6 +312,64 @@ class ReadinessTests(unittest.TestCase):
     def test_complete_labels_get_no_label_roles_warning(self):
         code, output = self.run_check()
         self.assertNotIn("Label roles", output)
+
+    def declare_every_defaulted_setting(self):
+        text = self.config.read_text().replace(
+            "\n[labels]",
+            "review_by_default = false\ncaffeinate_by_default = false\n\n[labels]",
+        )
+        self.config.write_text(text + "\n[child_session_limit]\nstandard = 5\nreviewed = 9\n")
+
+    def test_defaulted_settings_get_one_info_entry_without_failing_the_check(self):
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        output = " ".join(output.split())  # The report wraps long details.
+        self.assertIn(
+            "ℹ Defaulted settings ralph.toml leaves out caffeinate_by_default,"
+            " child_session_limit.reviewed, child_session_limit.standard, review_by_default,"
+            " so their default values are used",
+            output,
+        )
+        self.assertIn("→ ralph-kit update-config writes them", output)
+        self.assertEqual(output.count("Defaulted settings"), 1)
+        self.assertIn("No blockers", output)
+
+    def test_one_defaulted_setting_is_reported_alone(self):
+        self.declare_every_defaulted_setting()
+        self.config.write_text(self.config.read_text().replace("reviewed = 9\n", ""))
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        output = " ".join(output.split())
+        self.assertIn(
+            "ℹ Defaulted settings ralph.toml leaves out child_session_limit.reviewed,"
+            " so its default value is used",
+            output,
+        )
+        self.assertIn("→ ralph-kit update-config writes it", output)
+
+    def test_a_file_declaring_every_defaulted_setting_gets_no_entry(self):
+        self.declare_every_defaulted_setting()
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("Defaulted settings", output)
+        self.assertNotIn("Label roles", output)
+
+    def test_defaulted_label_roles_keep_their_warning_and_stay_out_of_the_info_entry(self):
+        self.declare_every_defaulted_setting()
+        self.config.write_text(self.config.read_text().replace('work_started = "work-started"\n', ""))
+        code, output = self.run_check(confirm=lambda question: True)
+        output = " ".join(output.split())
+        self.assertIn("! Label roles ralph.toml leaves out work_started", output)
+        self.assertNotIn("Defaulted settings", output)
+
+    def test_optional_profiles_left_out_are_not_defaulted_settings(self):
+        self.declare_every_defaulted_setting()
+        text = self.config.read_text()
+        self.assertNotIn("[models.backup]", text)
+        self.config.write_text(re.sub(r"\[models\.review\]\n(?:[^\n\[]+\n)*", "", text))
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertNotIn("Defaulted settings", output)
 
     def test_missing_label_key_names_the_line_to_add_and_keeps_the_file(self):
         text = self.config.read_text().replace('agent_working = "agent-working"\n', "")

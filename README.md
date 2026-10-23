@@ -179,7 +179,10 @@ add); `ralph-kit init --force` would start over and lose its settings.
 Unknown keys usually mean the file was written by a newer ralph-kit (for example
 committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
 
-A newer ralph-kit can add a setting. `ralph-kit update-config [--config PATH]`
+A newer ralph-kit can add a setting. `ralph-kit check` lists the defaulted
+settings the file leaves out other than label roles (`review_by_default`,
+`caffeinate_by_default`, each `child_session_limit` key) as information that
+does not fail the check, and warns about defaulted label roles. `ralph-kit update-config [--config PATH]`
 writes each defaulted setting the file leaves out, with its default value and the
 comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
 after the last top-level setting, before the first table, each label role at

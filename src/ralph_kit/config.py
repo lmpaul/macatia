@@ -115,8 +115,19 @@ class RalphConfig:
     # Makes a run without --caffeinate or --no-caffeinate hold the sleep lock.
     caffeinate_by_default: bool = False
     child_session_limits: ChildSessionLimits = ChildSessionLimits()
-    # Label roles the file leaves out, which got their default name.
-    defaulted_labels: frozenset[str] = frozenset()
+    # Settings the file leaves out, which got their default value, as dotted keys such as
+    # child_session_limit.reviewed or labels.work_started. Never models.review or models.backup:
+    # leaving them out turns the feature off.
+    defaulted_settings: frozenset[str] = frozenset()
+
+    @property
+    def defaulted_labels(self) -> frozenset[str]:
+        """Label roles the file leaves out, which got their default name."""
+        return frozenset(
+            setting.removeprefix("labels.")
+            for setting in self.defaulted_settings
+            if setting.startswith("labels.")
+        )
 
     @property
     def triage_labels(self) -> frozenset[str]:
@@ -294,7 +305,16 @@ def load_config(
         LABEL_KEYS - set(LATER_LABEL_DEFAULTS),
         set(LATER_LABEL_DEFAULTS),
     )
-    defaulted_labels = frozenset(LATER_LABEL_DEFAULTS) - set(label_values)
+    child_session_limit_values = values.get("child_session_limit", {})
+    defaulted_settings = frozenset(
+        {"review_by_default", "caffeinate_by_default"} - set(values)
+        | {
+            f"child_session_limit.{key}"
+            for key in DEFAULT_CHILD_SESSION_LIMITS
+            if key not in child_session_limit_values
+        }
+        | {f"labels.{key}" for key in LATER_LABEL_DEFAULTS if key not in label_values}
+    )
     label_values = LATER_LABEL_DEFAULTS | label_values
     labels = {
         key: _string(label_values[key], f"configuration.labels.{key}")
@@ -352,7 +372,7 @@ def load_config(
         review_by_default=review_by_default,
         caffeinate_by_default=caffeinate_by_default,
         child_session_limits=child_session_limits,
-        defaulted_labels=defaulted_labels,
+        defaulted_settings=defaulted_settings,
         verification=VerificationConfig(
             local_checks=verification_values["local_checks"],
             ci_checks=verification_values["ci_checks"],
