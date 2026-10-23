@@ -1,5 +1,6 @@
 """`ralph-kit configure` without real git, gh, or terminal."""
 
+import contextlib
 import io
 import itertools
 import json
@@ -13,7 +14,7 @@ import unittest
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import configure, init
+from ralph_kit import configure, init, update_config
 from ralph_kit.config import load_config
 
 
@@ -45,6 +46,7 @@ WITHOUT_BACKUP = DEFAULT_CONFIGURATION.replace(BACKUP_SECTION, "")
 _start, _review = CUSTOM_CONFIGURATION.split("# Used by reviewed runs", 1)
 WITHOUT_REVIEW = _start + _review.split("\n\n", 1)[1]
 REVIEWED_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("review_by_default = false\n", "review_by_default = true\n")
+REVIEW_LINES = "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.\nreview_by_default = false\n"
 SLEEP_LOCK_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", "caffeinate_by_default = true\n")
 
 
@@ -200,6 +202,53 @@ class ConfigureTests(unittest.TestCase):
         self.write(DEFAULT_CONFIGURATION.replace('"needs-triage"', '"needs #triage"'))
         self.run_configure(answers=["10"])
         self.assertNotIn("comments", self.output.getvalue())
+
+    def test_defaulted_settings_are_announced_once_with_update_config(self):
+        for config, suggestion in ((None, "`ralph-kit update-config`"), (pathlib.Path("b.toml"), "`ralph-kit update-config --config b.toml`")):
+            with self.subTest(config=config):
+                self.output = io.StringIO()
+                name = str(config or "ralph.toml")
+                self.write(
+                    DEFAULT_CONFIGURATION.replace("review_by_default = false\n", "")
+                    .replace('standalone = "standalone"\n', "")
+                    .replace("reviewed = 9\n", ""),
+                    name=name,
+                )
+                self.run_configure(answers=["10"], config=config)
+                lines = [line for line in self.output.getvalue().splitlines() if "defaulted settings" in line]
+                self.assertEqual(lines, [
+                    f"ℹ {name} has defaulted settings, which take their default value: "
+                    f"child_session_limit.reviewed, labels.standalone, review_by_default; {suggestion} writes them."
+                ])
+
+    def test_one_defaulted_setting_is_announced_in_the_singular(self):
+        self.write(DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", ""))
+        self.run_configure(answers=["10"])
+        self.assertIn(
+            "ℹ ralph.toml has a defaulted setting, which takes its default value: caffeinate_by_default; "
+            "`ralph-kit update-config` writes it.",
+            self.output.getvalue(),
+        )
+
+    def test_a_file_declaring_every_setting_announces_no_defaulted_setting(self):
+        self.run_configure(answers=["10"])
+        self.assertNotIn("defaulted", self.output.getvalue())
+
+    def test_a_file_completed_by_update_config_opens_without_announcements(self):
+        self.write(
+            DEFAULT_CONFIGURATION.replace(REVIEW_LINES, "")
+            .replace('work_started = "work-started"\nstandalone = "standalone"\n', "")
+            .split("\n[child_session_limit]\n", 1)[0]
+        )
+        labels = json.dumps([[{"name": name} for name in init.DEFAULT_LABELS.values()]])
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertEqual(update_config.run(self.root, self.root / "ralph.toml", command=lambda *args: labels), 0)
+
+        self.assertFalse(self.run_configure(answers=["9"]))  # Save without a change.
+        output = self.output.getvalue()
+        self.assertNotIn("defaulted", output)
+        self.assertNotIn("comments", output)
+        self.assertIn("No changes: nothing written.", output)
 
     def test_trusted_authors_lists_them_and_adds_one_without_duplicates(self):
         self.write(CUSTOM_CONFIGURATION)

@@ -550,6 +550,14 @@ def run(
     rendered = render(original, root)
     if set(_comments(target.read_text(encoding="utf-8"))) - set(_comments(rendered)):
         prompter.say(f"ℹ {display_path} has comments that ralph-kit does not write: saving will drop them.")
+    if defaulted := sorted(original.defaulted_settings):
+        prompter.say(
+            f"ℹ {display_path} has defaulted settings, which take their default value: {', '.join(defaulted)}; "
+            f"`ralph-kit update-config{option_text}` writes them."
+            if len(defaulted) > 1 else
+            f"ℹ {display_path} has a defaulted setting, which takes its default value: {defaulted[0]}; "
+            f"`ralph-kit update-config{option_text}` writes it."
+        )
 
     edited = original
     state = EditState(command, original.repository, [engine for engine in ENGINES if which(engine)])
