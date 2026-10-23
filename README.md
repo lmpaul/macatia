@@ -40,6 +40,7 @@ ralph-kit run --review 123     # reviewed run: adds an independent review sessio
 ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
+ralph-kit close                # at a terminal, pick among the closable run targets
 ralph-kit close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
 ralph-kit close --yes 123      # same, without the confirmation
 ralph-kit close --force 123    # close despite failed checks, after typing 123
@@ -853,8 +854,19 @@ The closure comment says the closure was forced and lists the failed checks. A
 nonexistent issue is still refused, and a closed issue still prints `already
 closed` and exits 0.
 
-Exit codes: 0 once closed or already closed; 1 for a refusal, a declined
-confirmation or a GitHub error; 2 for a usage error; 130 for Ctrl-C.
+Started without an issue at a terminal, `close` lists the closable run targets,
+the open issues whose closure passes every check, behind a spinner, and closes
+the one picked exactly as if its number had been passed: same confirmation
+(`--yes` still skips it), same rerun command. Only trusted issues in
+`human-review`, or labelled `implemented` alone, are checked for the listing.
+On the run branch of a listed issue (`ralph-kit/issue-<N>`), the picker
+preselects it. With no closable run target, `close` says so and exits 0;
+Ctrl-C in the picker closes nothing and exits 130. Without a terminal, or with
+`--force`, the issue is required: a forced closure always names its issue.
+
+Exit codes: 0 once closed, already closed, or with no closable run target; 1
+for a refusal, a declined confirmation or a GitHub error; 2 for a usage error;
+130 for Ctrl-C.
 
 ## Readiness check
 

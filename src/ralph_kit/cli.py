@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING
 
 
 if TYPE_CHECKING:
+    from .close import ClosableRunTarget
     from .loop_core import StartableRunTarget
 
 
@@ -35,12 +36,14 @@ commands:
       Add each defaulted setting the configuration leaves out (review_by_default, caffeinate_by_default,
       label roles), with its default value and init's comment, keeping the rest of the file;
       then offer to create the labels missing on GitHub.
-  close [--yes | --force] [--config PATH] ISSUE
+  close [--yes | --force] [--config PATH] [ISSUE]
       Closure: once every open child of a parent ISSUE is implemented and ISSUE is in human review,
       close the open children, then ISSUE, as completed, after one confirmation; a standalone ISSUE
       that is implemented and merged closes alone.
+      Without ISSUE, at a terminal, offers the closable run targets to choose from.
       --yes closes without asking; without a terminal, close needs --yes.
-      --force closes despite failed checks, shown as warnings, once you type ISSUE at a terminal.
+      --force closes despite failed checks, shown as warnings, once you type ISSUE at a terminal;
+      it needs ISSUE.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """
@@ -102,17 +105,31 @@ def startup_choice_with_arrows(question: str, accept: str, *, accept_by_default:
     return arrow_select(question, [(choice, "") for choice in choices], choices[0]) == accept
 
 
-def run_target_with_arrows(targets: list[StartableRunTarget], preselected: int | None) -> int:
-    """The number of the startable run target picked, `preselected` or the first one listed
-    by default; Ctrl-C raises KeyboardInterrupt, which the run counts as Stop."""
+def pick_run_target_with_arrows(
+    question: str, targets: list[StartableRunTarget] | list[ClosableRunTarget], preselected: int | None
+) -> int:
+    """The number of the run target picked, `preselected` or the first one listed by default;
+    Ctrl-C raises KeyboardInterrupt."""
     from .check import arrow_select
 
     numbers = {target.label: target.number for target in targets}
     default = next(
         (target.label for target in targets if target.number == preselected), targets[0].label
     )
-    picked = arrow_select("Which run target should Ralph run?", [(label, "") for label in numbers], default)
+    picked = arrow_select(question, [(label, "") for label in numbers], default)
     return numbers[picked]
+
+
+def run_target_with_arrows(targets: list[StartableRunTarget], preselected: int | None) -> int:
+    """The number of the startable run target picked, `preselected` or the first one listed
+    by default; Ctrl-C raises KeyboardInterrupt, which the run counts as Stop."""
+    return pick_run_target_with_arrows("Which run target should Ralph run?", targets, preselected)
+
+
+def close_target_with_arrows(targets: list[ClosableRunTarget], preselected: int | None) -> int:
+    """The number of the closable run target picked, `preselected` or the first one listed
+    by default; Ctrl-C raises KeyboardInterrupt, which close counts as a cancellation."""
+    return pick_run_target_with_arrows("Which run target should Ralph close?", targets, preselected)
 
 
 def yes_no_with_arrows(question: str) -> bool:
@@ -169,6 +186,7 @@ def main(argv: list[str] | None = None) -> int:
             arguments,
             confirm=yes_no_with_arrows if terminal else None,
             type_answer=input if terminal else None,
+            choose_run_target=close_target_with_arrows if terminal else None,
         )
     print(f"ralph-kit: unknown command {command!r}\n\n{USAGE}", end="", file=sys.stderr)
     return 2
