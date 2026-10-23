@@ -53,10 +53,3 @@ local_checks = false
 ci_checks = false
 quality_module = ".github/scripts/quality.py"
 quality_manifest = ".github/quality-gates.json"
-
-
-[child_session_limit]
-# The most agent sessions one child may receive in a run. The correction limit (three corrections)
-# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.
-standard = 5
-reviewed = 9
