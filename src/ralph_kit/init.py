@@ -488,6 +488,18 @@ def _string(value: str) -> str:
     return json.dumps(value, ensure_ascii=False)
 
 
+# The comment init writes above each top-level setting a configuration may leave out, in the file's order.
+TOP_LEVEL_COMMENTS = {
+    "review_by_default": "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.",
+    "caffeinate_by_default": "# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.",
+}
+
+
+def top_level_setting(key: str, value: bool) -> list[str]:
+    """The lines init writes for a top-level setting a configuration may leave out: its comment, then key = value."""
+    return [TOP_LEVEL_COMMENTS[key], f"{key} = {str(value).lower()}"]
+
+
 def configuration(values: dict, root: pathlib.Path) -> RalphConfig:
     """The configuration init collected, in the shape load_config returns."""
     models = {role: AgentProfile(**profile) for role, profile in values["models"].items()}
@@ -518,10 +530,7 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
         f"remote = {_string(config.remote)}",
         # A set has no order of its own; sorting keeps the file stable from one save to the next.
         f"trusted_authors = [{', '.join(_string(author) for author in sorted(config.trusted_authors))}]",
-        "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.",
-        f"review_by_default = {str(config.review_by_default).lower()}",
-        "# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.",
-        f"caffeinate_by_default = {str(config.caffeinate_by_default).lower()}",
+        *(line for key in TOP_LEVEL_COMMENTS for line in top_level_setting(key, getattr(config, key))),
         "",
         "[labels]",
         *(f"{key} = {_string(config.labels[key])}" for key in LABELS),

@@ -1,11 +1,12 @@
-"""Complete [labels] in the configuration with the default names, then offer the missing labels on GitHub.
+"""Write the defaulted settings the configuration leaves out, then offer the missing labels on GitHub.
 
-The configuration is edited in place, one line per missing role, so its layout and comments stay.
+The configuration is edited in place, one line per added setting and its comment, so its layout and comments stay.
 """
 
 from __future__ import annotations
 
 import argparse
+import dataclasses
 import json
 import pathlib
 import re
@@ -21,9 +22,12 @@ from .config import (
     _load_toml,
     load_config,
 )
+from .init import TOP_LEVEL_COMMENTS, top_level_setting
 
 
 TABLE_HEADER = re.compile(r"\s*\[")
+COMMENT = re.compile(r"\s*#")
+DEFAULTS = {field.name: field.default for field in dataclasses.fields(RalphConfig)}
 LABELS_HEADER = re.compile(r"\s*\[\s*labels\s*\]\s*(#.*)?")
 
 
@@ -43,6 +47,24 @@ def missing_roles(labels: dict) -> dict[str, str]:
     return missing
 
 
+def with_top_level(text: str, keys: list[str]) -> str:
+    """text with each key, under its comment, after the last top-level setting, before the first table.
+
+    A comment block directly above the first table belongs to that table and stays with it.
+    """
+    lines = text.splitlines(keepends=True)
+    if lines and not lines[-1].endswith("\n"):
+        lines[-1] += "\n"
+    end = next((index for index, line in enumerate(lines) if TABLE_HEADER.match(line)), len(lines))
+    if end < len(lines):
+        while end > 0 and COMMENT.match(lines[end - 1]):
+            end -= 1
+    while end > 0 and not lines[end - 1].strip():
+        end -= 1
+    added = [f"{line}\n" for key in keys for line in top_level_setting(key, DEFAULTS[key])]
+    return "".join(lines[:end] + added + lines[end:])
+
+
 def with_roles(text: str, roles: dict[str, str]) -> str:
     """text with one line per role at the end of its [labels] table, after the last non-blank line."""
     lines = text.splitlines(keepends=True)
@@ -59,26 +81,34 @@ def with_roles(text: str, roles: dict[str, str]) -> str:
 
 
 def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
-    """The file's text with the missing roles added, and those roles; empty when it declares every role."""
+    """The file's text with the defaulted settings added, and each added key with its value; empty when there is none."""
     values = _load_toml(path)
     labels = values.get("labels")
     if not isinstance(labels, dict):
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
+    keys = [key for key in TOP_LEVEL_COMMENTS if key not in values]
     roles = missing_roles(labels)
     text = path.read_text(encoding="utf-8")
-    if not roles:
-        return text, roles
-    text = with_roles(text, roles)
-    if not set(DEFAULT_LABELS) <= set(tomllib.loads(text).get("labels", {})):
+    if keys:
+        text = with_top_level(text, keys)
+    if roles:
+        text = with_roles(text, roles)
+    if not keys and not roles:
+        return text, {}
+    completed = tomllib.loads(text)
+    if not set(DEFAULT_LABELS) <= set(completed.get("labels", {})):
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
-    return text, roles
+    if any(completed.get(key) != DEFAULTS[key] for key in keys):
+        raise UpdateError(f"cannot add {', '.join(keys)} before the first table: add {'it' if len(keys) == 1 else 'them'} by hand")
+    added = {key: str(DEFAULTS[key]).lower() for key in keys}
+    return text, added | {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()}
 
 
 def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[RalphConfig, dict[str, str]]:
-    """Complete the file, writing it only once the completed text loads; return its configuration and the added roles."""
-    text, roles = completed_text(path)
-    if not roles:
-        return load_config(path, root, require_review=False), roles
+    """Complete the file, writing it only once the completed text loads; return its configuration and the added settings."""
+    text, added = completed_text(path)
+    if not added:
+        return load_config(path, root, require_review=False), added
     # Validated next to the target before replacing it, so a file still invalid once completed is left as it was.
     staged = path.with_name(f".{path.name}.update-config")
     try:
@@ -87,7 +117,7 @@ def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[RalphConfig,
         staged.replace(path)
     finally:
         staged.unlink(missing_ok=True)
-    return config, roles
+    return config, added
 
 
 def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=None) -> int:
@@ -98,15 +128,14 @@ def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=
     command = command or Readiness(root).command
     name = config_path.name
     try:
-        config, roles = load_completed(config_path, root)
+        config, added = load_completed(config_path, root)
     except (UpdateError, RalphConfigError, tomllib.TOMLDecodeError) as error:
         print(f"❌ {error}", file=sys.stderr)
         return 1
-    if roles:
-        for role, label in roles.items():
-            print(f'✓ {name}: added {role} = "{label}"')
-    else:
-        print(f"✓ {name} declares all {len(DEFAULT_LABELS)} label roles")
+    for key, value in added.items():
+        print(f"✓ {name}: added {key} = {value}")
+    if not added:
+        print(f"✓ {name}: nothing to add, every defaulted setting is declared")
 
     code = 0
     repository = config.repository
@@ -131,7 +160,7 @@ def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=
             fix = f"gh label create {names}" if len(missing) == 1 else f'for label in {names}; do gh label create "$label"; done'
             print(f"  → create {'it' if len(missing) == 1 else 'them'} later: {fix}")
             code = 1
-    if roles:
+    if added:
         print(f"Commit {name} before the next run: ralph-kit run needs a clean working tree.")
     return code
 

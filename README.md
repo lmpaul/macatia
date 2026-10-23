@@ -31,7 +31,7 @@ From the repository root:
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
 ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
 ralph-kit configure            # change sections of ./ralph.toml from a menu
-ralph-kit update-config        # add the label roles ./ralph.toml leaves out, then their GitHub labels
+ralph-kit update-config        # add the defaulted settings ./ralph.toml leaves out, then their GitHub labels
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
 ralph-kit run                  # at a terminal, pick among the startable run targets
@@ -179,12 +179,16 @@ add); `ralph-kit init --force` would start over and lose its settings.
 Unknown keys usually mean the file was written by a newer ralph-kit (for example
 committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
 
-A newer ralph-kit can add a label role. `ralph-kit update-config [--config PATH]`
-adds each role the file leaves out under `[labels]`, with its default name, one line
-at the end of the table: the rest of the file and its comments stay as they are. It
-refuses when the default name is already another role's label, or when the labels
-are not in a `[labels]` table, and then writes nothing. It then validates the file
-and, like `check`, offers to create the labels missing on GitHub (Yes / Later; without
+A newer ralph-kit can add a setting. `ralph-kit update-config [--config PATH]`
+writes each defaulted setting the file leaves out, with its default value and the
+comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
+after the last top-level setting, before the first table, and each label role at
+the end of `[labels]` with its default name. The rest of the file and its comments
+stay as they are; `[models.review]` and `[models.backup]` are never added. It lists
+each added setting as `key = value`, and with nothing to add says so and writes
+nothing. It refuses when the default name is already another role's label, or when
+the labels are not in a `[labels]` table, and then writes nothing. It validates the
+completed file before writing it and, like `check`, offers to create the labels missing on GitHub (Yes / Later; without
 a terminal it only prints the command). Commit the file afterwards: a run needs a
 clean working tree.
 

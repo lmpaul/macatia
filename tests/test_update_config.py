@@ -1,4 +1,4 @@
-"""ralph-kit update-config: complete [labels] in the configuration, then the labels on GitHub."""
+"""ralph-kit update-config: write the defaulted settings into the configuration, then the labels on GitHub."""
 
 import contextlib
 import io
@@ -14,13 +14,24 @@ KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXTURES = KIT_ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import cli, update_config
+from ralph_kit import cli, config, init, update_config
 
 
 ALL_LABELS = [
     "needs-triage", "needs-info", "ready-for-agent", "ready-for-human", "wontfix",
     "agent-working", "human-review", "implemented", "work-started", "standalone",
 ]
+
+
+REVIEW = """\
+# true makes every run a reviewed run; ralph-kit run --no-review overrides it.
+review_by_default = false
+"""
+CAFFEINATE = """\
+# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.
+caffeinate_by_default = false
+"""
+TOP_LEVEL = REVIEW + CAFFEINATE
 
 
 class UpdateConfigTests(unittest.TestCase):
@@ -32,6 +43,7 @@ class UpdateConfigTests(unittest.TestCase):
         shutil.copy2(FIXTURES / "ralph.toml", self.config)
         self.labels = list(ALL_LABELS)
         self.commands = []
+        self.declare_top_level_settings()
 
     def command(self, *args):
         self.commands.append(args)
@@ -52,6 +64,12 @@ class UpdateConfigTests(unittest.TestCase):
         with contextlib.redirect_stdout(output), contextlib.redirect_stderr(output):
             code = update_config.run(self.root, self.config, confirm=confirm, command=self.command)
         return code, output.getvalue()
+
+    def declare_top_level_settings(self):
+        """The fixture with both defaulted top-level settings, as init writes them."""
+        text = self.config.read_text().replace('trusted_authors = ["lmpaul"]\n', 'trusted_authors = ["lmpaul"]\n' + TOP_LEVEL)
+        self.config.write_text(text)
+        return text
 
     def test_a_missing_label_role_is_added_at_the_end_of_labels_and_nothing_else_changes(self):
         text = self.config.read_text().replace('work_started = "work-started"\n', "")
@@ -128,7 +146,88 @@ class UpdateConfigTests(unittest.TestCase):
 
         self.assertEqual(code, 0, output)
         self.assertEqual(self.config.read_text(), original)
-        self.assertIn("✓ ralph.toml declares all 10 label roles", output)
+        self.assertIn("✓ ralph.toml: nothing to add, every defaulted setting is declared", output)
+        self.assertNotIn("added", output)
+        self.assertIn("✓ all 10 labels present on lmpaul/buyr", output)
+        self.assertNotIn("Commit ralph.toml", output)
+
+    def test_missing_top_level_settings_are_added_before_the_first_table_with_their_comments(self):
+        declared = self.config.read_text()
+        for kept, completed, added in (
+            ("", TOP_LEVEL, ["review_by_default", "caffeinate_by_default"]),
+            (REVIEW, TOP_LEVEL, ["caffeinate_by_default"]),
+            (CAFFEINATE, CAFFEINATE + REVIEW, ["review_by_default"]),
+        ):
+            with self.subTest(added=added):
+                self.config.write_text(declared.replace(TOP_LEVEL, kept))
+
+                code, output = self.run_update()
+
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.config.read_text(), declared.replace(TOP_LEVEL, completed))
+                self.assertEqual(
+                    [line for line in output.splitlines() if "added" in line],
+                    [f"✓ ralph.toml: added {key} = false" for key in added],
+                )
+                self.assertIn("✓ all 10 labels present on lmpaul/buyr", output)
+                self.assertIn("Commit ralph.toml", output)
+
+    def test_a_file_init_wrote_gets_back_the_lines_init_writes(self):
+        rendered = init.render(config.load_config(self.config, self.root, require_review=False), self.root)
+        self.config.write_text(rendered.replace(TOP_LEVEL, ""))
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.config.read_text(), rendered)
+
+    def test_top_level_settings_go_after_the_last_setting_and_keep_hand_written_comments(self):
+        text = self.config.read_text().replace(TOP_LEVEL, "")
+        text = text.replace('version = 1\n', '# Our Ralph setup.\nversion = 1  # format\n')
+        text = text.replace('trusted_authors = ["lmpaul"]\n', 'trusted_authors = [\n  "lmpaul",  # owner\n]\n# Labels follow.\n\n')
+        text = text.replace("[labels]\n", "# Our names.\n[labels]\n")
+        self.config.write_text(text)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(
+            self.config.read_text(),
+            text.replace('# Labels follow.\n', '# Labels follow.\n' + TOP_LEVEL),
+        )
+
+    def test_top_level_settings_and_label_roles_are_added_together(self):
+        text = self.config.read_text().replace(TOP_LEVEL, "").replace('standalone = "standalone"\n', "")
+        self.config.write_text(text)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(
+            self.config.read_text(),
+            text.replace('trusted_authors = ["lmpaul"]\n', 'trusted_authors = ["lmpaul"]\n' + TOP_LEVEL)
+            .replace('work_started = "work-started"\n', 'work_started = "work-started"\nstandalone = "standalone"\n'),
+        )
+        self.assertIn(
+            "✓ ralph.toml: added review_by_default = false\n"
+            "✓ ralph.toml: added caffeinate_by_default = false\n"
+            '✓ ralph.toml: added standalone = "standalone"\n',
+            output,
+        )
+
+    def test_optional_model_profiles_left_out_stay_absent(self):
+        text = self.config.read_text()
+        start, end = text.index("[models.review]"), text.index("[models.correction]")
+        text = (text[:start] + text[end:]).replace(TOP_LEVEL, "")
+        self.config.write_text(text)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        completed = self.config.read_text()
+        self.assertNotIn("[models.review]", completed)
+        self.assertNotIn("[models.backup]", completed)
+        self.assertNotIn("models", output)
 
     def test_a_default_name_another_role_uses_is_refused(self):
         self.remove_line('work_started = "work-started"\n')

@@ -32,7 +32,8 @@ commands:
   configure [--config PATH]
       Change sections of an existing configuration (default ./ralph.toml) from a menu; saves only what changed.
   update-config [--config PATH]
-      Add each label role the configuration leaves out, with its default name, keeping the rest of the file;
+      Add each defaulted setting the configuration leaves out (review_by_default, caffeinate_by_default,
+      label roles), with its default value and init's comment, keeping the rest of the file;
       then offer to create the labels missing on GitHub.
   close [--yes | --force] [--config PATH] ISSUE
       Closure: once every open child of a parent ISSUE is implemented and ISSUE is in human review,
