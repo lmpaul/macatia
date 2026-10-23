@@ -903,8 +903,8 @@ with the `gh label edit … --color …` commands as the fix.
 A nonzero exit code means a blocking check failed. In a terminal, missing labels
 are offered for creation after the report (Yes / Later), then labels with the
 wrong colour are offered for recolouring (colour only, never name or description);
-those are the only GitHub writes. Engines only print their help; no agent session, project check, CI run, push,
-issue or PR mutation occurs. The configured
+those are the only GitHub writes. Engines only print their help; no agent session,
+project check, CI run, push, issue or PR mutation occurs. The configured
 quality module is imported: it must be trusted and have no import-time side effects.
 
 A successful readiness check does not validate agent authentication/model access,
