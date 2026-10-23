@@ -31,7 +31,7 @@ From the repository root:
 ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
 ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
 ralph-kit configure            # change sections of ./ralph.toml from a menu
-ralph-kit update-labels        # add the label roles ./ralph.toml leaves out, then their GitHub labels
+ralph-kit update-config        # add the defaulted settings ./ralph.toml leaves out, then their GitHub labels
 ralph-kit check                # readiness check (offers to create missing labels)
 ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
 ralph-kit run                  # at a terminal, pick among the startable run targets
@@ -172,20 +172,34 @@ least 1 for standard and 2 for reviewed). `init` writes the table with its defau
 Save lists each changed key as `key: old → new`, writes the file, validates it and
 suggests committing it, then `ralph-kit check`; Save without changes, Quit without
 saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
-comments added by hand are dropped (`configure` says so when it opens the file). It
-needs a terminal; without one, edit the TOML directly. An invalid configuration is
-refused with the error: fix the file by hand (a missing label key names the line to
-add); `ralph-kit init --force` would start over and lose its settings.
+comments added by hand are dropped (`configure` says so when it opens the file). When it
+opens a file with defaulted settings (settings the file leaves out, which take their
+default value), it lists them and points to `ralph-kit update-config`, which writes them;
+Save does not write them unless a value changes. It needs a terminal; without one, edit
+the TOML directly. An invalid configuration is refused with the error: fix the file by
+hand (a missing label key names the line to add); `ralph-kit init --force` would start
+over and lose its settings.
 Unknown keys usually mean the file was written by a newer ralph-kit (for example
 committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
 
-A newer ralph-kit can add a label role. `ralph-kit update-labels [--config PATH]`
-adds each role the file leaves out under `[labels]`, with its default name, one line
-at the end of the table: the rest of the file and its comments stay as they are. It
-refuses when the default name is already another role's label, or when the labels
-are not in a `[labels]` table, and then writes nothing. It then validates the file
-and, like `check`, offers to create the labels missing on GitHub (Yes / Later; without
-a terminal it only prints the command). Commit the file afterwards: a run needs a
+A newer ralph-kit can add a setting. `ralph-kit check` lists the defaulted
+settings the file leaves out other than label roles (`review_by_default`,
+`caffeinate_by_default`, each `child_session_limit` key) as information that
+does not fail the check, and warns about defaulted label roles.
+`ralph-kit update-config [--config PATH]` writes each defaulted setting the file
+leaves out, with its default value and the comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
+after the last top-level setting, before the first table, each label role at
+the end of `[labels]` with its default name, and a `[child_session_limit]` table
+with `standard` and `reviewed` at the end of the file, or the limit a partial
+table leaves out at the end of that table, without the table's comment. A comment
+block directly above the next table stays with that table. The rest of the file and its comments
+stay as they are; `[models.review]` and `[models.backup]` are never added. It lists
+each added setting as `key = value`, and with nothing to add says so and writes
+nothing. It refuses when the default name is already another role's label, when
+the labels are not in a `[labels]` table, or when a partial `child_session_limit`
+is written as an inline table or with dotted keys, and then writes nothing. It validates the
+completed file before writing it and, like `check`, offers to create the labels
+missing on GitHub (Yes / Later; without a terminal it only prints the command). Commit the file afterwards: a run needs a
 clean working tree.
 
 For a variant of an existing configuration, copy the file, then change the copy:
@@ -225,8 +239,8 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
 - **Readiness check** (including the engine flag check): `tests/test_check.py`,
   with injected executable lookup and command runner. `tests/test_init.py`
   covers `ralph-kit init` the same way, `tests/test_configure.py` covers
-  `ralph-kit configure`, and `tests/test_update_labels.py` covers
-  `ralph-kit update-labels`.
+  `ralph-kit configure`, and `tests/test_update_config.py` covers
+  `ralph-kit update-config`.
 - **Closure** (every check, the confirmation, the writes and resuming
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
@@ -500,7 +514,7 @@ infrastructure retries, then stops the run.
   at 4 sessions in a standard run and 8 in a reviewed run, so a value above
   that has no effect beyond room for a backup replay (see
   [the loop](#the-loop-run-and-run---review)); a lower value stops a child
-  earlier:
+  earlier. `ralph-kit update-config` writes the table, or the limit it leaves out:
 
   ```toml
   [child_session_limit]
@@ -525,7 +539,7 @@ infrastructure retries, then stops the run.
   label, Ralph never reads it to decide anything, and nothing removes it.
   A `ralph.toml` written before `work_started` or `standalone` existed may leave
   them out and gets their default names; `check` warns about it, and
-  `ralph-kit update-labels` writes them. `init` and `check` offer to
+  `ralph-kit update-config` writes them. `init` and `check` offer to
   create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.
@@ -868,6 +882,10 @@ Results are grouped by section with what was found; each failure shows the fix
 (often a command to run), and checks that depend on a missing tool are reported
 as not verified instead of failing. Colors are dropped when the output is not a
 terminal (or with `NO_COLOR`).
+Settings the configuration leaves out and that take their default value are
+listed as information (`ℹ`), pointing to `ralph-kit update-config`; they never fail
+the check. Defaulted label roles are a warning instead, since the label may be
+missing on GitHub.
 A nonzero exit code means a blocking check failed. In a terminal, missing labels
 are offered for creation after the report (Yes / Later); that is the only GitHub
 write. Engines only print their help; no agent session, project check, CI run, push,
