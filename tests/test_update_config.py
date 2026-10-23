@@ -309,6 +309,19 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertEqual(self.config.read_text(), text.replace("reviewed = 7\n", "reviewed = 7\nstandard = 5\n"))
 
+    def test_an_empty_or_quoted_child_session_limit_table_is_completed_in_place(self):
+        declared = self.config.read_text()
+        for header, kept in (("[child_session_limit]", ""), ('["child_session_limit"]', "standard = 3\n")):
+            with self.subTest(header=header):
+                text = declared.replace(LIMITS, f"\n{header}\n{kept}")
+                self.config.write_text(text)
+
+                code, output = self.run_update()
+
+                self.assertEqual(code, 0, output)
+                added = "reviewed = 9\n" if kept else "standard = 5\nreviewed = 9\n"
+                self.assertEqual(self.config.read_text(), text + added)
+
     def test_child_session_limits_that_are_not_a_table_are_left_for_a_fix_by_hand(self):
         base = self.config.read_text().replace(LIMITS, "")
         for name, text in (
@@ -321,7 +334,7 @@ class UpdateConfigTests(unittest.TestCase):
                 code, output = self.run_update()
 
                 self.assertEqual(code, 1)
-                self.assertIn("as an inline table or dotted keys: write it as a [child_session_limit] table by hand", output)
+                self.assertIn("as an inline table or with dotted keys: write it as a [child_session_limit] table by hand", output)
                 self.assertEqual(self.config.read_text(), text)
                 self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
 

@@ -35,7 +35,7 @@ from .init import (
 TABLE_HEADER = re.compile(r"\s*\[")
 COMMENT = re.compile(r"\s*#")
 DEFAULTS = {field.name: field.default for field in dataclasses.fields(RalphConfig)}
-LIMITS = "child_session_limit"
+LIMITS_TABLE = "child_session_limit"
 
 
 class UpdateError(RuntimeError):
@@ -82,7 +82,8 @@ def table_end(lines: list[str], name: str) -> int | None:
 
     A comment block directly above the next table belongs to that table and stays with it.
     """
-    header = re.compile(rf"\s*\[\s*{re.escape(name)}\s*\]\s*(#.*)?")
+    quoted = "|".join(re.escape(form) for form in (name, f'"{name}"', f"'{name}'"))
+    header = re.compile(rf"\s*\[\s*({quoted})\s*\]\s*(#.*)?")
     start = next((index for index, line in enumerate(lines) if header.fullmatch(line.rstrip("\r\n"))), None)
     if start is None:
         return None
@@ -104,22 +105,29 @@ def with_roles(text: str, roles: dict[str, str]) -> str:
     return inserted(lines, end, [f"{role} = {json.dumps(name, ensure_ascii=False)}" for role, name in roles.items()])
 
 
-def with_limits(text: str, limits: dict | None) -> str:
-    """text with the child session limits limits leaves out: at the end of their table, or the whole table at the end of the file."""
+def missing_limits(values: dict) -> dict[str, int]:
+    """The {key: default} of each child session limit the file leaves out; a value that is not a table is the loader's to report."""
+    limits = values.get(LIMITS_TABLE, {})
+    if not isinstance(limits, dict):
+        return {}
+    return {key: limit for key, limit in DEFAULT_CHILD_SESSION_LIMITS.items() if key not in limits}
+
+
+def with_limits(text: str, limits: dict[str, int], *, table: bool) -> str:
+    """text with limits at the end of their table, or, without table, the whole table init writes at the end of the file."""
     lines = text.splitlines(keepends=True)
-    if limits is None:
+    if not table:
         end = len(lines)
         while end > 0 and not lines[end - 1].strip():
             end -= 1
         return inserted(lines, end, ["", *child_session_limit_table(ChildSessionLimits())])
-    keys = [key for key in DEFAULT_CHILD_SESSION_LIMITS if key not in limits]
-    end = table_end(lines, LIMITS)
+    end = table_end(lines, LIMITS_TABLE)
     if end is None:
         raise UpdateError(
-            f"cannot add {', '.join(f'{LIMITS}.{key}' for key in keys)} to a {LIMITS} written as an inline table or dotted keys: "
-            f"write it as a {CHILD_SESSION_LIMIT_HEADER} table by hand"
+            f"cannot add {', '.join(f'{LIMITS_TABLE}.{key}' for key in limits)} to a {LIMITS_TABLE} written as an inline table "
+            f"or with dotted keys: write it as a {CHILD_SESSION_LIMIT_HEADER} table by hand"
         )
-    return inserted(lines, end, [f"{key} = {DEFAULT_CHILD_SESSION_LIMITS[key]}" for key in keys])
+    return inserted(lines, end, [f"{key} = {limit}" for key, limit in limits.items()])
 
 
 def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
@@ -130,24 +138,17 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     keys = [key for key in TOP_LEVEL_COMMENTS if key not in values]
     roles = missing_roles(labels)
-    # A child_session_limit that is not a table is the loader's to report.
-    limits = values.get(LIMITS)
-    limit_keys = [key for key in DEFAULT_CHILD_SESSION_LIMITS if isinstance(limits, dict) and key not in limits]
-    add_limits = limits is None or bool(limit_keys)
+    limits = missing_limits(values)
     text = path.read_bytes().decode("utf-8")  # Not read_text, which would turn CRLF line endings into LF.
     if keys:
         text = with_top_level(text, keys)
     if roles:
         text = with_roles(text, roles)
-    if add_limits:
-        text = with_limits(text, limits)
-    if not keys and not roles and not add_limits:
+    if limits:
+        text = with_limits(text, limits, table=LIMITS_TABLE in values)
+    if not keys and not roles and not limits:
         return text, {}
-    limit_values = {
-        f"{LIMITS}.{key}": str(value)
-        for key, value in DEFAULT_CHILD_SESSION_LIMITS.items()
-        if limits is None or key in limit_keys
-    }
+    limit_values = {f"{LIMITS_TABLE}.{key}": str(limit) for key, limit in limits.items()}
     try:
         completed = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
@@ -156,11 +157,7 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     if any(completed.get(key) != DEFAULTS[key] for key in keys):
         raise UpdateError(f"cannot add {', '.join(keys)} before the first table: add {'it' if len(keys) == 1 else 'them'} by hand")
-    completed_limits = completed.get(LIMITS)
-    if add_limits and (
-        not isinstance(completed_limits, dict)
-        or any(completed_limits.get(key) != (limits or {}).get(key, value) for key, value in DEFAULT_CHILD_SESSION_LIMITS.items())
-    ):
+    if limits and any(completed.get(LIMITS_TABLE, {}).get(key) != limit for key, limit in limits.items()):
         raise UpdateError(f"cannot add {', '.join(limit_values)} to this file's layout: add them by hand")
     added = {key: str(DEFAULTS[key]).lower() for key in keys}
     return text, added | {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()} | limit_values

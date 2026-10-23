@@ -185,7 +185,8 @@ comment `init` writes next to it: `review_by_default` and `caffeinate_by_default
 after the last top-level setting, before the first table, each label role at
 the end of `[labels]` with its default name, and a `[child_session_limit]` table
 with `standard` and `reviewed` at the end of the file, or the limit a partial
-table leaves out at the end of that table. The rest of the file and its comments
+table leaves out at the end of that table, without the table's comment. A comment
+block directly above the next table stays with that table. The rest of the file and its comments
 stay as they are; `[models.review]` and `[models.backup]` are never added. It lists
 each added setting as `key = value`, and with nothing to add says so and writes
 nothing. It refuses when the default name is already another role's label, when
