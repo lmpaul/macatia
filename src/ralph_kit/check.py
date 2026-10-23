@@ -187,7 +187,7 @@ def create_labels(command, repository, labels):
     return failed
 
 
-def create_labels_by_hand(labels):
+def label_creation_commands(labels):
     """The shell commands that create each {role: name} label with its role's colour."""
     return "; ".join(f"gh label create {shlex.quote(name)} --color {LABEL_COLOURS[role]}" for role, name in labels.items())
 
@@ -513,7 +513,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
                 wanted = set(config.labels.values())
                 missing[:] = missing_labels(command, config.repository, wanted)
                 roles = {name: role for role, name in config.labels.items()}
-                fix = create_labels_by_hand({roles[name]: name for name in missing})
+                fix = label_creation_commands({roles[name]: name for name in missing})
                 require(not missing, f"{len(missing)} missing: {', '.join(missing)}", fix)
                 return f"all {len(wanted)} present"
             report.check("Labels", labels)

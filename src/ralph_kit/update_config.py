@@ -17,7 +17,7 @@ from .check import (
     Readiness,
     confirm_with_arrows,
     create_labels,
-    create_labels_by_hand,
+    label_creation_commands,
     missing_labels,
 )
 from .config import (
@@ -221,7 +221,7 @@ def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=
                 print(f"✗ {label} not created" if label in failed else f"✓ {label} created")
             code = 1 if failed else 0
         else:
-            print(f"  → create {'it' if len(missing) == 1 else 'them'} later: {create_labels_by_hand(labels)}")
+            print(f"  → create {'it' if len(missing) == 1 else 'them'} later: {label_creation_commands(labels)}")
             code = 1
     if added:
         print(f"Commit {name} before the next run: ralph-kit run needs a clean working tree.")
