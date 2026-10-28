@@ -818,11 +818,9 @@ def unsatisfied_blockers(state: RunState, child_number: int) -> str:
 
 def handoff_comment_url(state: RunState, child_number: int) -> str | None:
     """The link to Ralph's latest handoff comment on a child in human review."""
-    comments = issue_details(state, child_number).get("comments", [])
-    for comment in reversed(comments):
-        if trusted_comment(state, comment) and str(comment.get("body", "")).startswith(
-            HANDOFF_PREFIX
-        ):
+    records = ralph_records(issue_details(state, child_number), state.config.trusted_authors)
+    for comment in reversed(records):
+        if str(comment.get("body", "")).startswith(HANDOFF_PREFIX):
             return comment.get("url")
     return None
 
@@ -1553,6 +1551,23 @@ def trusted_comment(state: RunState, comment: dict[str, Any]) -> bool:
     return author_login(comment) in state.config.trusted_authors
 
 
+def comments_that_count(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list[dict[str, Any]]:
+    """The issue's comments, whatever their author, that Ralph reads its records among.
+
+    Every reader of Ralph's records goes through here or `ralph_records`.
+    """
+    return list(issue.get("comments", []))
+
+
+def ralph_records(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list[dict[str, Any]]:
+    """The issue's trusted comments that count as Ralph's records, oldest first."""
+    trusted = set(trusted_authors)
+    return [
+        comment for comment in comments_that_count(issue, trusted)
+        if author_login(comment) in trusted
+    ]
+
+
 def implementation_evidence_heads(
     body: str, mode: RunMode, *, allow_original: bool = False
 ) -> list[str] | None:
@@ -1611,10 +1626,7 @@ def latest_implementation_heads(
 
     The standard run accepts every format: its own, the reviewed run's, and the legacy one.
     """
-    trusted = set(trusted_authors)
-    for comment in reversed(issue.get("comments", [])):
-        if author_login(comment) not in trusted:
-            continue
+    for comment in reversed(ralph_records(issue, trusted_authors)):
         heads = implementation_evidence_heads(
             str(comment.get("body", "")), mode, allow_original=True
         )
@@ -1646,7 +1658,8 @@ def recoverable_implementation_heads(state: RunState, issue: dict[str, Any]) -> 
     # A run of either mode may have stopped on the issue since it published the evidence.
     summaries = (STANDARD_RUN.terminal_summary_marker, REVIEWED_RUN.terminal_summary_marker)
     after_summaries = False
-    for comment in reversed(issue.get("comments", [])):
+    # Comments of any author count: an untrusted one after the summaries updated the issue.
+    for comment in reversed(comments_that_count(issue, state.config.trusted_authors)):
         trusted = trusted_comment(state, comment)
         body = str(comment.get("body", ""))
         if trusted and state.mode.implementation_evidence_prefix in body:
@@ -1672,10 +1685,9 @@ def latest_update_is_trusted_marker_comment(
     if not isinstance(updated_at, str):
         return False
     return any(
-        trusted_comment(state, comment)
-        and any(marker in str(comment.get("body", "")) for marker in markers)
+        any(marker in str(comment.get("body", "")) for marker in markers)
         and comment.get("createdAt") == updated_at
-        for comment in reversed(issue.get("comments", []))
+        for comment in ralph_records(issue, state.config.trusted_authors)
     )
 
 
@@ -1806,9 +1818,9 @@ def warn_informational_label_failed(
 
 def latest_child_base_comment(state: RunState, issue: dict[str, Any]) -> str | None:
     """The body of the child's latest trusted comment carrying a child base marker."""
-    for comment in reversed(issue.get("comments", [])):
+    for comment in reversed(ralph_records(issue, state.config.trusted_authors)):
         body = str(comment.get("body", ""))
-        if trusted_comment(state, comment) and CHILD_BASE_MARKER_PREFIX in body:
+        if CHILD_BASE_MARKER_PREFIX in body:
             return body
     return None
 

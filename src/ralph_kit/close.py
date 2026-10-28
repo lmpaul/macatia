@@ -21,6 +21,7 @@ from .loop_core import (
     labels,
     latest_implementation_heads,
     positive_integer,
+    ralph_records,
 )
 from .progress import spinner
 
@@ -239,11 +240,8 @@ def closure_comment(
 
 def has_closure_comment(config: RalphConfig, issue: dict[str, Any]) -> bool:
     """Whether the issue's latest trusted comment is a closure comment."""
-    trusted = [
-        comment for comment in issue.get("comments", [])
-        if author_login(comment) in config.trusted_authors
-    ]
-    return bool(trusted) and CLOSURE_MARKER in str(trusted[-1].get("body", ""))
+    records = ralph_records(issue, config.trusted_authors)
+    return bool(records) and CLOSURE_MARKER in str(records[-1].get("body", ""))
 
 
 def confirm_typed(number: int, type_answer: Callable[[str], str] | None) -> None:
