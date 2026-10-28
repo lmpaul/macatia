@@ -204,6 +204,10 @@ _Avoid_: Done, closed
 The lifecycle state of a child or parent handed to a human: either because Ralph stopped on it, or because all children are implemented. Ralph never resumes a child in this state.
 _Avoid_: Escalation, stuck
 
+**Handoff comment**:
+The trusted comment Ralph posts on a child when it sends the child to human review, saying why it stopped. Since resets exist, each one carries a hidden marker so a purge can find it; earlier ones carry none.
+_Avoid_: Stop comment, failure comment
+
 **Work started**:
 The label role marking a parent on which Ralph has started work. It is neither a triage label nor a lifecycle label, and it is informational only: Ralph never reads it to decide anything.
 _Avoid_: Parent in progress, parent agent-working

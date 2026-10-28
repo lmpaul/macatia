@@ -826,7 +826,7 @@ def handoff_comment_url(state: RunState, child_number: int) -> str | None:
     records = ralph_records(issue_details(state, child_number), state.config.trusted_authors)
     for comment in reversed(records):
         body = str(comment.get("body", ""))
-        if body.startswith(HANDOFF_MARKER) or body.startswith(HANDOFF_PREFIX):
+        if body.startswith((HANDOFF_MARKER, HANDOFF_PREFIX)):
             return comment.get("url")
     return None
 
