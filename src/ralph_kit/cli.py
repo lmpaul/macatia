@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure, update-config and close."""
+"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure, update-config, close and reset."""
 
 from __future__ import annotations
 
@@ -49,6 +49,11 @@ commands:
       --yes closes without asking; without a terminal, close needs --yes.
       --force closes despite failed checks, shown as warnings, once you type ISSUE at a terminal;
       it needs ISSUE.
+  reset [--yes] [--config PATH] ISSUE
+      Reset: make ISSUE's children agent working, implemented or in human review, then ISSUE itself,
+      ready-for-agent again, each with a reset marker Ralph reads none of its earlier records past,
+      after one confirmation; ISSUE must be open with no merged child.
+      --yes resets without asking; without a terminal, reset needs --yes.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """
@@ -208,5 +213,10 @@ def main(argv: list[str] | None = None) -> int:
             type_answer=input if terminal else None,
             choose_run_target=close_target_with_arrows if terminal else None,
         )
+    if command == "reset":
+        from . import reset
+
+        terminal = sys.stdin.isatty() and sys.stdout.isatty()
+        return reset.run(arguments, confirm=yes_no_with_arrows if terminal else None)
     print(f"ralph-kit: unknown command {command!r}\n\n{USAGE}", end="", file=sys.stderr)
     return 2

@@ -45,6 +45,8 @@ ralph-kit close                # at a terminal, pick among the closable run targ
 ralph-kit close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
 ralph-kit close --yes 123      # same, without the confirmation
 ralph-kit close --force 123    # close despite failed checks, after typing 123
+ralph-kit reset 123            # reset: make #123 and its children ready for an agent again (asks first)
+ralph-kit reset --yes 123      # same, without the confirmation
 ```
 
 `--caffeinate` holds a sleep lock for the run, from once the configuration is
@@ -280,6 +282,10 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
 - **Closure** (every check, the confirmation, the writes and resuming
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
+- **Reset** (every refusal, the plan, the confirmation, the labels, reset markers
+  and recap, and resuming them): `tests/test_reset.py`, the reset command's entry
+  point with the GitHub fake, a scripted confirmer and a temporary checkout with
+  a bare `origin`.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
   and `claude`: `tests/test_live.py`, skipped unless `RALPH_LIVE=1` (see below).
 
@@ -904,6 +910,52 @@ Ctrl-C in the picker closes nothing and exits 130. Without a terminal, or with
 Exit codes: 0 once closed, already closed, or with no closable run target; 1
 for a refusal, a declined confirmation or a GitHub error; 2 for a usage error;
 130 for Ctrl-C.
+
+## Reset: `reset`
+
+A reset returns an open run target to the state a run can start on as though
+no run had happened, for instance to rerun it from scratch with a sharper issue
+or another model profile:
+
+```sh
+ralph-kit reset 123
+ralph-kit reset --yes --config review.toml 123
+```
+
+`reset` loads the configuration like `close`. Before writing anything it
+refuses, printing every reason:
+
+- an issue that does not exist, is authored by an untrusted author, or is closed;
+- a sub-issue (`#124 is a sub-issue of #123`, `reset #123 instead`);
+- a run target with a merged child, open or closed: its latest trusted
+  implementation evidence has a verified head on the base branch or in a pull
+  request merged into it, as for a closure. Nothing forces it;
+- a run target that is not resettable: no child is `agent-working`,
+  `implemented` or `human-review`, and the parent carries neither
+  `work-started` nor `human-review`. A standalone issue must itself be
+  `agent-working`, `implemented` or `human-review`.
+
+It then prints the plan, every label change, with a `⚠️` warning for each
+child still `agent-working`, since a run may still be working on it, and asks
+`Reset #N?` (No by default); `--yes` skips it, and without a terminal `reset`
+needs `--yes`. Declining or Ctrl-C writes nothing.
+
+Each child in one of those states then gets a reset marker recording the state
+it left, and `ready-for-agent` as its only lifecycle label; other children,
+closed ones included, are untouched. Last, the parent loses `work-started` and
+its other lifecycle labels, gains `ready-for-agent`, and gets the recap reset
+marker listing every child reset since its previous recap with its previous
+state, so its presence means the reset finished. A standalone issue keeps its
+`standalone` marker and gets a single reset marker, its recap, then
+`ready-for-agent` as its only lifecycle label. Ralph reads none of its records
+older than an issue's latest trusted reset marker, so the next run implements
+the children from scratch from the current branch head.
+
+After a GitHub error or an interruption partway, rerun the same command:
+markers and labels already written are skipped, and the recap still lists
+the children the first attempt reset. Exit codes are those of `close`: 0 once
+reset; 1 for a refusal, a declined confirmation or a GitHub error; 2 for a
+usage error; 130 for Ctrl-C.
 
 ## Readiness check
 
