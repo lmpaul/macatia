@@ -234,3 +234,21 @@ _Avoid_: Landed child, done child
 **Closure**:
 Closing a run target once a human has merged its work: a parent issue's open children, then the parent itself, or a standalone issue alone.
 _Avoid_: Parent closure, finish, complete, done (completed is a run's outcome)
+
+## Resetting
+
+**Reset**:
+Returning an open run target with no merged child to the state a run can start on as though no run had happened: the run target and its agent working, implemented, or human review children ready for an agent again, its run branch and cumulative draft PR gone, and the records of its earlier runs no longer read by Ralph. The standalone marker stays.
+_Avoid_: Rollback, undo, clean, rewind, restart
+
+**Resettable run target**:
+A run target a reset would act on now: open, with no merged child, and carrying the trace of a run: a child agent working, implemented, or in human review, a parent marked work started or human review, a run branch named after it, or an open cumulative draft PR; for a purge, a reset marker is such a trace too. A reset started without a run target offers these to choose from.
+_Avoid_: Stale issue, failed issue, candidate
+
+**Reset marker**:
+The trusted comment a reset leaves on the run target and on each child it made ready for an agent again; Ralph reads none of its own records older than it on that issue. The one on the run target recaps what the reset undid.
+_Avoid_: Reset comment, barrier
+
+**Purge**:
+A reset that deletes Ralph's own comments on the run target and its children instead of leaving reset markers, so that no later agent session reads them. The issues' timelines and the closed cumulative draft PR remain.
+_Avoid_: Hard reset, full reset, wipe
