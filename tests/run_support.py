@@ -293,6 +293,7 @@ class PullRequest:
     body: str
     is_draft: bool = True
     comments: list[str] = field(default_factory=list)
+    state: str = "open"
 
 
 @dataclass(frozen=True)
@@ -343,7 +344,9 @@ class FakeGitHub:
     failed `gh` call would, without changing labels. Closing an issue records
     its reason as `stateReason`; `close_error` maps an issue number to the error
     its next close raises instead, and `after_close`, when set, is called with
-    the issue number and reason after each close. Reading an unknown issue raises
+    the issue number and reason after each close. Closing a pull request stores its
+    comment and marks it closed; `after_pull_request_close`, when set, is called with
+    its number after each close. Reading an unknown issue raises
     as `gh` does for an issue that does not exist. A commit is on a branch when
     `on_branch` maps its SHA to True; `compared` keeps each (branch, SHA) asked.
     `commit_pulls` maps a commit SHA to the pull requests GitHub associates with
@@ -390,6 +393,7 @@ class FakeGitHub:
         self.label_edit_error = None
         self.close_error = {}
         self.after_close = None
+        self.after_pull_request_close = None
         self.on_branch = {}
         self.compared = []
         self.commit_pulls = {}
@@ -544,8 +548,27 @@ class FakeGitHub:
                 "url": f"https://github.test/{self.repository}/pull/{pull.number}",
             }
             for pull in self.pull_requests
-            if pull.head == head and pull.base == base
+            if pull.head == head and pull.base == base and pull.state == "open"
         ]
+
+    def open_pull_requests_by_title(self, base, titles):
+        return [
+            {
+                "number": pull.number,
+                "title": pull.title,
+                "head": pull.head,
+                "url": f"https://github.test/{self.repository}/pull/{pull.number}",
+            }
+            for pull in self.pull_requests
+            if pull.base == base and pull.title in titles and pull.state == "open"
+        ]
+
+    def close_pull_request(self, number, comment):
+        pull = self._pull(number)
+        pull.comments.append(comment)
+        pull.state = "closed"
+        if self.after_pull_request_close is not None:
+            self.after_pull_request_close(number)
 
     def comment_on_pull_request(self, number, body):
         self._pull(number).comments.append(body)

@@ -282,8 +282,8 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
 - **Closure** (every check, the confirmation, the writes and resuming
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
-- **Reset** (every refusal, the plan, the confirmation, the labels, reset markers
-  and recap, and resuming them): `tests/test_reset.py`, the reset command's entry
+- **Reset** (every refusal, the plan, the confirmation, the cumulative draft PR,
+  the run branch, the labels, reset markers and recap, and resuming them): `tests/test_reset.py`, the reset command's entry
   point with the GitHub fake, a scripted confirmer and a temporary checkout with
   a bare `origin`.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
@@ -931,31 +931,46 @@ refuses, printing every reason:
   implementation evidence has a verified head on the base branch or in a pull
   request merged into it, as for a closure. Nothing forces it;
 - a run target that is not resettable: no child is `agent-working`,
-  `implemented` or `human-review`, and the parent carries neither
-  `work-started` nor `human-review`. A standalone issue must itself be
-  `agent-working`, `implemented` or `human-review`.
+  `implemented` or `human-review`, the parent carries neither
+  `work-started` nor `human-review` (a standalone issue must itself be
+  `agent-working`, `implemented` or `human-review`), it has no open cumulative
+  draft PR, and `ralph-kit/issue-<N>` exists neither on the remote nor in the
+  checkout;
+- a dirty worktree while `ralph-kit/issue-<N>` is checked out, since the reset
+  deletes it.
 
-It then prints the plan, every label change, with a `⚠️` warning for each
-child still `agent-working`, since a run may still be working on it, and asks
+It then prints the plan: the open cumulative draft PRs to close (open pull
+requests into the base branch titled `Implement Ralph parent #N` or
+`Implement Ralph issue #N`), `ralph-kit/issue-<N>` to delete with its head SHA
+on the remote and in the checkout, and every label change. A `⚠️` warning
+flags each child still `agent-working`, since a run may still be working on it;
+a pull request from another branch, which is closed but whose branch is kept;
+and a run branch with no open pull request to restore it from, whose commits
+only the recap's head SHA and your reflog can then recover. It asks
 `Reset #N?` (No by default); `--yes` skips it, and without a terminal `reset`
 needs `--yes`. Declining or Ctrl-C writes nothing.
 
-Each child in one of those states then gets a reset marker recording the state
-it left, and `ready-for-agent` as its only lifecycle label; other children,
+The reset first closes each of those pull requests with a comment saying a
+reset closed it, then deletes `ralph-kit/issue-<N>` on the configured remote,
+then in the checkout, switching to the base branch first when it is checked
+out; no other branch is ever deleted. Each child in one of those states then
+gets a reset marker recording the state it left, and `ready-for-agent` as its only lifecycle label; other children,
 closed ones included, are untouched. Last, the parent loses `work-started` and
 its other lifecycle labels, gains `ready-for-agent`, and gets the recap reset
-marker listing every child reset since its previous recap with its previous
-state, so its presence means the reset finished. A standalone issue keeps its
+marker naming the closed pull requests, the deleted run branch with its head
+SHA, and every child reset since its previous recap with its previous state, so
+its presence means the reset finished. A standalone issue keeps its
 `standalone` marker and gets a single reset marker, its recap, then
 `ready-for-agent` as its only lifecycle label. Ralph reads none of its records
 older than an issue's latest trusted reset marker, so the next run implements
 the children from scratch from the current branch head.
 
-After a GitHub error or an interruption partway, rerun the same command:
-markers and labels already written are skipped, and the recap still lists
+After a GitHub or Git error or an interruption partway, rerun the same command:
+pull requests already closed, branches already deleted, and markers and labels
+already written are skipped, and the recap still lists
 the children the first attempt reset. Exit codes are those of `close`: 0 once
-reset; 1 for a refusal, a declined confirmation or a GitHub error; 2 for a
-usage error; 130 for Ctrl-C.
+reset; 1 for a refusal, a declined confirmation or a GitHub or Git error; 2 for
+a usage error; 130 for Ctrl-C.
 
 ## Readiness check
 

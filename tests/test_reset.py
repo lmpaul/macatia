@@ -18,8 +18,10 @@ sys.path.insert(0, str(TESTS))
 from ralph_kit import cli, loop_core, reset  # noqa: E402
 from ralph_kit.commands import RalphError  # noqa: E402
 from run_support import (  # noqa: E402
+    BRANCH,
     CommitPull,
     FakeGitHub,
+    PullRequest,
     RunInterrupted,
     RunRepository,
     ScriptedResult,
@@ -33,6 +35,7 @@ from test_close import ScriptedConfirmer  # noqa: E402
 
 
 PARENT = 69
+RUN_BRANCH = f"ralph-kit/issue-{PARENT}"
 
 
 def sha(name):
@@ -86,6 +89,36 @@ class ResetTests(unittest.TestCase):
     def assert_reset_child(self, number, previous_state):
         self.assertEqual(self.github.labels(number) & self.lifecycle(), {"ready-for-agent"})
         self.assertEqual(reset_markers(self.github.comments(number))[-1], {"previous_state": previous_state})
+
+    def add_run_branch(self, *, checked_out=False, pushed=True):
+        """The run branch with one commit of its own, on origin unless `pushed` is False, left
+        checked out when `checked_out`; returns its head."""
+        git(self.repository.path, "switch", "--create", RUN_BRANCH)
+        (self.repository.path / "run.txt").write_text("run\n", encoding="utf-8")
+        git(self.repository.path, "add", "run.txt")
+        git(self.repository.path, "commit", "-m", "Run commit")
+        if pushed:
+            git(self.repository.path, "push", "--set-upstream", "origin", RUN_BRANCH)
+        head = self.repository.head()
+        if not checked_out:
+            git(self.repository.path, "switch", BRANCH)
+        return head
+
+    def add_pull_request(self, *, head=RUN_BRANCH, title=f"Implement Ralph parent #{PARENT}", base="main"):
+        number = len(self.github.pull_requests) + 12
+        self.github.pull_requests.append(PullRequest(number, base, head, title, "Cumulative."))
+        return number
+
+    def branches(self):
+        """The run branch where it is: in the checkout and on origin."""
+        return {
+            place
+            for place, repository in (("checkout", self.repository.path), ("origin", self.repository.origin))
+            if git(repository, "branch", "--list", RUN_BRANCH)
+        }
+
+    def checked_out(self):
+        return git(self.repository.path, "symbolic-ref", "--short", "HEAD")
 
     @staticmethod
     def lifecycle():
@@ -156,6 +189,182 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(reset_markers(self.github.comments(80)), [{"previous_state": "implemented"}])
         self.assertIn("standalone issue", self.github.comments(80)[-1])
         self.assertIn("-implemented, +ready-for-agent", self.stdout)
+
+    # The cumulative draft PR and the run branch.
+
+    def test_closes_the_pull_request_and_deletes_the_run_branch_before_any_label_change(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_run_branch()
+        pull = self.add_pull_request()
+        writes = []
+        self.github.after_pull_request_close = lambda number: writes.append(("close", number, self.branches()))
+        self.github.after_comment = lambda number, body: writes.append(("comment", number))
+        self.github.after_label_edit = lambda number, add, remove: writes.append(("labels", number))
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(writes[0], ("close", pull, {"checkout", "origin"}))
+        self.assertEqual(self.github.pull_requests[0].state, "closed")
+        [comment] = self.github.pull_requests[0].comments
+        self.assertIn(f"reset of #{PARENT} closed", comment)
+        self.assertEqual(self.branches(), set())
+        self.assertEqual(self.checked_out(), BRANCH)
+        self.assert_reset_child(70, "implemented")
+
+    def test_a_checked_out_run_branch_is_deleted_after_switching_to_the_base_branch(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_run_branch(checked_out=True)
+        self.add_pull_request()
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertIn(", switching to main first", self.stdout)
+        self.assertEqual(self.checked_out(), "main")
+        self.assertEqual(self.branches(), set())
+
+    def test_a_dirty_worktree_on_the_run_branch_is_refused_before_anything_is_written(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_run_branch(checked_out=True)
+        self.add_pull_request()
+        (self.repository.path / "run.txt").write_text("edited\n", encoding="utf-8")
+
+        self.assert_refused(PARENT, f"the worktree is dirty while {RUN_BRANCH} is checked out")
+
+        self.assertEqual(self.github.pull_requests[0].state, "open")
+        self.assertEqual(self.branches(), {"checkout", "origin"})
+        self.assertEqual(self.checked_out(), RUN_BRANCH)
+
+    def test_a_pull_request_from_another_branch_is_closed_and_its_branch_kept(self):
+        self.add_parent()
+        self.add_child(70)
+        pull = self.add_pull_request(head=BRANCH)
+        git(self.repository.path, "push", "origin", BRANCH)
+        self.add_pull_request(title="Implement Ralph parent #70")
+        self.add_pull_request(base="release")
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertIn(f"⚠️  PR #{pull} comes from {BRANCH}: it is closed, but {BRANCH} is kept", self.stdout)
+        self.assertEqual([pull.state for pull in self.github.pull_requests], ["closed", "open", "open"])
+        self.assertTrue(git(self.repository.path, "branch", "--list", BRANCH))
+        self.assertTrue(git(self.repository.origin, "branch", "--list", BRANCH))
+        self.assertEqual(reset_markers(self.github.comments(PARENT))[-1]["closed_pull_requests"], [pull])
+
+    def test_a_run_branch_without_a_pull_request_is_deleted_after_a_warning(self):
+        self.add_parent()
+        self.add_child(70)
+        head = self.add_run_branch()
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertIn(
+            f"⚠️  {RUN_BRANCH} has no open pull request to restore it from: once deleted, only its "
+            "head SHA in the recap and your reflog can recover its commits",
+            self.stdout,
+        )
+        self.assertEqual(self.branches(), set())
+        recap = reset_markers(self.github.comments(PARENT))[-1]
+        self.assertEqual(recap["deleted_branch"], {"name": RUN_BRANCH, "head": head})
+        self.assertNotIn("closed_pull_requests", recap)
+
+    def test_the_plan_lists_the_pull_request_and_branches_and_the_recap_names_them(self):
+        self.add_parent()
+        self.add_child(70)
+        head = self.add_run_branch()
+        pull = self.add_pull_request()
+
+        self.assertEqual(self.reset(str(PARENT), confirm=ScriptedConfirmer(True)), 0, self.stderr)
+
+        plan = self.stdout.split("✓")[0]
+        self.assertIn(f"→ close PR #{pull} Implement Ralph parent #{PARENT} from {RUN_BRANCH}, with a comment", plan)
+        self.assertIn(f"→ delete {RUN_BRANCH} on origin at {head}, then in this checkout at {head}", plan)
+        self.assertNotIn("⚠️", plan)
+        self.assertIn(f"✓ closed PR #{pull}", self.stdout)
+        self.assertIn(f"✓ deleted {RUN_BRANCH} at {head}", self.stdout)
+        [recap] = self.github.comments(PARENT)
+        self.assertEqual(reset_markers([recap]), [{
+            "children": [{"number": 70, "previous_state": "implemented"}],
+            "closed_pull_requests": [pull],
+            "deleted_branch": {"name": RUN_BRANCH, "head": head},
+        }])
+        self.assertIn(f"It closed PR #{pull} and deleted `{RUN_BRANCH}` at `{head}`.", recap)
+
+    def test_a_standalone_recap_names_the_closed_pull_request_and_the_deleted_branch(self):
+        self.github.add_issue(PARENT, labels=("implemented", "standalone"), comments=[self.evidence(PARENT)])
+        head = self.add_run_branch()
+        pull = self.add_pull_request(title=f"Implement Ralph issue #{PARENT}")
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(reset_markers(self.github.comments(PARENT)), [{
+            "previous_state": "implemented",
+            "closed_pull_requests": [pull],
+            "deleted_branch": {"name": RUN_BRANCH, "head": head},
+        }])
+        self.assertEqual(self.branches(), set())
+
+    def test_a_run_target_whose_only_trace_is_a_run_branch_or_a_pull_request_is_resettable(self):
+        for name, trace in (
+            ("run branch", lambda: self.add_run_branch(pushed=True)),
+            ("pull request", lambda: self.add_pull_request(head=BRANCH)),
+        ):
+            with self.subTest(name):
+                self.repository = RunRepository(self)
+                self.github = FakeGitHub()
+                self.add_parent(labels=("ready-for-agent",))
+                self.add_child(70, labels=("ready-for-agent",), comments=[])
+                trace()
+
+                self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+                self.assertEqual(self.branches(), set())
+                self.assertTrue(all(pull.state == "closed" for pull in self.github.pull_requests))
+                self.assertEqual(len(reset_markers(self.github.comments(PARENT))), 1)
+
+    def test_a_rerun_after_an_interruption_between_the_pull_request_and_the_branch_finishes(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_run_branch(checked_out=True)
+        self.add_pull_request()
+
+        def interrupt(number):
+            raise KeyboardInterrupt
+
+        self.github.after_pull_request_close = interrupt
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 130)
+
+        self.assertIn(f"Rerun `ralph-kit reset {PARENT}` to finish", self.stderr)
+        self.assertEqual(self.branches(), {"checkout", "origin"})
+        self.assertEqual(self.github.labels(70), {"implemented"})
+        self.github.after_pull_request_close = None
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.branches(), set())
+        self.assertEqual(self.checked_out(), "main")
+        self.assertEqual(len(self.github.pull_requests[0].comments), 1)
+        self.assert_reset_child(70, "implemented")
+
+    def test_a_git_error_deleting_the_branch_exits_1_before_any_label_change(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_run_branch()
+        hook = self.repository.origin / "hooks" / "pre-receive"
+        hook.write_text("#!/bin/sh\necho rejected >&2\nexit 1\n", encoding="utf-8")
+        hook.chmod(0o755)
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 1)
+
+        self.assertIn("rejected", self.stderr)
+        self.assertIn(f"Rerun `ralph-kit reset {PARENT}` to finish", self.stderr)
+        self.assertEqual(self.github.labels(70), {"implemented"})
+        hook.unlink()
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+        self.assertEqual(self.branches(), set())
 
     # The plan and its confirmation.
 

@@ -50,9 +50,11 @@ commands:
       --force closes despite failed checks, shown as warnings, once you type ISSUE at a terminal;
       it needs ISSUE.
   reset [--yes] [--config PATH] ISSUE
-      Reset, after one confirmation: label ready-for-agent again each child of ISSUE that is
-      agent-working, implemented or in human-review, then ISSUE itself, each with a reset marker
-      Ralph reads none of its earlier records past; ISSUE must be open with no merged child.
+      Reset, after one confirmation: close the open cumulative draft PR of ISSUE, delete
+      ralph-kit/issue-ISSUE on the remote and in this checkout, then label ready-for-agent again
+      each child of ISSUE that is agent-working, implemented or in human-review, then ISSUE itself,
+      each with a reset marker Ralph reads none of its earlier records past; ISSUE must be open
+      with no merged child.
       --yes resets without asking; without a terminal, reset needs --yes.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.

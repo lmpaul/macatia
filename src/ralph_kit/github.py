@@ -209,6 +209,31 @@ class GitHub:
             "number,isDraft,url",
         )
 
+    def open_pull_requests_by_title(self, base: str, titles: set[str]) -> list[dict[str, Any]]:
+        """The open pull requests into `base` titled one of `titles`, each with its number,
+        title, URL and head branch; a head in another repository is named `owner:branch`."""
+        base_query = urllib.parse.quote(base, safe="")
+        pulls = []
+        for pull in self._list(f"repos/{self.repository}/pulls?state=open&base={base_query}&per_page=100"):
+            if pull.get("title") not in titles:
+                continue
+            number, head = pull.get("number"), pull.get("head") or {}
+            if not isinstance(number, int) or not isinstance(head.get("ref"), str):
+                raise RalphError(f"GitHub listed a pull request without a number or head: {pull!r}")
+            owner = ((head.get("repo") or {}).get("full_name"))
+            pulls.append({
+                "number": number,
+                "title": pull["title"],
+                "url": str(pull.get("html_url", "")),
+                "head": head["ref"] if owner == self.repository
+                else f"{(head.get('user') or {}).get('login')}:{head['ref']}",
+            })
+        return pulls
+
+    def close_pull_request(self, number: int, comment: str) -> None:
+        """Close a pull request with a comment, keeping its branch."""
+        self._gh("pr", "close", str(number), "--repo", self.repository, "--comment", comment)
+
     def comment_on_pull_request(self, number: int, body: str) -> None:
         self._gh("pr", "comment", str(number), "--body", body)
 
