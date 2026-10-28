@@ -34,6 +34,12 @@ class Unavailability(enum.Enum):
         return self.value
 
 
+def already_exists(name: str) -> str:
+    """The error that stops a `--tmux` run whose persistent terminal `name` already exists,
+    saying how to get back to it."""
+    return f"{name} already exists: attach to it with tmux attach -t {name}, or end it first"
+
+
 class ContinuationChoice(NamedTuple):
     answer: Continuation
     label: str

@@ -5160,13 +5160,15 @@ class PersistentTerminalTests(BaseBranchTestCase):
     startup checks pass, before the run branch offer."""
 
     def start_with(
-        self, *arguments, continuation, confirm=None, choose=None, results=(), existing=(),
+        self, *arguments, continuation, confirm=None, choose=None, results=(),
+        existing_persistent_terminals=(),
     ):
         self.sessions = ScriptedSessions(self.repository, *results)
         return start_run(
             self.repository, self.github, self.sessions, *arguments,
             confirm=confirm, choose_run_target=choose, choose_continuation=continuation,
-            terminal=True, persistent_terminal_sessions=existing,
+            terminal=True,
+            existing_persistent_terminals=existing_persistent_terminals,
         )
 
     def assert_restarted(self, result, command):
@@ -5340,7 +5342,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
 
         result = self.start_with(
             "--tmux", "--caffeinate", PARENT, continuation=continuation, confirm=confirm,
-            existing=[PERSISTENT_TERMINAL],
+            existing_persistent_terminals=[PERSISTENT_TERMINAL],
         )
 
         self.assert_nothing_changed(
@@ -5352,23 +5354,24 @@ class PersistentTerminalTests(BaseBranchTestCase):
         self.assertEqual(continuation.asked, [])
         self.assertEqual(confirm.questions, [])
         self.assertEqual(result.persistent_terminal.restarts, [])
-        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+        self.assertFalse(result.sleep_lock.held)
 
     def test_a_refused_run_target_stops_before_the_existing_persistent_terminal_is_reported(self):
         self.github.edit_issue_labels(PARENT, "needs-info", ())
 
         result = self.start_with(
             "--tmux", PARENT, continuation=ScriptedContinuation(Continuation.RESTART),
-            existing=[PERSISTENT_TERMINAL],
+            existing_persistent_terminals=[PERSISTENT_TERMINAL],
         )
 
         self.assert_nothing_changed(result, "held back by triage: needs-info")
         self.assertNotIn("already exists", result.stderr)
 
-    def test_a_session_of_another_name_does_not_stop_the_run(self):
+    def test_a_persistent_terminal_of_another_name_does_not_stop_the_run(self):
         result = self.start_with(
             "--tmux", PARENT, continuation=ScriptedContinuation(Continuation.RESTART),
-            existing=[f"ralph-kit-other-{PARENT}", "ralph-kit-buyr-200", PERSISTENT_TERMINAL[:-1]],
+            existing_persistent_terminals=[f"ralph-kit-other-{PARENT}", "ralph-kit-buyr-200", PERSISTENT_TERMINAL[:-1]],
         )
 
         self.assert_restarted(result, f"ralph-kit run {PARENT}")

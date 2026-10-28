@@ -56,6 +56,7 @@ from .keep_awake import keep_awake
 from .persistent_terminal import (
     Continuation,
     PersistentTerminal,
+    already_exists,
     persistent_terminal_name,
 )
 from .progress import Countdown, Elapsed, duration_text, spinner
@@ -1374,16 +1375,14 @@ def require_persistent_terminal(state: RunState) -> None:
 
 
 def ask_where_to_continue(state: RunState, parent_issue: int) -> bool:
-    """Ask where the run continues: True to continue in this terminal. An existing session
-    named as the persistent terminal of `parent_issue` stops the run before the question.
+    """Ask where the run continues: True to continue in this terminal. An existing persistent
+    terminal of `parent_issue` stops the run before the question.
     Restart releases what startup holds until the end, then restarts the run in that
     persistent terminal, which does everything from scratch, and returns False once the
     adapter returns, which only a fake does. Stop and Ctrl-C stop with nothing changed."""
     name = persistent_terminal_name(state.config.repository, parent_issue)
     if state.adapters.persistent_terminal.exists(name):
-        raise RalphError(
-            f"{name} already exists: attach to it with tmux attach -t {name}, or end it first"
-        )
+        raise RalphError(already_exists(name))
     choose = state.adapters.choose_continuation
     # Startup stopped a `--tmux` run outside a terminal.
     assert choose is not None
