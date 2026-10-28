@@ -78,6 +78,11 @@ offer, Ralph asks "Where should this run continue?":
 - **Continue here** runs in this terminal, as without `--tmux`.
 - **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
 
+When a tmux session with exactly that name already exists, the run stops
+before the question, with nothing changed:
+`ralph-kit-ralph-kit-129 already exists: attach to it with tmux attach -t ralph-kit-ralph-kit-129, or end it first`.
+A session of another repository or run target does not stop the run.
+
 Without ISSUE, the run target is picked first, outside tmux. Without
 `--tmux`, nothing is asked.
 

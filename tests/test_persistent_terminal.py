@@ -84,5 +84,27 @@ class UnavailableTests(unittest.TestCase):
         )
 
 
+class ExistsTests(unittest.TestCase):
+    def exists(self, returncode):
+        completed = mock.Mock(returncode=returncode)
+        with mock.patch.object(
+            persistent_terminal.subprocess, "run", return_value=completed
+        ) as run:
+            exists = persistent_terminal.PersistentTerminal().exists("ralph-kit-buyr-191")
+        run.assert_called_once_with(
+            ["tmux", "has-session", "-t", "=ralph-kit-buyr-191"],
+            stdout=persistent_terminal.subprocess.DEVNULL,
+            stderr=persistent_terminal.subprocess.DEVNULL,
+            check=False,
+        )
+        return exists
+
+    def test_a_session_of_exactly_that_name_exists(self):
+        self.assertTrue(self.exists(0))
+
+    def test_no_such_session_or_no_tmux_server(self):
+        self.assertFalse(self.exists(1))
+
+
 if __name__ == "__main__":
     unittest.main()

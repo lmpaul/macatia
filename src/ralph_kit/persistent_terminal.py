@@ -8,6 +8,7 @@ import os
 import pathlib
 import shlex
 import shutil
+import subprocess
 import sys
 from typing import NamedTuple, NoReturn
 
@@ -81,6 +82,16 @@ class PersistentTerminal:
         if os.environ.get("TMUX"):
             return Unavailability.INSIDE_TMUX
         return None
+
+    def exists(self, name: str) -> bool:
+        """Whether a tmux session of exactly `name` exists; `=` stops tmux matching a prefix."""
+        result = subprocess.run(
+            ["tmux", "has-session", "-t", f"={name}"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        return result.returncode == 0
 
     def restart(self, name: str, command: str, directory: pathlib.Path) -> NoReturn:
         """Replace this process with a new session `name` in `directory` running the shell

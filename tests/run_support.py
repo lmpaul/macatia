@@ -807,18 +807,23 @@ class FakePersistentTerminal:
     """Stands in for tmux: records each restart instead of replacing the process.
 
     `unavailability` is why a persistent terminal cannot be used, an `Unavailability`, or
-    None when it can; `checked` counts how often the run asked.
+    None when it can; `checked` counts how often the run asked. `sessions` are the names of
+    the tmux sessions that already exist.
     """
 
-    def __init__(self, sleep_lock, unavailability=None):
+    def __init__(self, sleep_lock, unavailability=None, sessions=()):
         self.sleep_lock = sleep_lock
         self.restarts = []
         self.unavailability = unavailability
         self.checked = 0
+        self.sessions = set(sessions)
 
     def unavailable(self):
         self.checked += 1
         return self.unavailability
+
+    def exists(self, name):
+        return name in self.sessions
 
     def restart(self, name, command, directory):
         self.restarts.append(Restart(name, command, directory, self.sleep_lock.held))
@@ -873,6 +878,7 @@ def start_mode_run(mode, repository, github, sessions, *arguments, **options):
 def start_run(
     repository, github, sessions, *arguments, cwd=None, confirm=None, choose_run_target=None,
     choose_continuation=None, terminal=False, persistent_terminal_unavailability=None,
+    persistent_terminal_sessions=(),
 ):
     """Start one run from its command-line `arguments`, with in-memory GitHub and sessions,
     from `cwd` or the repository root.
@@ -880,7 +886,8 @@ def start_run(
     `confirm` answers the run's startup question, `choose_run_target` picks among the
     startable run targets, and `choose_continuation` answers the continuation choice,
     as a terminal would; None runs without a terminal. `terminal` makes the output a terminal, which gets the spinners.
-    `persistent_terminal_unavailability` is why the fake persistent terminal cannot be used.
+    `persistent_terminal_unavailability` is why the fake persistent terminal cannot be used,
+    and `persistent_terminal_sessions` the tmux sessions that already exist.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
@@ -892,7 +899,9 @@ def start_run(
         return github
 
     sleep_lock = FakeSleepLock()
-    persistent_terminal = FakePersistentTerminal(sleep_lock, persistent_terminal_unavailability)
+    persistent_terminal = FakePersistentTerminal(
+        sleep_lock, persistent_terminal_unavailability, persistent_terminal_sessions
+    )
 
     def child_cycle_adapters(context):
         def run_session(request):
