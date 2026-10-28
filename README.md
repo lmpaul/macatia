@@ -40,6 +40,7 @@ ralph-kit run --review 123     # reviewed run: adds an independent review sessio
 ralph-kit run --no-review 123  # standard run, even when review_by_default = true
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
+ralph-kit run --tmux 123       # offer to restart the run in a persistent terminal (tmux)
 ralph-kit close                # at a terminal, pick among the closable run targets
 ralph-kit close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
 ralph-kit close --yes 123      # same, without the confirmation
@@ -60,6 +61,40 @@ whatever the setting, without the notice. `--caffeinate` together with
 `--no-caffeinate` is a usage error.
 With the setting on, `ralph-kit check` also reports whether this machine can
 provide the sleep lock, as a warning only: a run continues without one.
+
+`--tmux` offers to restart the run in a persistent terminal: a tmux session
+named `ralph-kit-<repository name>-<run target>`, where the repository name is
+the part after `owner/` in the configured `repository`, with `.` and `:` replaced
+by `_`. Once the run target passes its startup checks, and before the run branch
+offer, Ralph asks "Where should this run continue?":
+
+- **Restart in ralph-kit-…** (the default) releases the sleep lock, then
+  restarts the run in a new persistent terminal started in the repository root,
+  and attaches this terminal to it. The restarted run has the same `--review`,
+  `--caffeinate` and `--config` flags, never `--tmux`, and the run target, the
+  one picked when the run started without one. When the run ends, the
+  persistent terminal stays open on your shell. Detach with `Ctrl-b d`; reattach with
+  `tmux attach -t ralph-kit-…`.
+- **Continue here** runs in this terminal, as without `--tmux`.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
+When a tmux session with exactly that name already exists, the run stops
+before the question, with nothing changed:
+`ralph-kit-ralph-kit-129 already exists: attach to it with tmux attach -t ralph-kit-ralph-kit-129, or end it first`.
+A session of another repository or run target does not stop the run.
+
+Without ISSUE, the run target is picked first, outside tmux. Without
+`--tmux`, nothing is asked.
+
+A `--tmux` run that cannot use a persistent terminal stops at once, before
+reading the configuration or GitHub and without taking the sleep lock:
+
+- `tmux not found: install tmux, or run without --tmux`
+- `already inside tmux: run without --tmux`
+- `--tmux needs a terminal: run in a terminal, or without --tmux`, when stdin
+  or stdout is not a terminal.
+
+`ralph-kit check` does not require tmux.
 
 Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean worktree.
 
