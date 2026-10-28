@@ -1,8 +1,8 @@
 """`ralph-kit reset`: a reset of a run target, so a run can start on it as though no run had
 happened: its open cumulative draft PR closed and its run branch deleted, then its children
 agent working, implemented, or in human review, then the run target itself, ready for an
-agent again, each with a reset marker. Without a run target, it offers the resettable run
-targets to choose from."""
+agent again, each with a reset marker, or, for a purge, without Ralph's comments. Without a
+run target, it offers the resettable run targets to choose from."""
 
 from __future__ import annotations
 
@@ -16,17 +16,22 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any
 
-from .close import Failure, current_branch, is_open, issue_reference
+from .close import CLOSURE_MARKER, Failure, current_branch, is_open, issue_reference
 from .commands import RalphError, command
 from .config import RUN_BRANCH_PREFIX, RalphConfig, RalphConfigError, load_config
 from .github import GitHub
 from .loop_core import (
+    CHILD_BASE_MARKER_PREFIX,
     DEFAULT_CONFIG_PATH,
+    HANDOFF_MARKER,
+    ORIGINAL_EVIDENCE_PREFIX,
     RESET_MARKER_PREFIX,
+    REVIEWED_RUN,
     STANDARD_RUN,
     author_login,
     branch_heads,
     cumulative_draft_pull_request_title,
+    implementation_evidence_heads,
     labels,
     latest_implementation_heads,
     positive_integer,
@@ -41,6 +46,18 @@ RUN_BRANCH_NAME = re.compile(re.escape(RUN_BRANCH_PREFIX) + r"([1-9][0-9]*)")
 # Persisted in the comment a reset closes a cumulative draft PR with, so its value must
 # never change: a rerun reads from it what an interrupted reset closed and deleted.
 CLOSING_MARKER_PREFIX = "<!-- ralph-reset-closing: "
+# Every marker Ralph puts in its issue comments; the legacy implementation evidence carries
+# none and is recognised by its prose.
+RALPH_MARKERS = (
+    ORIGINAL_EVIDENCE_PREFIX,
+    STANDARD_RUN.implementation_evidence_prefix,
+    CHILD_BASE_MARKER_PREFIX,
+    HANDOFF_MARKER,
+    *(marker for mode in (STANDARD_RUN, REVIEWED_RUN)
+      for marker in (mode.parent_completion_marker, mode.terminal_summary_marker)),
+    RESET_MARKER_PREFIX,
+    CLOSURE_MARKER,
+)
 
 
 class ResetRefused(RalphError):
@@ -86,11 +103,12 @@ class RunTraces:
 
 @dataclass(frozen=True)
 class ChildReset:
-    """A child the reset makes ready for an agent again."""
+    """A child the reset makes ready for an agent again, or whose Ralph comments a purge deletes."""
 
     issue: dict[str, Any]
-    # The label role of the lifecycle state the child leaves.
-    previous_state: str
+    # The label role of the lifecycle state the child leaves; None for a child a purge
+    # touches only for its Ralph comments.
+    previous_state: str | None
     # Whether an interrupted reset already posted its reset marker.
     marked: bool
 
@@ -147,6 +165,9 @@ class Plan:
     already_reset: dict[int, str]
     # The run target's labels to remove; a parent issue then gains ready-for-agent.
     remove: list[str]
+    # For a purge, the identifiers of the Ralph comments to delete on the run target and on
+    # each child it touches, by issue number; None for a reset that leaves reset markers.
+    purge: dict[int, list[Any]] | None = None
 
 
 def parse_arguments(argv: list[str], prog: str, *, issue_required: bool = True) -> argparse.Namespace:
@@ -167,6 +188,11 @@ def parse_arguments(argv: list[str], prog: str, *, issue_required: bool = True) 
         help="repository-specific Ralph TOML configuration",
     )
     parser.add_argument("--yes", action="store_true", help="reset without asking for confirmation")
+    parser.add_argument(
+        "--purge",
+        action="store_true",
+        help="delete Ralph's comments on the run target and its children instead of leaving reset markers",
+    )
     parser.add_argument("issue", type=positive_integer, nargs="?", metavar="ISSUE")
     arguments = parser.parse_args(argv)  # Exits with status 2 on usage errors.
     if arguments.issue is None and issue_required:
@@ -197,6 +223,31 @@ def trusted_reset_markers(config: RalphConfig, issue: dict[str, Any]) -> list[tu
         if marker is not None:
             markers.append((index, marker))
     return markers
+
+
+def is_ralph_comment(config: RalphConfig, comment: dict[str, Any]) -> bool:
+    """Whether a purge deletes the comment: trusted, and carrying a Ralph marker."""
+    if author_login(comment) not in config.trusted_authors:
+        return False
+    body = str(comment.get("body", ""))
+    return any(marker in body for marker in RALPH_MARKERS) or (
+        implementation_evidence_heads(body, STANDARD_RUN, allow_original=True) is not None
+    )
+
+
+def has_ralph_comment(config: RalphConfig, issue: dict[str, Any]) -> bool:
+    return any(is_ralph_comment(config, comment) for comment in issue.get("comments", []))
+
+
+def ralph_comment_ids(github: Any, config: RalphConfig, issue: dict[str, Any]) -> list[Any]:
+    """The identifiers of the issue's comments a purge deletes, oldest first; listed only
+    when its details carry one."""
+    if not has_ralph_comment(config, issue):
+        return []
+    return [
+        comment["id"] for comment in github.issue_comments(int(issue["number"]))
+        if is_ralph_comment(config, comment)
+    ]
 
 
 def latest_recap_time(config: RalphConfig, target: dict[str, Any]) -> str | None:
@@ -320,9 +371,13 @@ def inspect(
     target: dict[str, Any],
     root: pathlib.Path,
     traces: RunTraces | None = None,
+    *,
+    purge: bool = False,
 ) -> tuple[Plan, list[Failure]]:
-    """The plan for resetting `target`, and every reason it cannot be reset but a dirty
-    worktree; its run branch and cumulative draft PRs are looked up unless `traces` lists them."""
+    """The plan for resetting `target`, or purging it, and every reason it cannot be but a
+    dirty worktree; its run branch and cumulative draft PRs are looked up unless `traces`
+    lists them. A purge touches each open child that is agent working, implemented, or in
+    human review, or carries a Ralph comment."""
     number = int(target["number"])
     failures: list[Failure] = []
     try:
@@ -362,6 +417,11 @@ def inspect(
                 f"verified head {head[:7]} is on {config.base_branch} or in a pull request "
                 "merged into it; merged work is never reset",
             ))
+        if purge:
+            state = previous_state(config, child) if is_open(child) else None
+            if state is not None or (is_open(child) and has_ralph_comment(config, child)):
+                resets.append(ChildReset(child, state, marked=False))
+            continue
         marked_state, marked_last = pending_reset_marker(config, child, since)
         if not is_open(child):
             # A child an interrupted reset reset, closed since, stays in the recap.
@@ -383,18 +443,30 @@ def inspect(
     already_closed, recorded_branch = closed_by_interrupted_reset(
         github, config, number, latest_recap_time(config, target)
     )
-    if not (resets or already_reset or remove or pulls or branch or already_closed):
+    purged = None
+    if purge:
+        # A standalone issue is among its own children.
+        purged = {
+            int(issue["number"]): ralph_comment_ids(github, config, issue)
+            for issue in [*(reset.issue for reset in resets), *([] if standalone else [target])]
+        }
+    # A Ralph comment left on the run target is a trace of a run for a purge: a reset marker,
+    # or what an interrupted purge did not delete yet.
+    if not (resets or already_reset or remove or pulls or branch or already_closed
+            or (purged and any(purged.values()))):
         failures.append(Failure(
             f"#{number} is not resettable",
             (f"#{number} is not agent working, implemented or in human review" if standalone
              else f"no child is agent working, implemented or in human review, and #{number} is "
              "marked neither work started nor human review")
-            + f"; it has no open cumulative draft PR and no {RUN_BRANCH_PREFIX}{number}",
+            + "; it has no open cumulative draft PR"
+            + (f", no {RUN_BRANCH_PREFIX}{number} and no Ralph comment" if purge
+               else f" and no {RUN_BRANCH_PREFIX}{number}"),
         ))
     return Plan(
         target=target, standalone=standalone, pulls=pulls, branch=branch,
         already_closed=already_closed, recorded_branch=recorded_branch, children=resets,
-        already_reset=already_reset, remove=remove,
+        already_reset=already_reset, remove=remove, purge=purged,
     ), failures
 
 
@@ -443,13 +515,16 @@ def run_traces(
     )
 
 
-def resettable_run_targets(github: Any, config: RalphConfig, root: pathlib.Path) -> list[ResettableRunTarget]:
+def resettable_run_targets(
+    github: Any, config: RalphConfig, root: pathlib.Path, *, purge: bool = False
+) -> list[ResettableRunTarget]:
     """The resettable run targets of the repository, by ascending number.
 
     Open issues are first narrowed to those a trace of a run points to, through a run branch,
     a cumulative draft PR or their listing's labels: an issue marked work started or human
     review, the parent of an issue agent working, implemented, or in human review, else that
-    issue itself. Each is then inspected as a reset of it would be. A failed lookup raises.
+    issue itself; for a purge, also a trusted issue whose details carry a trusted reset
+    marker. Each is then inspected as a reset of it would be. A failed lookup raises.
     """
     issues = {int(issue["number"]): issue for issue in github.open_issues() if is_open(issue)}
     traces = run_traces(github, config, root, sorted(issues))
@@ -461,12 +536,18 @@ def resettable_run_targets(github: Any, config: RalphConfig, root: pathlib.Path)
         elif previous_state(config, issue) is not None:
             parent = github.parent(number)
             traced.add(number if parent is None else int(parent["number"]))
+    trusted = {number for number, issue in issues.items() if author_login(issue) in config.trusted_authors}
+    # The listing carries no comments: the evidence and reset markers are in the details.
+    details: dict[int, dict[str, Any]] = {}
+    if purge:
+        for number in sorted(trusted - traced):
+            details[number] = github.issue(number)
+            if trusted_reset_markers(config, details[number]):
+                traced.add(number)
     targets = []
-    for number in sorted(traced & issues.keys()):
-        if author_login(issues[number]) not in config.trusted_authors:
-            continue
-        # The listing carries no comments: the evidence and reset markers are in the details.
-        plan, failures = inspect(github, config, github.issue(number), root, traces)
+    for number in sorted(traced & trusted):
+        issue = details[number] if number in details else github.issue(number)
+        plan, failures = inspect(github, config, issue, root, traces, purge=purge)
         if not failures:
             targets.append(ResettableRunTarget(
                 number,
@@ -482,13 +563,15 @@ def choose_reset_target(
     choose: Callable[[list[ResettableRunTarget], int | None], int],
     root: pathlib.Path,
     branch: str | None,
+    *,
+    purge: bool = False,
 ) -> int | None:
     """The run target the person at the terminal picks among the resettable run targets, or
     None when there is none to offer. On the run branch of a listed issue, the picker
     preselects that issue, and otherwise its first entry. Ctrl-C in the picker cancels."""
     with spinner("Reading the resettable run targets…"):
         try:
-            targets = resettable_run_targets(github, config, root)
+            targets = resettable_run_targets(github, config, root, purge=purge)
         except KeyboardInterrupt:
             raise ResetCancelled from None
     if not targets:
@@ -591,11 +674,20 @@ def closing_comment(plan: Plan, pull: dict[str, Any]) -> str:
     )
 
 
+def deleting(plan: Plan, number: int) -> str:
+    count = len((plan.purge or {}).get(number, []))
+    return f"deleting {count} Ralph {'comment' if count == 1 else 'comments'}"
+
+
 def print_plan(config: RalphConfig, plan: Plan) -> None:
     ready = config.labels["ready_for_agent"]
     number = int(plan.target["number"])
     working = config.labels["agent_working"]
-    print(f"📋 Resetting {'standalone issue ' if plan.standalone else ''}{issue_reference(plan.target)}:")
+    purge = plan.purge is not None
+    print(
+        f"📋 Resetting {'and purging ' if purge else ''}{'standalone issue ' if plan.standalone else ''}"
+        f"{issue_reference(plan.target)}:"
+    )
     for closed in plan.already_closed:
         print(f"   ✓ PR #{closed}: already closed by this reset")
     for pull in plan.pulls:
@@ -614,13 +706,16 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
         change = ", ".join([
             *(f"-{name}" for name in stale_labels(config, plan.target, run_target=True)), f"+{ready}"
         ])
-        print(f"   → {change}, with its recap reset marker")
+        print(f"   → {change}, {deleting(plan, number) if purge else 'with its recap reset marker'}")
     else:
         for reset in plan.children:
+            change = (
+                f"{', '.join(sorted(labels(reset.issue) & config.lifecycle_labels))} → {ready}"
+                if reset.previous_state is not None else "labels unchanged"
+            )
             print(
-                f"   → {issue_reference(reset.issue)}: "
-                f"{', '.join(sorted(labels(reset.issue) & config.lifecycle_labels))} → {ready}, "
-                "with a reset marker"
+                f"   → {issue_reference(reset.issue)}: {change}, "
+                + (deleting(plan, int(reset.issue["number"])) if purge else "with a reset marker")
             )
         for child, state in sorted(plan.already_reset.items()):
             print(f"   ✓ #{child}: already reset (was {config.labels[state]})")
@@ -628,7 +723,10 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
             *(f"-{name}" for name in plan.remove),
             *([] if ready in labels(plan.target) else [f"+{ready}"]),
         ])
-        print(f"   → then #{number}: {change or 'labels unchanged'}, then the recap reset marker")
+        print(
+            f"   → then #{number}: {change or 'labels unchanged'}, then "
+            + (deleting(plan, number) if purge else "the recap reset marker")
+        )
     run_branch = f"{RUN_BRANCH_PREFIX}{number}"
     for pull in plan.pulls:
         if pull["head"] != run_branch:
@@ -640,7 +738,8 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
     if branch is not None and not restorable:
         print(
             f"⚠️  {branch.name} has no open pull request to restore it from: once deleted, only "
-            "its head SHA in the recap and your reflog can recover its commits"
+            + ("your reflog" if purge else "its head SHA in the recap and your reflog")
+            + " can recover its commits"
         )
     for reset in plan.children:
         if working in labels(reset.issue):
@@ -659,9 +758,11 @@ def reset_target(
     confirm: Callable[[str], bool] | None,
     rerun: str,
     root: pathlib.Path,
+    purge: bool = False,
 ) -> None:
     """Check everything, confirm, then close the cumulative draft PR, delete the run branch,
-    reset the children and, last, the run target."""
+    reset the children and, last, the run target; a purge deletes the Ralph comments of each
+    issue where a reset posts its reset marker."""
     with spinner(f"Checking #{number} and any sub-issues before resetting…"):
         try:
             target = github.issue(number)
@@ -670,7 +771,7 @@ def reset_target(
         if int(target.get("number", 0)) != number:
             raise RalphError(f"GitHub returned the wrong issue for #{number}")
         try:
-            plan, failures = inspect(github, config, target, root)
+            plan, failures = inspect(github, config, target, root, purge=purge)
             failures += dirty_worktree(config, plan, root)
         except KeyboardInterrupt:
             raise ResetCancelled from None
@@ -687,7 +788,7 @@ def reset_target(
                 "Confirmation needs a terminal; rerun with --yes to reset without it. Nothing reset."
             )
         try:
-            confirmed = confirm(f"Reset #{number}?")
+            confirmed = confirm(f"Reset and purge #{number}?" if purge else f"Reset #{number}?")
         except KeyboardInterrupt:
             raise ResetCancelled from None
         if not confirmed:
@@ -712,26 +813,38 @@ def reset_target(
             child_number = int(child.issue["number"])
             # The marker comes first: a rerun after it reads the state the child left there.
             # That holds for a standalone issue's recap too, else a rerun could not tell it
-            # from an issue no run touched.
-            if not child.marked:
+            # from an issue no run touched. A purge deletes the comments there instead: a rerun
+            # finds a child still labelled and deletes what is left.
+            if plan.purge is not None:
+                for comment_id in plan.purge[child_number]:
+                    github.delete_issue_comment(comment_id)
+            elif not child.marked:
+                # Only a purge touches a child for its comments alone.
+                assert child.previous_state is not None
                 github.comment_on_issue(
                     child_number,
                     standalone_recap(config, plan, child.previous_state) if plan.standalone
                     else child_marker(config, number, child.previous_state),
                 )
-            github.edit_issue_labels(
-                child_number,
-                add=ready,
-                remove=stale_labels(config, child.issue, run_target=plan.standalone),
-            )
-            reset[child_number] = child.previous_state
+            if child.previous_state is not None:
+                github.edit_issue_labels(
+                    child_number,
+                    add=ready,
+                    remove=stale_labels(config, child.issue, run_target=plan.standalone),
+                )
+                reset[child_number] = child.previous_state
             if not plan.standalone:
                 print(f"   ✓ #{child_number}")
         if not plan.standalone:
             if plan.remove or ready not in labels(plan.target):
                 github.edit_issue_labels(number, add=ready, remove=plan.remove)
-            # The recap comes last: its presence means the reset finished.
-            github.comment_on_issue(number, parent_recap(config, plan, reset))
+            if plan.purge is not None:
+                # A rerun finds what is left: a Ralph comment on the run target is a trace.
+                for comment_id in plan.purge[number]:
+                    github.delete_issue_comment(comment_id)
+            else:
+                # The recap comes last: its presence means the reset finished.
+                github.comment_on_issue(number, parent_recap(config, plan, reset))
     except RalphError as error:
         raise RalphError(f"{error}\nRerun `{rerun}` to finish the reset.") from error
     print(f"   ✓ #{number}")
@@ -769,6 +882,7 @@ def run(
         return shlex.join([
             *prog.split(),
             *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
+            *(["--purge"] if arguments.purge else []),
             *([str(issue)] if issue is not None else []),
         ])
 
@@ -779,7 +893,9 @@ def run(
         issue = arguments.issue
         if issue is None:
             assert choose_run_target is not None
-            issue = choose_reset_target(access, config, choose_run_target, root, branch(root))
+            issue = choose_reset_target(
+                access, config, choose_run_target, root, branch(root), purge=arguments.purge
+            )
             if issue is None:
                 print(f"No run target in {config.repository} is resettable.")
                 return 0
@@ -792,6 +908,7 @@ def run(
             confirm=confirm,
             rerun=rerun,
             root=root,
+            purge=arguments.purge,
         )
     except ResetCancelled:
         print("\nCancelled. Nothing reset.", file=sys.stderr)

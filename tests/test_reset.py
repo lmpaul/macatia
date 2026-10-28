@@ -21,6 +21,7 @@ from ralph_kit import check, cli, loop_core, reset  # noqa: E402
 from ralph_kit.commands import RalphError  # noqa: E402
 from run_support import (  # noqa: E402
     BRANCH,
+    TRUSTED_LOGIN,
     CommitPull,
     FakeGitHub,
     PullRequest,
@@ -31,6 +32,8 @@ from run_support import (  # noqa: E402
     child_base_marker,
     git,
     implementation_evidence,
+    legacy_implementation_evidence,
+    reset_marker,
     start_run,
 )
 from test_close import ScriptedConfirmer, ScriptedPicker  # noqa: E402
@@ -43,6 +46,10 @@ RUN_BRANCH = f"ralph-kit/issue-{PARENT}"
 def sha(name):
     """A distinct 40-hex commit SHA for a name."""
     return hashlib.sha1(name.encode()).hexdigest()
+
+
+def trusted(body):
+    return {"author": {"login": TRUSTED_LOGIN}, "body": body}
 
 
 def reset_markers(bodies):
@@ -824,7 +831,7 @@ class ResetTests(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(cli.main(["--help"]), 0)
-        self.assertIn("reset [--yes] [--config PATH] [ISSUE]", stdout.getvalue())
+        self.assertIn("reset [--yes] [--purge] [--config PATH] [ISSUE]", stdout.getvalue())
         with (
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),
@@ -844,6 +851,161 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(self.reset("--config", "other.toml", str(PARENT), "--yes"), 1)
 
         self.assertIn(f"ralph-kit reset --config other.toml {PARENT}", self.stderr)
+
+    # Purge.
+
+    def ralph_comments(self):
+        """A trusted comment carrying each Ralph marker, as the run, close and reset write them."""
+        evidence = implementation_evidence(loop_core.STANDARD_RUN, sha("implementation"), sha("verified"))
+        reviewed = implementation_evidence(loop_core.REVIEWED_RUN, sha("implementation"), sha("reviewed"))
+        return [
+            child_base_marker(sha("base")),
+            evidence,
+            reviewed,
+            legacy_implementation_evidence(sha("base"), sha("legacy")),
+            trusted(f"{loop_core.HANDOFF_MARKER}\nRalph stopped: a human must review."),
+            *(
+                trusted(f"{marker}\nRalph finished.")
+                for mode in (loop_core.STANDARD_RUN, loop_core.REVIEWED_RUN)
+                for marker in (mode.parent_completion_marker, mode.terminal_summary_marker)
+            ),
+            reset_marker(),
+        ]
+
+    def kept_comments(self):
+        """Comments a purge leaves: untrusted ones, even carrying a Ralph marker, and trusted
+        ones without one."""
+        return [
+            {"author": {"login": "someone"}, "body": child_base_marker(sha("base"))["body"]},
+            trusted("Please also cover the empty case."),
+        ]
+
+    def test_a_purge_deletes_every_ralph_comment_on_the_parent_and_its_reset_children(self):
+        kept = self.kept_comments()
+        self.add_parent(labels=("work-started", "human-review"), comments=[*self.ralph_comments(), *kept])
+        self.add_child(70, comments=[*kept, *self.ralph_comments()])
+        self.add_child(71, labels=("human-review",), comments=self.ralph_comments())
+        # Untouched by a reset: no lifecycle label, nor any Ralph comment.
+        self.add_child(72, labels=("needs-triage",), comments=kept)
+
+        self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
+
+        for number in (PARENT, 70, 72):
+            self.assertEqual(self.github.comments(number), [comment["body"] for comment in kept])
+        self.assertEqual(self.github.comments(71), [])
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+        self.assertEqual(self.github.labels(70), {"ready-for-agent"})
+        self.assertEqual(self.github.labels(71), {"ready-for-agent"})
+        self.assertEqual(self.github.labels(72), {"needs-triage"})
+
+    def test_a_purge_plan_counts_the_comments_it_deletes_on_each_issue(self):
+        self.add_parent(comments=self.ralph_comments()[:2])
+        self.add_child(70, comments=self.ralph_comments()[:3])
+        self.add_child(71, labels=("human-review",), comments=[trusted("No marker.")])
+
+        self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
+
+        self.assertIn("#70 Issue 70: implemented → ready-for-agent, deleting 3 Ralph comments", self.stdout)
+        self.assertIn("#71 Issue 71: human-review → ready-for-agent, deleting 0 Ralph comments", self.stdout)
+        self.assertIn(f"then #{PARENT}: -work-started, +ready-for-agent, then deleting 2 Ralph comments", self.stdout)
+
+    def test_a_purge_of_a_standalone_issue_deletes_its_ralph_comments_and_leaves_no_marker(self):
+        kept = self.kept_comments()
+        self.github.add_issue(80, labels=("implemented", "standalone"), comments=[*self.ralph_comments(), *kept])
+
+        self.assertEqual(self.reset("80", "--purge", "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.github.labels(80), {"ready-for-agent", "standalone"})
+        self.assertEqual(self.github.comments(80), [comment["body"] for comment in kept])
+        self.assertIn("-implemented, +ready-for-agent, deleting 10 Ralph comments", self.stdout)
+
+    def test_a_purge_leaves_the_pull_request_comments(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_run_branch()
+        self.add_pull_request()
+
+        self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
+
+        [comment] = self.github.pull_requests[0].comments
+        self.assertIn(f"reset of #{PARENT} closed", comment)
+        self.assertEqual(self.github.comments(70), [])
+        self.assertEqual(self.github.comments(PARENT), [])
+
+    def test_a_run_target_whose_only_trace_is_a_reset_marker_is_resettable_only_for_a_purge(self):
+        self.add_parent(labels=("ready-for-agent",))
+        self.add_child(70, labels=("ready-for-agent",), comments=[*self.ralph_comments()[:2], reset_marker()])
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+        self.github.add_issue(80, labels=("ready-for-agent",), comments=[reset_marker()])
+
+        self.assert_refused(PARENT, f"#{PARENT} is not resettable")
+        self.assert_refused(80, "#80 is not resettable")
+
+        self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
+        self.assertEqual(self.reset("80", "--purge", "--yes"), 0, self.stderr)
+        for number in (PARENT, 70, 80):
+            self.assertEqual(self.github.comments(number), [])
+            self.assertEqual(self.github.labels(number), {"ready-for-agent"})
+
+    def test_without_issue_a_purge_also_offers_a_run_target_whose_only_trace_is_a_reset_marker(self):
+        self.add_parent(labels=("ready-for-agent",), comments=[reset_marker()])
+        self.add_child(70, labels=("ready-for-agent",), comments=[reset_marker()])
+        self.github.add_issue(80, labels=("ready-for-agent",), comments=[reset_marker()])
+        self.github.add_issue(81, labels=("ready-for-agent",), comments=[trusted("No marker.")])
+        plain, purge = ScriptedPicker(KeyboardInterrupt()), ScriptedPicker(KeyboardInterrupt())
+
+        self.assertEqual(self.reset(choose=plain), 0, self.stderr)
+        self.assertEqual(self.reset("--purge", choose=purge), 130)
+
+        self.assertEqual(plain.offered, [])
+        self.assertEqual(purge.offered, [[
+            f"#{PARENT}  Issue {PARENT}  (parent · 1 children to reset)",
+            "#80  Issue 80  (standalone)",
+        ]])
+
+    def test_a_rerun_after_an_interrupted_purge_finishes_it(self):
+        self.add_parent(comments=self.ralph_comments())
+        self.add_child(70, comments=self.ralph_comments())
+        self.add_child(71, labels=("human-review",), comments=self.ralph_comments())
+        deleted = []
+
+        def interrupt(number):
+            deleted.append(number)
+            if deleted.count(71) == 2:
+                raise KeyboardInterrupt
+
+        self.github.after_comment_delete = interrupt
+
+        self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 130)
+
+        self.assertIn(f"Rerun `ralph-kit reset --purge {PARENT}` to finish", self.stderr)
+        self.assertEqual(self.github.comments(70), [])
+        self.assertEqual(len(self.github.comments(71)), 8)
+        self.assertEqual(self.github.labels(71), {"human-review"})
+        self.github.after_comment_delete = None
+
+        self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
+
+        for number in (PARENT, 70, 71):
+            self.assertEqual(self.github.comments(number), [])
+            self.assertEqual(self.github.labels(number), {"ready-for-agent"})
+
+    def test_a_rerun_after_a_purge_interrupted_before_the_parent_comments_finishes_it(self):
+        self.add_parent(comments=self.ralph_comments())
+        self.add_child(70)
+
+        def interrupt(number, add, remove):
+            if number == PARENT:
+                raise KeyboardInterrupt
+
+        self.github.after_label_edit = interrupt
+        self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 130)
+        self.github.after_label_edit = None
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+
+        self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
+
+        self.assertEqual(self.github.comments(PARENT), [])
 
     # A run after the reset.
 

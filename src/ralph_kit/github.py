@@ -250,6 +250,12 @@ class GitHub:
             for comment in self._list(f"repos/{self.repository}/issues/{number}/comments?per_page=100")
         ]
 
+    def delete_issue_comment(self, comment_id: Any) -> None:
+        """Delete an issue comment by the identifier `issue_comments` lists it with."""
+        self._gh(
+            "api", "--method", "DELETE", f"repos/{self.repository}/issues/comments/{comment_id}"
+        )
+
     def close_pull_request(self, number: int, comment: str) -> None:
         """Close a pull request with a comment, keeping its branch."""
         self._gh("pr", "close", str(number), "--repo", self.repository, "--comment", comment)

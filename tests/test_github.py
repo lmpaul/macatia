@@ -163,5 +163,19 @@ class PullRequestsByTitleTests(unittest.TestCase):
             },
         ])
 
+
+class DeleteIssueCommentTests(unittest.TestCase):
+    def test_an_issue_comment_is_deleted_by_its_listed_identifier(self):
+        github = GitHub(pathlib.Path("/repository"), "lmpaul/ralph-kit")
+        with mock.patch("ralph_kit.github.command") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, "", "")
+            github.delete_issue_comment(6470121943)
+
+        command.assert_called_once_with(
+            pathlib.Path("/repository"),
+            ["gh", "api", "--method", "DELETE", "repos/lmpaul/ralph-kit/issues/comments/6470121943"],
+            check=True,
+        )
+
 if __name__ == "__main__":
     unittest.main()

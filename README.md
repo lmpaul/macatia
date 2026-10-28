@@ -48,6 +48,7 @@ ralph-kit close --force 123    # close despite failed checks, after typing 123
 ralph-kit reset                # at a terminal, pick among the resettable run targets
 ralph-kit reset 123            # reset: make #123 and its children ready for an agent again (asks first)
 ralph-kit reset --yes 123      # same, without the confirmation
+ralph-kit reset --purge 123    # same, deleting Ralph's comments instead of leaving reset markers
 ```
 
 `--caffeinate` holds a sleep lock for the run, from once the configuration is
@@ -284,7 +285,7 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
 - **Reset** (every refusal, the plan, the confirmation, the cumulative draft PR,
-  the run branch, the labels, reset markers and recap, and resuming them):
+  the run branch, the labels, reset markers and recap, the purge, and resuming them):
   `tests/test_reset.py`, the reset command's entry point with the GitHub fake, a
   scripted confirmer and a temporary checkout with a bare `origin`.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
@@ -921,6 +922,7 @@ or another model profile:
 ```sh
 ralph-kit reset 123
 ralph-kit reset --yes --config review.toml 123
+ralph-kit reset --purge 123
 ```
 
 `reset` loads the configuration like `close`. Before writing anything it
@@ -976,6 +978,22 @@ reset marker, its recap, then `ready-for-agent` as its only lifecycle label.
 Ralph reads none of its records older than an issue's latest trusted reset
 marker, so the next run implements the children from scratch from the current
 branch head.
+
+`--purge`, with or without `ISSUE`, deletes Ralph's own comments instead of
+leaving reset markers, so later agent sessions, which read the issues
+themselves, no longer see them. Where a reset posts a reset marker it deletes
+every trusted comment carrying a Ralph marker: implementation evidence in every
+format, child base markers, handoff markers, parent completion, terminal
+summary, closure and reset markers. It touches the run target and each open
+child that is `agent-working`, `implemented` or `human-review` or carries such a
+comment; labels change, in the same order, as for a reset, and it leaves no
+reset marker. Untrusted comments, trusted comments without a Ralph marker
+(handoff comments from before the handoff marker among them), and pull request
+comments are untouched. The plan counts the comments it deletes on each issue.
+For a purge, a Ralph comment on the run target, such as an earlier reset's
+recap, is the trace of a run too, so a reset run target can still be purged
+later, and the picker also offers the trusted open issues carrying a trusted
+reset marker.
 
 After a GitHub or Git error or an interruption partway, rerun the same command:
 pull requests already closed, branches already deleted, and markers and labels

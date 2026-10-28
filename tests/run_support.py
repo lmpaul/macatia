@@ -348,7 +348,9 @@ class FakeGitHub:
     its next close raises instead, and `after_close`, when set, is called with
     the issue number and reason after each close. Closing a pull request stores its
     comment, which the issue comments listing of its number returns, and marks it closed; `after_pull_request_close`, when set, is called with
-    its number after each close. Reading an unknown issue raises
+    its number after each close. Every issue comment gets an identifier, by which it can be
+    deleted; `after_comment_delete`, when set, is called with the issue number after each
+    deletion. Reading an unknown issue raises
     as `gh` does for an issue that does not exist. A commit is on a branch when
     `on_branch` maps its SHA to True; `compared` keeps each (branch, SHA) asked.
     `commit_pulls` maps a commit SHA to the pull requests GitHub associates with
@@ -396,6 +398,8 @@ class FakeGitHub:
         self.close_error = {}
         self.after_close = None
         self.after_pull_request_close = None
+        self.after_comment_delete = None
+        self.next_comment_id = 1000
         self.on_branch = {}
         self.compared = []
         self.commit_pulls = {}
@@ -423,7 +427,7 @@ class FakeGitHub:
             "state": state.upper(),
             "labels": [{"name": label} for label in labels],
             "author": {"login": author},
-            "comments": [dict(comment) for comment in comments],
+            "comments": [{"id": self._comment_id(), **comment} for comment in comments],
             "updatedAt": self._timestamp(),
         }
         if parent is not None:
@@ -451,6 +455,10 @@ class FakeGitHub:
     def _timestamp(self):
         self.revision += 1
         return f"2026-08-29T00:{self.revision // 60:02d}:{self.revision % 60:02d}Z"
+
+    def _comment_id(self):
+        self.next_comment_id += 1
+        return self.next_comment_id
 
     def _touch(self, number):
         timestamp = self._timestamp()
@@ -509,6 +517,7 @@ class FakeGitHub:
     def comment_on_issue(self, number, body):
         created_at = self._touch(number)
         self.issues[number]["comments"].append({
+            "id": self._comment_id(),
             "author": {"login": self.login},
             "body": body,
             "createdAt": created_at,
@@ -576,6 +585,16 @@ class FakeGitHub:
         if pull is not None:
             return copy.deepcopy(pull.comment_records)
         return self.issue(number)["comments"]
+
+    def delete_issue_comment(self, comment_id):
+        for number, issue in self.issues.items():
+            for index, comment in enumerate(issue["comments"]):
+                if comment.get("id") == comment_id:
+                    del issue["comments"][index]
+                    if self.after_comment_delete is not None:
+                        self.after_comment_delete(number)
+                    return
+        raise RalphError(f"command failed (gh api --method DELETE issues/comments/{comment_id}): Not Found")
 
     def close_pull_request(self, number, comment):
         pull = self._pull(number)
