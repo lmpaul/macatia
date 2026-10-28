@@ -1,7 +1,8 @@
 """`ralph-kit reset`: a reset of a run target, so a run can start on it as though no run had
 happened: its open cumulative draft PR closed and its run branch deleted, then its children
 agent working, implemented, or in human review, then the run target itself, ready for an
-agent again, each with a reset marker."""
+agent again, each with a reset marker. Without a run target, it offers the resettable run
+targets to choose from."""
 
 from __future__ import annotations
 
@@ -36,6 +37,7 @@ from .progress import spinner
 # The lifecycle states a reset makes ready for an agent again, as label roles; a child
 # carrying several left the first one listed.
 RESET_STATES = ("human_review", "agent_working", "implemented")
+RUN_BRANCH = re.compile(re.escape(RUN_BRANCH_PREFIX) + r"([1-9][0-9]*)")
 # Persisted in the comment a reset closes a cumulative draft PR with, so its value must
 # never change: a rerun reads from it what an interrupted reset closed and deleted.
 CLOSING_MARKER_PREFIX = "<!-- ralph-reset-closing: "
@@ -46,7 +48,42 @@ class ResetRefused(RalphError):
 
 
 class ResetCancelled(Exception):
-    """Ctrl-C at the confirmation: nothing was written."""
+    """Ctrl-C at the picker or the confirmation: nothing was written."""
+
+
+@dataclass(frozen=True)
+class ResettableRunTarget:
+    """A resettable run target as the resettable run target picker offers it."""
+
+    number: int
+    title: str
+    # The children a reset of a parent issue makes ready for an agent; None for a standalone issue.
+    children: int | None
+
+    @property
+    def label(self) -> str:
+        kind = "standalone" if self.children is None else f"parent · {self.children} children to reset"
+        return f"#{self.number}  {self.title}  ({kind})"
+
+
+@dataclass(frozen=True)
+class RunTraces:
+    """The run branches and open cumulative draft PRs of every run target, each found with one
+    listing, as the picker reads them before inspecting each candidate."""
+
+    # Run branch heads by run target number, on the configured remote and in the checkout.
+    remote_heads: dict[int, str]
+    local_heads: dict[int, str]
+    # The open cumulative draft PRs by run target number, as the pull request lookup lists them.
+    pulls: dict[int, list[dict[str, Any]]]
+    checked_out: str | None
+
+    def run_branch(self, number: int) -> RunBranch | None:
+        name = f"{RUN_BRANCH_PREFIX}{number}"
+        remote_head, local_head = self.remote_heads.get(number), self.local_heads.get(number)
+        if remote_head is None and local_head is None:
+            return None
+        return RunBranch(name, remote_head, local_head, local_head is not None and self.checked_out == name)
 
 
 @dataclass(frozen=True)
@@ -103,7 +140,9 @@ class Plan:
     remove: list[str]
 
 
-def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
+def parse_arguments(argv: list[str], prog: str, *, issue_required: bool = True) -> argparse.Namespace:
+    """Read reset's arguments. Without `ISSUE`, `issue` is None, a usage error when
+    `issue_required`."""
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(
@@ -119,8 +158,11 @@ def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
         help="repository-specific Ralph TOML configuration",
     )
     parser.add_argument("--yes", action="store_true", help="reset without asking for confirmation")
-    parser.add_argument("issue", type=positive_integer, metavar="ISSUE")
-    return parser.parse_args(argv)  # Exits with status 2 on usage errors.
+    parser.add_argument("issue", type=positive_integer, nargs="?", metavar="ISSUE")
+    arguments = parser.parse_args(argv)  # Exits with status 2 on usage errors.
+    if arguments.issue is None and issue_required:
+        parser.error("pass the issue to reset: ralph-kit reset ISSUE")
+    return arguments
 
 
 def reset_marker_comment(body: str) -> dict[str, Any] | None:
@@ -258,9 +300,14 @@ def closed_by_interrupted_reset(
 
 
 def inspect(
-    github: Any, config: RalphConfig, target: dict[str, Any], root: pathlib.Path
+    github: Any,
+    config: RalphConfig,
+    target: dict[str, Any],
+    root: pathlib.Path,
+    traces: RunTraces | None = None,
 ) -> tuple[Plan, list[Failure]]:
-    """The plan for resetting `target`, and every reason it cannot be reset."""
+    """The plan for resetting `target`, and every reason it cannot be reset but a dirty
+    worktree; its run branch and cumulative draft PRs are looked up unless `traces` lists them."""
     number = int(target["number"])
     failures: list[Failure] = []
     try:
@@ -313,8 +360,11 @@ def inspect(
             already_reset[int(child["number"])] = marked_state
     # A standalone issue's labels are reset as its own only child's.
     remove = [] if standalone else stale_labels(config, target, run_target=True)
-    pulls = cumulative_draft_pull_requests(github, config, number)
-    branch = find_run_branch(root, config, number)
+    if traces is None:
+        pulls = cumulative_draft_pull_requests(github, config, number)
+        branch = find_run_branch(root, config, number)
+    else:
+        pulls, branch = traces.pulls.get(number, []), traces.run_branch(number)
     already_closed, recorded_branch = closed_by_interrupted_reset(
         github, config, number, latest_recap_time(config, target)
     )
@@ -326,17 +376,128 @@ def inspect(
              "marked neither work started nor human review")
             + f"; it has no open cumulative draft PR and no {RUN_BRANCH_PREFIX}{number}",
         ))
-    if branch is not None and branch.checked_out and git(root, "status", "--porcelain"):
-        failures.append(Failure(
-            f"the worktree is dirty while {branch.name} is checked out",
-            f"commit or stash your changes, or switch to {config.base_branch}: the reset deletes "
-            f"{branch.name}",
-        ))
     return Plan(
         target=target, standalone=standalone, pulls=pulls, branch=branch,
         already_closed=already_closed, recorded_branch=recorded_branch, children=resets,
         already_reset=already_reset, remove=remove,
     ), failures
+
+
+def dirty_worktree(config: RalphConfig, plan: Plan, root: pathlib.Path) -> list[Failure]:
+    """A dirty worktree with the run branch checked out, which the reset would delete."""
+    branch = plan.branch
+    if branch is None or not branch.checked_out or not git(root, "status", "--porcelain"):
+        return []
+    return [Failure(
+        f"the worktree is dirty while {branch.name} is checked out",
+        f"commit or stash your changes, or switch to {config.base_branch}: the reset deletes "
+        f"{branch.name}",
+    )]
+
+
+def run_branch_numbers(lines: str, field: int) -> dict[int, str]:
+    """The run target numbers of the run branches a ref listing names, with their heads; each
+    line holds a head and a ref, the ref in field `field`."""
+    heads = {}
+    for line in lines.splitlines():
+        parts = line.split()
+        if len(parts) != 2:
+            continue
+        match = RUN_BRANCH.fullmatch(parts[field].removeprefix("refs/heads/"))
+        if match:
+            heads[int(match.group(1))] = parts[1 - field]
+    return heads
+
+
+def run_traces(
+    github: Any, config: RalphConfig, root: pathlib.Path, open_issues: list[int]
+) -> RunTraces:
+    """The run branches on the configured remote, found with one heads listing, and in the
+    checkout, and the open cumulative draft PRs of the `open_issues`, found with one lookup."""
+    pattern = f"refs/heads/{RUN_BRANCH_PREFIX}*"
+    listing = command(root, ["git", "ls-remote", "--heads", config.remote, pattern], check=False)
+    if listing.returncode != 0:
+        detail = " ".join((listing.stderr or "").split())
+        raise RalphError(f"could not reach {config.remote} to look for run branches: {detail}")
+    local = git(root, "for-each-ref", "--format=%(objectname) %(refname)", f"refs/heads/{RUN_BRANCH_PREFIX}")
+    titles = {
+        cumulative_draft_pull_request_title(number, standalone=standalone): number
+        for number in open_issues
+        for standalone in (False, True)
+    }
+    pulls = github.open_pull_requests_by_title(config.base_branch, set(titles))
+    if not isinstance(pulls, list):
+        raise RalphError("GitHub pull request lookup returned invalid data")
+    by_target: dict[int, list[dict[str, Any]]] = {}
+    for pull in sorted(pulls, key=lambda pull: int(pull["number"])):
+        by_target.setdefault(titles[pull["title"]], []).append(pull)
+    return RunTraces(
+        run_branch_numbers(listing.stdout, 1), run_branch_numbers(local, 1), by_target,
+        current_branch(root),
+    )
+
+
+def resettable_run_targets(github: Any, config: RalphConfig, root: pathlib.Path) -> list[ResettableRunTarget]:
+    """The resettable run targets of the repository, by ascending number.
+
+    Open issues are first narrowed to those carrying a trace of a run in their listing, a run
+    branch or a cumulative draft PR: an issue marked work started or human review, the
+    parent of an issue agent working, implemented, or in human review, else that issue
+    itself. Each candidate is then inspected as a reset of it would be. A failed lookup raises.
+    """
+    issues = {int(issue["number"]): issue for issue in github.open_issues() if is_open(issue)}
+    traces = run_traces(github, config, root, sorted(issues))
+    candidates = {*traces.remote_heads, *traces.local_heads, *traces.pulls}
+    run_target_labels = {config.labels["work_started"], config.labels["human_review"]}
+    for number, issue in issues.items():
+        if labels(issue) & run_target_labels:
+            candidates.add(number)
+        elif previous_state(config, issue) is not None:
+            parent = github.parent(number)
+            candidates.add(number if parent is None else int(parent["number"]))
+    targets = []
+    for number in sorted(candidates & issues.keys()):
+        if author_login(issues[number]) not in config.trusted_authors:
+            continue
+        # The listing carries no comments: the evidence and reset markers are in the details.
+        plan, failures = inspect(github, config, github.issue(number), root, traces)
+        if not failures:
+            targets.append(ResettableRunTarget(
+                number,
+                str(issues[number].get("title", "")),
+                None if plan.standalone else len(plan.children),
+            ))
+    return targets
+
+
+def choose_reset_target(
+    github: Any,
+    config: RalphConfig,
+    choose: Callable[[list[ResettableRunTarget], int | None], int],
+    root: pathlib.Path,
+    branch: str | None,
+) -> int | None:
+    """The run target the person at the terminal picks among the resettable run targets, or
+    None when there is none to offer. On the run branch of a listed issue, the picker
+    preselects that issue, and otherwise its first entry. Ctrl-C in the picker cancels."""
+    with spinner("Reading the resettable run targets…"):
+        try:
+            targets = resettable_run_targets(github, config, root)
+        except KeyboardInterrupt:
+            raise ResetCancelled from None
+    if not targets:
+        return None
+    numbers = {target.number for target in targets}
+    preselected = next(
+        (number for number in numbers if branch == f"{RUN_BRANCH_PREFIX}{number}"), None
+    )
+    try:
+        chosen = choose(targets, preselected)
+    except KeyboardInterrupt:
+        raise ResetCancelled from None
+    if chosen not in numbers:
+        raise RalphError(f"#{chosen} is not one of the resettable run targets")
+    return chosen
 
 
 def stale_labels(config: RalphConfig, issue: dict[str, Any], *, run_target: bool) -> list[str]:
@@ -504,6 +665,8 @@ def reset_target(
             raise RalphError(f"GitHub returned the wrong issue for #{number}")
         try:
             plan, failures = inspect(github, config, target, root)
+            if not failures:
+                failures = dirty_worktree(config, plan, root)
         except KeyboardInterrupt:
             raise ResetCancelled from None
     if failures:
@@ -580,28 +743,46 @@ def run(
     *,
     github: Callable[[pathlib.Path, str], Any] = GitHub,
     confirm: Callable[[str], bool] | None = None,
+    choose_run_target: Callable[[list[ResettableRunTarget], int | None], int] | None = None,
+    branch: Callable[[pathlib.Path], str | None] = current_branch,
     repository_root: pathlib.Path | None = None,
     prog: str = "ralph-kit reset",
 ) -> int:
-    """Run `ralph-kit reset`; `confirm` asks a Yes/No question, None without a terminal.
+    """Run `ralph-kit reset`; `confirm` asks a Yes/No question and `choose_run_target` picks
+    among the resettable run targets (by ascending number, preselected number or None), both
+    None without a terminal. Only the picker lets reset start without `ISSUE`; `branch` reads
+    the checked-out branch it preselects from.
 
-    Exits 0 once reset, 1 on a refusal, a declined confirmation or a GitHub error,
-    2 on a usage error, 130 on Ctrl-C.
+    Exits 0 once reset or with no resettable run target, 1 on a refusal, a declined
+    confirmation or a GitHub error, 2 on a usage error, 130 on Ctrl-C.
     """
-    arguments = parse_arguments(argv, prog)
+    arguments = parse_arguments(argv, prog, issue_required=choose_run_target is None)
     root = (repository_root or pathlib.Path.cwd()).resolve()
     config_path = arguments.config if arguments.config.is_absolute() else root / arguments.config
-    rerun = shlex.join([
-        *prog.split(),
-        *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
-        str(arguments.issue),
-    ])
+
+    def rerun_command(issue: int | None) -> str:
+        return shlex.join([
+            *prog.split(),
+            *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
+            *([str(issue)] if issue is not None else []),
+        ])
+
+    rerun = rerun_command(arguments.issue)
     try:
         config = load_config(config_path.resolve(), root, require_review=False)
+        access = github(root, config.repository)
+        issue = arguments.issue
+        if issue is None:
+            assert choose_run_target is not None
+            issue = choose_reset_target(access, config, choose_run_target, root, branch(root))
+            if issue is None:
+                print(f"No run target in {config.repository} is resettable.")
+                return 0
+            rerun = rerun_command(issue)
         reset_target(
-            github(root, config.repository),
+            access,
             config,
-            arguments.issue,
+            issue,
             yes=arguments.yes,
             confirm=confirm,
             rerun=rerun,

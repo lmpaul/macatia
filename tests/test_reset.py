@@ -7,15 +7,17 @@ import io
 import json
 import pathlib
 import re
+import subprocess
 import sys
 import unittest
+from unittest import mock
 
 
 TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent / "src"))
 sys.path.insert(0, str(TESTS))
 
-from ralph_kit import cli, loop_core, reset  # noqa: E402
+from ralph_kit import check, cli, loop_core, reset  # noqa: E402
 from ralph_kit.commands import RalphError  # noqa: E402
 from run_support import (  # noqa: E402
     BRANCH,
@@ -31,7 +33,7 @@ from run_support import (  # noqa: E402
     implementation_evidence,
     start_run,
 )
-from test_close import ScriptedConfirmer  # noqa: E402
+from test_close import ScriptedConfirmer, ScriptedPicker  # noqa: E402
 
 
 PARENT = 69
@@ -67,8 +69,8 @@ class ResetTests(unittest.TestCase):
         self.github.on_branch[verified_head] = merged
         return implementation_evidence(loop_core.STANDARD_RUN, sha(f"implementation-{number}"), verified_head)
 
-    def reset(self, *arguments, confirm=None):
-        """Run `ralph-kit reset`; confirm=None stands for no terminal."""
+    def reset(self, *arguments, confirm=None, choose=None):
+        """Run `ralph-kit reset`; confirm=None and choose=None stand for no terminal."""
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
@@ -76,6 +78,7 @@ class ResetTests(unittest.TestCase):
                     list(arguments),
                     github=lambda _root, _repository: self.github,
                     confirm=confirm,
+                    choose_run_target=choose,
                     repository_root=self.repository.path,
                 )
             except SystemExit as error:  # argparse usage errors.
@@ -627,6 +630,181 @@ class ResetTests(unittest.TestCase):
         self.assert_reset_child(70, "implemented")
         self.assertEqual(len(reset_markers(self.github.comments(70))), 1)
 
+    # The resettable run target picker.
+
+    def add_resettable_and_refused_run_targets(self):
+        """Parent #69 with two children to reset, standalone #80, parent #90 whose only trace
+        is its run branch, and refused run targets around them."""
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71, labels=("human-review",))
+        self.add_child(72, labels=("ready-for-agent",))
+        self.github.add_issue(80, labels=("implemented", "standalone"), comments=[self.evidence(80)])
+        self.github.add_issue(90, labels=("ready-for-agent",))
+        self.github.add_issue(91, parent=90, labels=("ready-for-agent",))
+        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/ralph-kit/issue-90")
+        # Refused: merged, untrusted, closed, without the trace of a run.
+        self.github.add_issue(81, labels=("implemented",), comments=[self.evidence(81, merged=True)])
+        self.github.add_issue(82, labels=("implemented",), author="stranger")
+        self.github.add_issue(83, labels=("implemented",), state="closed")
+        self.github.add_issue(84, labels=("ready-for-agent",))
+        # A run branch whose issue is closed, and a branch named only like a run branch.
+        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/ralph-kit/issue-83")
+        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/ralph-kit/issue-84x")
+
+    def test_without_issue_the_picker_offers_exactly_the_resettable_run_targets(self):
+        self.add_resettable_and_refused_run_targets()
+        picker = ScriptedPicker(KeyboardInterrupt())
+
+        self.reset(choose=picker)
+
+        self.assertEqual(picker.offered, [[
+            f"#{PARENT}  Issue {PARENT}  (parent · 2 children to reset)",
+            "#80  Issue 80  (standalone)",
+            "#90  Issue 90  (parent · 0 children to reset)",
+        ]])
+
+    def test_a_run_target_whose_only_trace_is_a_child_label_or_a_pull_request_is_offered(self):
+        self.add_parent(labels=("ready-for-agent",))
+        self.add_child(70)
+        self.github.add_issue(80, labels=("ready-for-agent",))
+        self.add_pull_request(head="ralph-kit/issue-80", title="Implement Ralph issue #80")
+        picker = ScriptedPicker(KeyboardInterrupt())
+
+        self.reset(choose=picker)
+
+        self.assertEqual(picker.offered, [[
+            f"#{PARENT}  Issue {PARENT}  (parent · 1 children to reset)",
+            "#80  Issue 80  (standalone)",
+        ]])
+
+    def test_the_picked_run_target_resets_as_if_its_number_had_been_passed(self):
+        self.add_resettable_and_refused_run_targets()
+        confirmer = ScriptedConfirmer(True)
+
+        code = self.reset(choose=ScriptedPicker(PARENT), confirm=confirmer)
+
+        self.assertEqual(code, 0, self.stderr)
+        self.assertEqual(confirmer.questions, [f"Reset #{PARENT}?"])
+        self.assert_reset_child(70, "implemented")
+        self.assert_reset_child(71, "human_review")
+        self.assertEqual(self.github.labels(80) & self.lifecycle(), {"implemented"})
+
+    def test_the_picker_preselects_the_checked_out_run_branch_issue_when_it_is_listed(self):
+        self.add_resettable_and_refused_run_targets()
+        for branch, preselected in (
+            ("ralph-kit/issue-80", 80),
+            (RUN_BRANCH, PARENT),
+            ("ralph-kit/issue-8", None),
+            ("ralph-kit/issue-81", None),
+            (BRANCH, None),
+        ):
+            with self.subTest(branch=branch):
+                git(self.repository.path, "switch", "--force-create", branch, BRANCH)
+                picker = ScriptedPicker(KeyboardInterrupt())
+                self.reset(choose=picker)
+                self.assertEqual(picker.preselected, [preselected])
+        git(self.repository.path, "switch", "--detach")
+        picker = ScriptedPicker(KeyboardInterrupt())
+        self.reset(choose=picker)
+        self.assertEqual(picker.preselected, [None])
+
+    def test_without_a_resettable_run_target_reset_says_so_and_exits_0(self):
+        self.github.add_issue(84, labels=("ready-for-agent",))
+        picker = ScriptedPicker(84)
+        before = self.snapshot()
+
+        self.assertEqual(self.reset(choose=picker), 0, self.stderr)
+
+        self.assertEqual(picker.offered, [])
+        self.assertIn("No run target in lmpaul/buyr is resettable.", self.stdout)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_ctrl_c_in_the_picker_writes_nothing_and_exits_130(self):
+        self.add_resettable_and_refused_run_targets()
+        before = self.snapshot()
+
+        self.assertEqual(self.reset(choose=ScriptedPicker(KeyboardInterrupt())), 130)
+
+        self.assertIn("Cancelled. Nothing reset.", self.stderr)
+        self.assertEqual(self.snapshot(), before)
+        self.assertIn("ralph-kit/issue-90", git(self.repository.origin, "branch", "--list", "ralph-kit/*"))
+
+    def test_a_number_outside_the_resettable_run_targets_is_refused(self):
+        self.add_resettable_and_refused_run_targets()
+        before = self.snapshot()
+
+        self.assertEqual(self.reset("--yes", choose=ScriptedPicker(84)), 1)
+
+        self.assertIn("#84 is not one of the resettable run targets", self.stderr)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_remote_run_branches_are_found_with_a_single_remote_listing(self):
+        self.add_resettable_and_refused_run_targets()
+        listings = []
+        run = subprocess.run
+
+        def spy(arguments, *args, **kwargs):
+            if "ls-remote" in arguments:
+                listings.append(arguments)
+            return run(arguments, *args, **kwargs)
+
+        with mock.patch.object(subprocess, "run", spy):
+            self.reset(choose=ScriptedPicker(KeyboardInterrupt()))
+
+        self.assertEqual(len(listings), 1, listings)
+
+    def test_a_rerun_after_a_failure_names_the_picked_run_target(self):
+        self.add_parent()
+        self.add_child(70)
+        self.github.label_edit_error = RalphError("command failed (gh issue edit 70): HTTP 502")
+
+        self.assertEqual(self.reset("--yes", choose=ScriptedPicker(PARENT)), 1)
+
+        self.assertIn(f"Rerun `ralph-kit reset {PARENT}` to finish", self.stderr)
+
+    def test_without_issue_or_the_picker_reset_is_a_usage_error(self):
+        self.add_parent()
+        self.add_child(70)
+
+        self.assertEqual(self.reset("--yes"), 2)
+
+        self.assertIn("pass the issue to reset", self.stderr)
+
+    def test_an_explicit_issue_never_opens_the_picker(self):
+        self.add_resettable_and_refused_run_targets()
+        picker = ScriptedPicker(80)
+
+        self.assertEqual(self.reset("--yes", str(PARENT), choose=picker), 0, self.stderr)
+
+        self.assertEqual(picker.offered, [])
+
+    def test_the_command_line_passes_the_arrow_key_picker_only_at_a_terminal(self):
+        for stdin_tty, stdout_tty, expected in (
+            (True, True, cli.reset_target_with_arrows),
+            (False, True, None),
+            (True, False, None),
+        ):
+            with (
+                self.subTest(stdin_tty=stdin_tty, stdout_tty=stdout_tty),
+                mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
+                mock.patch.object(sys.stdout, "isatty", return_value=stdout_tty),
+                mock.patch.object(reset, "run", return_value=0) as run,
+                mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
+            ):
+                self.assertEqual(cli.main(["reset"]), 0)
+                self.assertIs(run.call_args.kwargs["choose_run_target"], expected)
+
+    def test_the_arrow_key_picker_asks_which_run_target_to_reset(self):
+        targets = [reset.ResettableRunTarget(12, "Add a cart", 3), reset.ResettableRunTarget(20, "Fix login", None)]
+        with mock.patch.object(check, "arrow_select", return_value="#20  Fix login  (standalone)") as select:
+            self.assertEqual(cli.reset_target_with_arrows(targets, 20), 20)
+        select.assert_called_once_with(
+            "Which run target should Ralph reset?",
+            [("#12  Add a cart  (parent · 3 children to reset)", ""), ("#20  Fix login  (standalone)", "")],
+            "#20  Fix login  (standalone)",
+        )
+
     def test_usage_errors_exit_2(self):
         self.assertEqual(self.reset(), 2)
         self.assertEqual(self.reset("not-a-number"), 2)
@@ -636,7 +814,7 @@ class ResetTests(unittest.TestCase):
         stdout = io.StringIO()
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(cli.main(["--help"]), 0)
-        self.assertIn("reset [--yes] [--config PATH] ISSUE", stdout.getvalue())
+        self.assertIn("reset [--yes] [--config PATH] [ISSUE]", stdout.getvalue())
         with (
             contextlib.redirect_stdout(io.StringIO()),
             contextlib.redirect_stderr(io.StringIO()),

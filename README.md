@@ -45,6 +45,7 @@ ralph-kit close                # at a terminal, pick among the closable run targ
 ralph-kit close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
 ralph-kit close --yes 123      # same, without the confirmation
 ralph-kit close --force 123    # close despite failed checks, after typing 123
+ralph-kit reset                # at a terminal, pick among the resettable run targets
 ralph-kit reset 123            # reset: make #123 and its children ready for an agent again (asks first)
 ralph-kit reset --yes 123      # same, without the confirmation
 ```
@@ -950,6 +951,16 @@ only the recap's head SHA and your reflog can then recover. It asks
 `Reset #N?` (No by default); `--yes` skips it, and without a terminal `reset`
 needs `--yes`. Declining or Ctrl-C writes nothing.
 
+Without `ISSUE`, at a terminal, `reset` offers the resettable run targets by
+ascending number, each named as a parent with its count of children to reset
+or as a standalone issue: the open issues the checks above accept. It finds
+them with one listing of the remote's `ralph-kit/issue-` heads, one of the open
+cumulative draft PRs, and the open issues' labels, then inspects each candidate
+as a reset of it would. On the run branch of a listed issue
+(`ralph-kit/issue-<N>`), the picker preselects it. With no resettable run
+target, `reset` says so, naming the repository, and exits 0; Ctrl-C in the
+picker resets nothing and exits 130. Without a terminal, the issue is required.
+
 The reset first closes each of those pull requests with a comment saying a reset
 closed it, then deletes `ralph-kit/issue-<N>` on the configured remote, then in
 the checkout, switching to the base branch first when it is checked out; no
@@ -971,7 +982,7 @@ pull requests already closed, branches already deleted, and markers and labels
 already written are skipped, and the recap still lists the children the first
 attempt reset, and the pull request it closed from `ralph-kit/issue-<N>` with
 the branch it deleted, which a hidden marker in the closing comment records.
-Exit codes are those of `close`: 0 once reset; 1 for a refusal, a declined
+Exit codes are those of `close`: 0 once reset or with no resettable run target; 1 for a refusal, a declined
 confirmation or a GitHub or Git error; 2 for a usage error; 130 for Ctrl-C.
 
 ## Readiness check
