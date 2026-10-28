@@ -8,7 +8,7 @@ import os
 import pathlib
 import shlex
 import sys
-from typing import NoReturn
+from typing import NamedTuple, NoReturn
 
 
 QUESTION = "Where should this run continue?"
@@ -22,22 +22,31 @@ class Continuation(enum.Enum):
     STOP = "stop"
 
 
-def continuation_choices(name: str) -> list[tuple[Continuation, str, str]]:
-    """Each answer to the continuation choice with its label and description, the default first."""
+class ContinuationChoice(NamedTuple):
+    answer: Continuation
+    label: str
+    description: str
+
+
+def continuation_choices(name: str) -> list[ContinuationChoice]:
+    """The choices of the continuation choice offering persistent terminal `name`, the
+    default first."""
     return [
-        (
+        ContinuationChoice(
             Continuation.RESTART,
             f"Restart in {name}",
             "the run restarts in a persistent terminal and attaches to it",
         ),
-        (Continuation.CONTINUE_HERE, "Continue here", "the run continues in this terminal"),
-        (Continuation.STOP, "Stop", "the run stops with nothing changed"),
+        ContinuationChoice(
+            Continuation.CONTINUE_HERE, "Continue here", "the run continues in this terminal"
+        ),
+        ContinuationChoice(Continuation.STOP, "Stop", "the run stops with nothing changed"),
     ]
 
 
-def session_name(repository: str, run_target: int) -> str:
-    """The persistent terminal of `run_target` in the GitHub `repository` (owner/name); tmux
-    reads `.` and `:` in a session name as separators."""
+def persistent_terminal_name(repository: str, run_target: int) -> str:
+    """The name of the persistent terminal of `run_target` in the GitHub `repository`
+    (owner/name); tmux reads `.` and `:` in a session name as separators."""
     name = f"ralph-kit-{repository.split('/', 1)[-1]}-{run_target}"
     return name.replace(".", "_").replace(":", "_")
 

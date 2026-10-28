@@ -818,7 +818,7 @@ class ScriptedContinuation:
     """Answers the continuation choice as the person at the terminal would.
 
     `answer` is a `Continuation`, or an exception the prompt raises. `asked` keeps the
-    session name offered each time; `before_answer`, when set, is called as it is asked.
+    persistent terminal name offered each time; `before_answer`, when set, is called as it is asked.
     """
 
     def __init__(self, answer):

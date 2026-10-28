@@ -12,15 +12,17 @@ sys.path.insert(0, str(KIT_ROOT / "src"))
 from ralph_kit import persistent_terminal
 
 
-class SessionNameTests(unittest.TestCase):
+class PersistentTerminalNameTests(unittest.TestCase):
     def test_names_the_repository_and_the_run_target(self):
         self.assertEqual(
-            persistent_terminal.session_name("lmpaul/ralph-kit", 129), "ralph-kit-ralph-kit-129"
+            persistent_terminal.persistent_terminal_name("lmpaul/ralph-kit", 129),
+            "ralph-kit-ralph-kit-129",
         )
 
     def test_dots_and_colons_become_underscores(self):
         self.assertEqual(
-            persistent_terminal.session_name("someone/my.app:v2", 7), "ralph-kit-my_app_v2-7"
+            persistent_terminal.persistent_terminal_name("someone/my.app:v2", 7),
+            "ralph-kit-my_app_v2-7",
         )
 
 

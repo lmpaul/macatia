@@ -5152,7 +5152,7 @@ class RunTargetPickerTests(RunLevelTestCase):
                     self.assertIn(f"Ralph stopped: {reason}", result.stderr)
 
 
-SESSION = f"ralph-kit-buyr-{PARENT}"
+PERSISTENT_TERMINAL = f"ralph-kit-buyr-{PARENT}"
 
 
 class PersistentTerminalTests(BaseBranchTestCase):
@@ -5173,7 +5173,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(SESSION, command, self.repository.path.resolve(), sleep_lock_held=False)],
+            [Restart(PERSISTENT_TERMINAL, command, self.repository.path.resolve(), sleep_lock_held=False)],
         )
         self.assertEqual(self.sessions.requests, [])
         self.assertEqual(self.github.comments(PARENT), [])
@@ -5214,7 +5214,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
                 result = self.start_with(*arguments, continuation=continuation, confirm=confirm)
 
                 self.assert_restarted(result, command)
-                self.assertEqual(continuation.asked, [SESSION])
+                self.assertEqual(continuation.asked, [PERSISTENT_TERMINAL])
                 self.assertEqual(confirm.questions, [])
 
     def test_restart_keeps_the_configuration_given_by_config(self):
@@ -5265,7 +5265,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
         )
 
         self.assert_completed(result, sessions=1)
-        self.assertEqual(continuation.asked, [SESSION])
+        self.assertEqual(continuation.asked, [PERSISTENT_TERMINAL])
         self.assertEqual(confirm.questions, [f"Create {RUN_BRANCH} from an up-to-date main?"])
         self.assertEqual(result.persistent_terminal.restarts, [])
         self.assertEqual(self.current_branch(), RUN_BRANCH)
@@ -5291,7 +5291,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
                     "--tmux", PARENT, continuation=ScriptedContinuation(answer), confirm=confirm,
                 )
 
-                self.assert_nothing_changed(result, f"Ralph stopped: {SESSION} was not started")
+                self.assert_nothing_changed(result, f"Ralph stopped: {PERSISTENT_TERMINAL} was not started")
                 self.assertEqual(result.exit_code, 1)
                 self.assertEqual(confirm.questions, [])
                 self.assertEqual(result.persistent_terminal.restarts, [])
@@ -5306,7 +5306,33 @@ class PersistentTerminalTests(BaseBranchTestCase):
         self.assertEqual(continuation.asked, [])
         self.assertEqual(result.persistent_terminal.restarts, [])
 
-    def test_without_a_run_target_the_picked_one_names_the_session_and_is_restarted(self):
+    def test_refused_standalone_issue_stops_before_the_question(self):
+        self.github.children.clear()
+        self.github.edit_issue_labels(PARENT, add="needs-info", remove=["ready-for-agent"])
+        continuation = ScriptedContinuation(Continuation.RESTART)
+
+        result = self.start_with("--tmux", PARENT, continuation=continuation)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("is not ready for an agent: labelled needs-info", result.stderr)
+        self.assertEqual(continuation.asked, [])
+        self.assertEqual(result.persistent_terminal.restarts, [])
+
+    def test_standalone_issue_restarts_once_its_startup_checks_pass(self):
+        self.github.children.clear()
+
+        result = self.start_with(
+            "--tmux", PARENT, continuation=ScriptedContinuation(Continuation.RESTART),
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            [restart.name for restart in result.persistent_terminal.restarts],
+            [PERSISTENT_TERMINAL],
+        )
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+
+    def test_without_a_run_target_the_picked_one_names_the_persistent_terminal_and_restarts(self):
         self.github.add_issue(200)
         continuation = ScriptedContinuation(Continuation.RESTART)
         choose = ScriptedChoice(PARENT)

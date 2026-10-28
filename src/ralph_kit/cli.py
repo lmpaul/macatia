@@ -27,7 +27,8 @@ commands:
       --no-caffeinate lets the machine sleep, even when caffeinate_by_default = true in the configuration.
       --tmux asks, once the run target passes its startup checks, where the run continues:
       Restart in ralph-kit-<repository name>-<run target> (the default) restarts the run in that
-      tmux session and attaches to it; Continue here runs in this terminal; Stop changes nothing.
+      persistent terminal (tmux) and attaches to it; Continue here runs in this terminal;
+      Stop changes nothing.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
       --review also checks the review role, as review_by_default = true does.
@@ -143,9 +144,9 @@ def continuation_with_arrows(name: str) -> Continuation:
     from .persistent_terminal import QUESTION, continuation_choices
 
     choices = continuation_choices(name)
-    answers = {label: continuation for continuation, label, _ in choices}
+    answers = {choice.label: choice.answer for choice in choices}
     picked = arrow_select(
-        QUESTION, [(label, description) for _, label, description in choices], choices[0][1]
+        QUESTION, [(choice.label, choice.description) for choice in choices], choices[0].label
     )
     return answers[picked]
 

@@ -53,7 +53,11 @@ from .config import (
 )
 from .github import GitHub, MergedPullRequest
 from .keep_awake import keep_awake
-from .persistent_terminal import Continuation, PersistentTerminal, session_name
+from .persistent_terminal import (
+    Continuation,
+    PersistentTerminal,
+    persistent_terminal_name,
+)
 from .progress import Countdown, Elapsed, duration_text, spinner
 from .sanitize import (
     format_findings,
@@ -434,7 +438,7 @@ class RunAdapters:
     keep_awake: Callable[[], contextlib.AbstractContextManager[None]] = keep_awake
     # Restarts the run in a persistent terminal for `--tmux`.
     persistent_terminal: PersistentTerminal = field(default_factory=PersistentTerminal)
-    # Asks where a `--tmux` run continues: (session name) -> the answer. Ctrl-C raises
+    # Asks where a `--tmux` run continues: (persistent terminal name) -> the answer. Ctrl-C raises
     # KeyboardInterrupt, which the run counts as Stop. None when Ralph is not in a terminal.
     choose_continuation: Callable[[str], Continuation] | None = None
 
@@ -1359,12 +1363,12 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
     return run_branch
 
 
-def continue_here(state: RunState, parent_issue: int) -> bool:
-    """Ask where the run continues: True to continue in this terminal. Restart releases the
-    sleep lock, then restarts the run in the persistent terminal of `parent_issue`, which
-    does everything from scratch, and returns False once the adapter returns, which only a
-    fake does. Stop and Ctrl-C stop with nothing changed."""
-    name = session_name(state.config.repository, parent_issue)
+def ask_where_to_continue(state: RunState, parent_issue: int) -> bool:
+    """Ask where the run continues: True to continue in this terminal. Restart releases what
+    startup holds until the end, then restarts the run in the persistent terminal of
+    `parent_issue`, which does everything from scratch, and returns False once the adapter
+    returns, which only a fake does. Stop and Ctrl-C stop with nothing changed."""
+    name = persistent_terminal_name(state.config.repository, parent_issue)
     choose = state.adapters.choose_continuation
     if choose is None:
         raise RalphError("--tmux needs a terminal: run in a terminal, or without --tmux")
@@ -1377,7 +1381,7 @@ def continue_here(state: RunState, parent_issue: int) -> bool:
     if continuation is Continuation.CONTINUE_HERE:
         return True
     assert state.rerun_command is not None
-    # Replacing the process keeps its PID, which a held sleep lock would outlive the run on.
+    # Replacing the process keeps its PID: a held sleep lock would last while attached.
     state.held_until_the_end.close()
     print(f"🔁 Restarting the run in {name}.", flush=True)
     state.adapters.persistent_terminal.restart(name, state.rerun_command, state.repository_root)
@@ -3300,7 +3304,7 @@ def run_children(
         else:
             state.standalone = True
             require_startable_standalone(state, issue)
-    if state.offer_persistent_terminal and not continue_here(state, parent_issue):
+    if state.offer_persistent_terminal and not ask_where_to_continue(state, parent_issue):
         return 0
     if state.branch == state.config.base_branch:
         state.branch = offer_run_branch(state, parent_issue)
