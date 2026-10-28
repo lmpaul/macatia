@@ -53,6 +53,7 @@ from .config import (
 )
 from .github import GitHub, MergedPullRequest
 from .keep_awake import keep_awake
+from .persistent_terminal import Continuation, PersistentTerminal, session_name
 from .progress import Countdown, Elapsed, duration_text, spinner
 from .sanitize import (
     format_findings,
@@ -431,6 +432,11 @@ class RunAdapters:
     # Holds the sleep lock for the duration of the block, for `--caffeinate` or
     # `caffeinate_by_default`.
     keep_awake: Callable[[], contextlib.AbstractContextManager[None]] = keep_awake
+    # Restarts the run in a persistent terminal for `--tmux`.
+    persistent_terminal: PersistentTerminal = field(default_factory=PersistentTerminal)
+    # Asks where a `--tmux` run continues: (session name) -> the answer. Ctrl-C raises
+    # KeyboardInterrupt, which the run counts as Stop. None when Ralph is not in a terminal.
+    choose_continuation: Callable[[str], Continuation] | None = None
 
 
 @dataclass
@@ -453,6 +459,8 @@ class RunState:
     branch: str | None = None
     # How to start this run again, for the next action of a stopped run.
     rerun_command: str | None = None
+    # Whether `--tmux` asked to offer a persistent terminal once the run target is accepted.
+    offer_persistent_terminal: bool = False
     # Whether the run target is a standalone issue, the run's only child; set by the
     # startup checks.
     standalone: bool = False
@@ -1160,11 +1168,13 @@ def parse_arguments(
 ) -> argparse.Namespace:
     """Read the run's arguments; `--review` and `--no-review`, accepted in any position, are
     `review` and `no_review`, and together a usage error. So are `--caffeinate` and
-    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`. Without the run target
-    `ISSUE`, `parent_issue` is None, a usage error when `issue_required`."""
+    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`. `--tmux`, in any position too,
+    is `tmux`. Without the run target `ISSUE`, `parent_issue` is None, a usage error when
+    `issue_required`."""
     flags = [flag for flag in ("--review", "--no-review") if flag in argv]
     sleep_lock_flags = [flag for flag in ("--caffeinate", "--no-caffeinate") if flag in argv]
-    read = {*flags, *sleep_lock_flags}
+    tmux = "--tmux" in argv
+    read = {*flags, *sleep_lock_flags, "--tmux"}
     argv = [argument for argument in argv if argument not in read]
     parser = argparse.ArgumentParser(
         prog=None if prog is None else " ".join([prog, *flags]),
@@ -1189,6 +1199,7 @@ def parse_arguments(
             no_review="--no-review" in flags,
             caffeinate="--caffeinate" in sleep_lock_flags,
             no_caffeinate="--no-caffeinate" in sleep_lock_flags,
+            tmux=tmux,
         ),
     )
     if arguments.parent_issue is None and issue_required:
@@ -1346,6 +1357,31 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
                 f"could not push {run_branch} to {remote}; the local branch is kept: {error}"
             ) from error
     return run_branch
+
+
+def continue_here(state: RunState, parent_issue: int) -> bool:
+    """Ask where the run continues: True to continue in this terminal. Restart releases the
+    sleep lock, then restarts the run in the persistent terminal of `parent_issue`, which
+    does everything from scratch, and returns False once the adapter returns, which only a
+    fake does. Stop and Ctrl-C stop with nothing changed."""
+    name = session_name(state.config.repository, parent_issue)
+    choose = state.adapters.choose_continuation
+    if choose is None:
+        raise RalphError("--tmux needs a terminal: run in a terminal, or without --tmux")
+    try:
+        continuation = choose(name)
+    except KeyboardInterrupt:
+        continuation = Continuation.STOP
+    if continuation is Continuation.STOP:
+        raise RalphError(f"{name} was not started")
+    if continuation is Continuation.CONTINUE_HERE:
+        return True
+    assert state.rerun_command is not None
+    # Replacing the process keeps its PID, which a held sleep lock would outlive the run on.
+    state.held_until_the_end.close()
+    print(f"🔁 Restarting the run in {name}.", flush=True)
+    state.adapters.persistent_terminal.restart(name, state.rerun_command, state.repository_root)
+    return False
 
 
 def switch_to_run_branch(
@@ -3087,14 +3123,17 @@ def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
 def real_run_adapters(
     confirm: Callable[..., bool] | None = None,
     choose_run_target: Callable[[list[StartableRunTarget], int | None], int] | None = None,
+    choose_continuation: Callable[[str], Continuation] | None = None,
 ) -> RunAdapters:
-    """The run adapters `ralph-kit run` uses: the `gh` CLI, the real child cycle adapters, and
-    the command line's confirm and run target picker, None outside a terminal."""
+    """The run adapters `ralph-kit run` uses: the `gh` CLI, the real child cycle adapters,
+    tmux, and the command line's confirm, run target picker and continuation choice, None
+    outside a terminal."""
     return RunAdapters(
         github=GitHub,
         child_cycle=real_child_cycle_adapters,
         confirm=confirm,
         choose_run_target=choose_run_target,
+        choose_continuation=choose_continuation,
     )
 
 
@@ -3109,6 +3148,7 @@ def main(
         issue_required=state.adapters.choose_run_target is None,
     )
     state.rerun_command = rerun_command(arguments, arguments.parent_issue)
+    state.offer_persistent_terminal = arguments.tmux
     require_repository_root(state)
     config_path = arguments.config
     if not config_path.is_absolute():
@@ -3167,7 +3207,8 @@ def main(
 
 
 def rerun_command(arguments: argparse.Namespace, parent_issue: int | None) -> str:
-    """How to start the run again on `parent_issue`."""
+    """How to start the run again on `parent_issue`; never with `--tmux`, which a run
+    restarted or stopped in a persistent terminal does not need."""
     return shlex.join([
         "ralph-kit",
         "run",
@@ -3259,6 +3300,8 @@ def run_children(
         else:
             state.standalone = True
             require_startable_standalone(state, issue)
+    if state.offer_persistent_terminal and not continue_here(state, parent_issue):
+        return 0
     if state.branch == state.config.base_branch:
         state.branch = offer_run_branch(state, parent_issue)
     branch = state.branch

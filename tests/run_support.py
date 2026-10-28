@@ -792,6 +792,49 @@ class FakeSleepLock:
         self.held_during_sessions.append(self.held)
 
 
+@dataclass(frozen=True)
+class Restart:
+    """A restart the run asked of the persistent terminal, and whether it still held the
+    sleep lock then."""
+
+    name: str
+    command: str
+    directory: pathlib.Path
+    sleep_lock_held: bool
+
+
+class FakePersistentTerminal:
+    """Stands in for tmux: records each restart instead of replacing the process."""
+
+    def __init__(self, sleep_lock):
+        self.sleep_lock = sleep_lock
+        self.restarts = []
+
+    def restart(self, name, command, directory):
+        self.restarts.append(Restart(name, command, directory, self.sleep_lock.held))
+
+
+class ScriptedContinuation:
+    """Answers the continuation choice as the person at the terminal would.
+
+    `answer` is a `Continuation`, or an exception the prompt raises. `asked` keeps the
+    session name offered each time; `before_answer`, when set, is called as it is asked.
+    """
+
+    def __init__(self, answer):
+        self.answer = answer
+        self.asked = []
+        self.before_answer = None
+
+    def __call__(self, name):
+        self.asked.append(name)
+        if self.before_answer is not None:
+            self.before_answer()
+        if isinstance(self.answer, BaseException):
+            raise self.answer
+        return self.answer
+
+
 class TerminalOutput(io.StringIO):
     """Output that says it is a terminal."""
 
@@ -808,6 +851,7 @@ class RunResult:
     # the run's clock advances by them instead.
     sleeps: list[float]
     sleep_lock: FakeSleepLock
+    persistent_terminal: FakePersistentTerminal
 
 
 def start_mode_run(mode, repository, github, sessions, *arguments, **options):
@@ -818,13 +862,14 @@ def start_mode_run(mode, repository, github, sessions, *arguments, **options):
 
 def start_run(
     repository, github, sessions, *arguments, cwd=None, confirm=None, choose_run_target=None,
-    terminal=False,
+    choose_continuation=None, terminal=False,
 ):
     """Start one run from its command-line `arguments`, with in-memory GitHub and sessions,
     from `cwd` or the repository root.
 
-    `confirm` answers the run's startup question, and `choose_run_target` picks among
-    the startable run targets, as a terminal would; None runs without a terminal. `terminal` makes the output a terminal, which gets the spinners.
+    `confirm` answers the run's startup question, `choose_run_target` picks among the
+    startable run targets, and `choose_continuation` answers the continuation choice,
+    as a terminal would; None runs without a terminal. `terminal` makes the output a terminal, which gets the spinners.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
@@ -836,6 +881,7 @@ def start_run(
         return github
 
     sleep_lock = FakeSleepLock()
+    persistent_terminal = FakePersistentTerminal(sleep_lock)
 
     def child_cycle_adapters(context):
         def run_session(request):
@@ -862,6 +908,8 @@ def start_run(
             confirm=confirm,
             choose_run_target=choose_run_target,
             keep_awake=sleep_lock,
+            persistent_terminal=persistent_terminal,
+            choose_continuation=choose_continuation,
         )
     else:
         adapters = loop_core.RunAdapters(
@@ -872,6 +920,8 @@ def start_run(
             confirm=confirm,
             choose_run_target=choose_run_target,
             keep_awake=sleep_lock,
+            persistent_terminal=persistent_terminal,
+            choose_continuation=choose_continuation,
         )
     output = TerminalOutput if terminal else io.StringIO
     stdout, stderr = output(), output()
@@ -884,4 +934,6 @@ def start_run(
             exit_code = loop_core.run(adapters, [str(argument) for argument in arguments])
         except SystemExit as usage_error:
             exit_code = usage_error.code
-    return RunResult(exit_code, stdout.getvalue(), stderr.getvalue(), sleeps, sleep_lock)
+    return RunResult(
+        exit_code, stdout.getvalue(), stderr.getvalue(), sleeps, sleep_lock, persistent_terminal
+    )

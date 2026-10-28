@@ -11,12 +11,13 @@ from typing import TYPE_CHECKING
 if TYPE_CHECKING:
     from .close import ClosableRunTarget
     from .loop_core import StartableRunTarget
+    from .persistent_terminal import Continuation
 
 
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] [ISSUE]
+  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--tmux] [--config PATH] [ISSUE]
       Standard run: implement the children of a parent ISSUE, or a standalone ISSUE,
       giving each child at most 5 agent sessions (9 in a reviewed run).
       Without ISSUE, at a terminal, offers the startable run targets to choose from.
@@ -24,6 +25,9 @@ commands:
       --no-review starts a standard run, even when review_by_default = true in the configuration.
       --caffeinate keeps the machine from idle-sleeping until the run ends.
       --no-caffeinate lets the machine sleep, even when caffeinate_by_default = true in the configuration.
+      --tmux asks, once the run target passes its startup checks, where the run continues:
+      Restart in ralph-kit-<repository name>-<run target> (the default) restarts the run in that
+      tmux session and attaches to it; Continue here runs in this terminal; Stop changes nothing.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
       --review also checks the review role, as review_by_default = true does.
@@ -132,6 +136,20 @@ def close_target_with_arrows(targets: list[ClosableRunTarget], preselected: int 
     return pick_run_target_with_arrows("Which run target should Ralph close?", targets, preselected)
 
 
+def continuation_with_arrows(name: str) -> Continuation:
+    """Where a `--tmux` run continues, Restart in `name` by default; Ctrl-C raises
+    KeyboardInterrupt, which the run counts as Stop."""
+    from .check import arrow_select
+    from .persistent_terminal import QUESTION, continuation_choices
+
+    choices = continuation_choices(name)
+    answers = {label: continuation for continuation, label, _ in choices}
+    picked = arrow_select(
+        QUESTION, [(label, description) for _, label, description in choices], choices[0][1]
+    )
+    return answers[picked]
+
+
 def yes_no_with_arrows(question: str) -> bool:
     """No (the default) or Yes; Ctrl-C raises KeyboardInterrupt."""
     from .check import arrow_select
@@ -165,6 +183,7 @@ def main(argv: list[str] | None = None) -> int:
             prog="ralph-kit run",
             confirm=startup_choice_with_arrows if terminal else None,
             choose_run_target=run_target_with_arrows if terminal else None,
+            choose_continuation=continuation_with_arrows if terminal else None,
         )
     if command == "check":
         from . import check

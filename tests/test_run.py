@@ -20,6 +20,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from ralph_kit import check, cli, loop, loop_core
 from ralph_kit.commands import RalphError
+from ralph_kit.persistent_terminal import Continuation
 from run_support import (
     BRANCH,
     REPOSITORY,
@@ -27,8 +28,10 @@ from run_support import (
     CommitPull,
     EngineResult,
     FakeGitHub,
+    Restart,
     RunInterrupted,
     RunRepository,
+    ScriptedContinuation,
     ScriptedEngine,
     ScriptedResult,
     ScriptedSessions,
@@ -1164,10 +1167,12 @@ class RunUsageCommandLineTests(unittest.TestCase):
         with contextlib.redirect_stdout(stdout):
             self.assertEqual(cli.main(["--help"]), 0)
         self.assertIn(
-            "run [--review | --no-review] [--caffeinate | --no-caffeinate] [--config PATH] "
-            "[ISSUE]\n",
+            "run [--review | --no-review] [--caffeinate | --no-caffeinate] [--tmux] "
+            "[--config PATH] [ISSUE]\n",
             stdout.getvalue(),
         )
+        self.assertIn("--tmux asks", stdout.getvalue())
+        self.assertIn("ralph-kit-<repository name>-<run target>", stdout.getvalue())
         self.assertNotIn("budget", stdout.getvalue().lower())
         self.assertIn(
             "Without ISSUE, at a terminal, offers the startable run targets to choose from.\n",
@@ -1203,21 +1208,26 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
             mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
         ):
             self.assertEqual(cli.main(["run", *(["--review"] if review else []), "5"]), 0)
-        return run.call_args.kwargs["confirm"], run.call_args.kwargs["choose_run_target"]
+        kwargs = run.call_args.kwargs
+        return kwargs["confirm"], kwargs["choose_run_target"], kwargs["choose_continuation"]
 
     def test_both_terminals_get_the_arrow_key_selector(self):
         for review in (False, True):
             with self.subTest(review=review):
                 self.assertEqual(
                     self.adapters_passed(stdin_tty=True, stdout_tty=True, review=review),
-                    (cli.startup_choice_with_arrows, cli.run_target_with_arrows),
+                    (
+                        cli.startup_choice_with_arrows, cli.run_target_with_arrows,
+                        cli.continuation_with_arrows,
+                    ),
                 )
 
     def test_without_both_terminals_there_is_no_selector(self):
         for stdin_tty, stdout_tty in ((False, True), (True, False), (False, False)):
             with self.subTest(stdin_tty=stdin_tty, stdout_tty=stdout_tty):
                 self.assertEqual(
-                    self.adapters_passed(stdin_tty=stdin_tty, stdout_tty=stdout_tty), (None, None)
+                    self.adapters_passed(stdin_tty=stdin_tty, stdout_tty=stdout_tty),
+                    (None, None, None),
                 )
 
     def test_run_target_selector_offers_the_entries_and_returns_the_picked_number(self):
@@ -1248,6 +1258,36 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
             self.assertRaises(KeyboardInterrupt),
         ):
             cli.run_target_with_arrows(targets, None)
+
+    def test_continuation_selector_offers_restart_by_default_with_descriptions(self):
+        name = "ralph-kit-buyr-5"
+        for choice, continuation in (
+            (f"Restart in {name}", Continuation.RESTART),
+            ("Continue here", Continuation.CONTINUE_HERE),
+            ("Stop", Continuation.STOP),
+        ):
+            with (
+                self.subTest(choice=choice),
+                mock.patch.object(check, "arrow_select", return_value=choice) as select,
+            ):
+                self.assertIs(cli.continuation_with_arrows(name), continuation)
+                select.assert_called_once_with(
+                    "Where should this run continue?",
+                    [
+                        (f"Restart in {name}",
+                         "the run restarts in a persistent terminal and attaches to it"),
+                        ("Continue here", "the run continues in this terminal"),
+                        ("Stop", "the run stops with nothing changed"),
+                    ],
+                    f"Restart in {name}",
+                )
+
+    def test_ctrl_c_in_the_continuation_selector_reaches_the_run(self):
+        with (
+            mock.patch.object(check, "arrow_select", side_effect=KeyboardInterrupt),
+            self.assertRaises(KeyboardInterrupt),
+        ):
+            cli.continuation_with_arrows("ralph-kit-buyr-5")
 
     def test_selector_offers_stop_by_default_and_resumes_only_on_resume(self):
         for choice, resume in (("Stop", False), ("Resume", True)):
@@ -5110,6 +5150,181 @@ class RunTargetPickerTests(RunLevelTestCase):
                 else:
                     self.assertEqual(result.exit_code, 1)
                     self.assertIn(f"Ralph stopped: {reason}", result.stderr)
+
+
+SESSION = f"ralph-kit-buyr-{PARENT}"
+
+
+class PersistentTerminalTests(BaseBranchTestCase):
+    """`--tmux` offers to restart the run in a persistent terminal once the run target's
+    startup checks pass, before the run branch offer."""
+
+    def start_with(self, *arguments, continuation, confirm=None, choose=None, results=()):
+        self.sessions = ScriptedSessions(self.repository, *results)
+        return start_run(
+            self.repository, self.github, self.sessions, *arguments,
+            confirm=confirm, choose_run_target=choose, choose_continuation=continuation,
+            terminal=True,
+        )
+
+    def assert_restarted(self, result, command):
+        """The run asked once to restart as `command` in the repository root, with the sleep
+        lock released, and changed nothing itself."""
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(SESSION, command, self.repository.path.resolve(), sleep_lock_held=False)],
+        )
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(self.github.comments(PARENT), [])
+        self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assertNotIn("final outcome", result.stdout + result.stderr)
+        self.assertEqual(self.current_branch(), "main")
+        self.assertNotIn(RUN_BRANCH, self.local_branches())
+
+    def test_without_the_flag_there_is_no_question_and_no_restart(self):
+        continuation = ScriptedContinuation(Continuation.RESTART)
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with(
+            PARENT, continuation=continuation, confirm=confirm,
+            results=[ScriptedResult("committed")],
+        )
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(continuation.asked, [])
+        self.assertEqual(result.persistent_terminal.restarts, [])
+        self.assertEqual(len(confirm.questions), 1)
+
+    def test_restart_restarts_the_run_with_its_flags_but_tmux_in_any_position(self):
+        for arguments, command in (
+            (("--tmux", PARENT), f"ralph-kit run {PARENT}"),
+            ((PARENT, "--tmux"), f"ralph-kit run {PARENT}"),
+            (("--review", "--tmux", "--caffeinate", PARENT),
+             f"ralph-kit run --review --caffeinate {PARENT}"),
+            ((PARENT, "--no-review", "--no-caffeinate", "--tmux"),
+             f"ralph-kit run --no-review --no-caffeinate {PARENT}"),
+        ):
+            with self.subTest(arguments=arguments):
+                self.setUp()
+                continuation = ScriptedContinuation(Continuation.RESTART)
+                confirm = ScriptedConfirm(CREATE)
+
+                result = self.start_with(*arguments, continuation=continuation, confirm=confirm)
+
+                self.assert_restarted(result, command)
+                self.assertEqual(continuation.asked, [SESSION])
+                self.assertEqual(confirm.questions, [])
+
+    def test_restart_keeps_the_configuration_given_by_config(self):
+        (self.repository.path / "config").mkdir()
+        git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
+        git(self.repository.path, "commit", "-m", "Move the Ralph configuration")
+        self.base_head = self.repository.head()
+
+        result = self.start_with(
+            "--config", "config/ralph.toml", "--tmux", PARENT,
+            continuation=ScriptedContinuation(Continuation.RESTART),
+        )
+
+        self.assert_restarted(result, f"ralph-kit run --config config/ralph.toml {PARENT}")
+
+    def test_restart_releases_the_sleep_lock_first(self):
+        result = self.start_with(
+            "--tmux", "--caffeinate", PARENT,
+            continuation=ScriptedContinuation(Continuation.RESTART),
+        )
+
+        self.assert_restarted(result, f"ralph-kit run --caffeinate {PARENT}")
+        self.assertEqual(result.sleep_lock.taken, 1)
+
+    def test_the_question_comes_after_the_startup_checks_and_before_the_run_branch_offer(self):
+        continuation = ScriptedContinuation(Continuation.CONTINUE_HERE)
+        confirm = ScriptedConfirm(CREATE)
+        seen_at_question = []
+        continuation.before_answer = lambda: seen_at_question.append(
+            (list(confirm.questions), self.github.labels(PARENT), self.current_branch())
+        )
+
+        result = self.start_with(
+            "--tmux", PARENT, continuation=continuation, confirm=confirm,
+            results=[ScriptedResult("committed")],
+        )
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(seen_at_question, [([], {"ready-for-agent"}, "main")])
+
+    def test_continue_here_runs_as_without_the_flag(self):
+        continuation = ScriptedContinuation(Continuation.CONTINUE_HERE)
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with(
+            PARENT, "--tmux", continuation=continuation, confirm=confirm,
+            results=[ScriptedResult("committed")],
+        )
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(continuation.asked, [SESSION])
+        self.assertEqual(confirm.questions, [f"Create {RUN_BRANCH} from an up-to-date main?"])
+        self.assertEqual(result.persistent_terminal.restarts, [])
+        self.assertEqual(self.current_branch(), RUN_BRANCH)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_rerun_command_of_a_run_continued_here_leaves_out_the_flag(self):
+        result = self.start_with(
+            "--tmux", PARENT, "--caffeinate",
+            continuation=ScriptedContinuation(Continuation.CONTINUE_HERE),
+            confirm=ScriptedConfirm(CREATE), results=[ScriptedResult("blocked", "Stuck.")],
+        )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(f"run `ralph-kit run --caffeinate {PARENT}` again", result.stderr)
+        self.assertNotIn("--tmux", result.stderr)
+
+    def test_stop_and_ctrl_c_change_nothing(self):
+        for answer in (Continuation.STOP, KeyboardInterrupt()):
+            with self.subTest(answer=answer):
+                confirm = ScriptedConfirm(CREATE)
+
+                result = self.start_with(
+                    "--tmux", PARENT, continuation=ScriptedContinuation(answer), confirm=confirm,
+                )
+
+                self.assert_nothing_changed(result, f"Ralph stopped: {SESSION} was not started")
+                self.assertEqual(result.exit_code, 1)
+                self.assertEqual(confirm.questions, [])
+                self.assertEqual(result.persistent_terminal.restarts, [])
+
+    def test_refused_run_target_stops_before_the_question(self):
+        self.github.edit_issue_labels(PARENT, "needs-info", ())
+        continuation = ScriptedContinuation(Continuation.RESTART)
+
+        result = self.start_with("--tmux", PARENT, continuation=continuation)
+
+        self.assert_nothing_changed(result, "held back by triage: needs-info")
+        self.assertEqual(continuation.asked, [])
+        self.assertEqual(result.persistent_terminal.restarts, [])
+
+    def test_without_a_run_target_the_picked_one_names_the_session_and_is_restarted(self):
+        self.github.add_issue(200)
+        continuation = ScriptedContinuation(Continuation.RESTART)
+        choose = ScriptedChoice(PARENT)
+        picked_before_question = []
+        continuation.before_answer = lambda: picked_before_question.append(len(choose.offered))
+
+        result = self.start_with(
+            "--tmux", "--review", continuation=continuation, choose=choose,
+        )
+
+        self.assert_restarted(result, f"ralph-kit run --review {PARENT}")
+        self.assertEqual(picked_before_question, [1])
+
+    def test_without_a_terminal_the_flag_stops_with_nothing_changed(self):
+        result = self.start_with("--tmux", PARENT, continuation=None)
+
+        self.assert_nothing_changed(result, "--tmux needs a terminal")
+        self.assertEqual(result.persistent_terminal.restarts, [])
 
 
 if __name__ == "__main__":
