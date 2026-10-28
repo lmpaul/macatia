@@ -880,7 +880,7 @@ def start_run(
     `confirm` answers the run's startup question, `choose_run_target` picks among the
     startable run targets, and `choose_continuation` answers the continuation choice,
     as a terminal would; None runs without a terminal. `terminal` makes the output a terminal, which gets the spinners.
-`persistent_terminal_unavailability` is why the fake persistent terminal cannot be used.
+    `persistent_terminal_unavailability` is why the fake persistent terminal cannot be used.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
     a `ScriptedEngine`, answering each engine command of Ralph's real sessions.

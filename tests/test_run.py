@@ -5350,21 +5350,23 @@ class PersistentTerminalTests(BaseBranchTestCase):
         tmux_not_found = "tmux not found: install tmux, or run without --tmux"
         inside_tmux = "already inside tmux: run without --tmux"
         needs_a_terminal = "--tmux needs a terminal: run in a terminal, or without --tmux"
-        for unavailability, continuation, error in (
-            (Unavailability.TMUX_NOT_FOUND, ScriptedContinuation(Continuation.RESTART),
-             tmux_not_found),
-            (Unavailability.INSIDE_TMUX, ScriptedContinuation(Continuation.RESTART), inside_tmux),
-            (None, None, needs_a_terminal),
+        for unavailability, terminal, error in (
+            (Unavailability.TMUX_NOT_FOUND, True, tmux_not_found),
+            (Unavailability.INSIDE_TMUX, True, inside_tmux),
+            (None, False, needs_a_terminal),
         ):
             with self.subTest(error=error):
                 self.setUp()
                 self.sessions = ScriptedSessions(self.repository)
-                choose = ScriptedChoice(PARENT)
+                # Outside a terminal there is neither picker nor continuation choice.
+                choose = ScriptedChoice(PARENT) if terminal else None
+                continuation = ScriptedContinuation(Continuation.RESTART) if terminal else None
+                issue = () if terminal else (PARENT,)
 
                 # A missing configuration shows it is never read.
                 result = start_run(
                     self.repository, self.github, self.sessions,
-                    "--tmux", "--caffeinate", "--config", "missing.toml",
+                    "--tmux", "--caffeinate", "--config", "missing.toml", *issue,
                     choose_run_target=choose, choose_continuation=continuation,
                     persistent_terminal_unavailability=unavailability,
                 )
@@ -5374,9 +5376,9 @@ class PersistentTerminalTests(BaseBranchTestCase):
                 self.assertNotIn("missing.toml", result.stderr)
                 self.assertEqual(self.github.opened_for, [])
                 self.assertEqual(result.sleep_lock.taken, 0)
-                self.assertEqual(choose.offered, [])
                 self.assertEqual(result.persistent_terminal.restarts, [])
-                if continuation is not None:
+                if terminal:
+                    self.assertEqual(choose.offered, [])
                     self.assertEqual(continuation.asked, [])
 
     def test_without_the_flag_the_persistent_terminal_is_never_checked(self):
