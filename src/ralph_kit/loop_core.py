@@ -1298,6 +1298,38 @@ def preflight(state: RunState) -> str:
     return branch
 
 
+def branch_heads(
+    repository_root: pathlib.Path, remote: str, branch: str
+) -> tuple[str | None, str | None]:
+    """The head of `branch` on `remote` and in the checkout, None where it does not exist."""
+    # Lists the remote's heads without writing any local ref.
+    listing = run_command(
+        repository_root, ["git", "ls-remote", "--heads", remote, f"refs/heads/{branch}"], check=False
+    )
+    if listing.returncode != 0:
+        detail = " ".join((listing.stderr or "").split())
+        raise RalphError(f"could not reach {remote} to look for {branch}: {detail}")
+    # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
+    remote_head = next(
+        (
+            line.split("\t")[0]
+            for line in listing.stdout.splitlines()
+            if line.split("\t")[-1] == f"refs/heads/{branch}"
+        ),
+        None,
+    )
+    local_lookup = run_command(
+        repository_root, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], check=False
+    )
+    local_head = local_lookup.stdout.strip() if local_lookup.returncode == 0 else None
+    return remote_head, local_head
+
+
+def cumulative_draft_pull_request_title(run_target: int, *, standalone: bool) -> str:
+    """The title Ralph gives the cumulative draft PR of a run target."""
+    return f"Implement Ralph {'issue' if standalone else 'parent'} #{run_target}"
+
+
 def offer_run_branch(state: RunState, parent_issue: int) -> str:
     """On the base branch, offer the parent's run branch and return it once it is published.
 
@@ -1310,26 +1342,7 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
     configuration = state.config
     base, remote = configuration.base_branch, configuration.remote
     run_branch = f"{RUN_BRANCH_PREFIX}{parent_issue}"
-    # Lists the remote's heads without writing any local ref.
-    listing = command(
-        state, ["git", "ls-remote", "--heads", remote, f"refs/heads/{run_branch}"], check=False
-    )
-    if listing.returncode != 0:
-        detail = " ".join((listing.stderr or "").split())
-        raise RalphError(f"could not reach {remote} to look for {run_branch}: {detail}")
-    # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
-    remote_head = next(
-        (
-            line.split("\t")[0]
-            for line in listing.stdout.splitlines()
-            if line.split("\t")[-1] == f"refs/heads/{run_branch}"
-        ),
-        None,
-    )
-    local_lookup = command(
-        state, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{run_branch}"], check=False
-    )
-    local_head = local_lookup.stdout.strip() if local_lookup.returncode == 0 else None
+    remote_head, local_head = branch_heads(state.repository_root, remote, run_branch)
 
     if local_head is None and remote_head is None:
         question, accept = f"Create {run_branch} from an up-to-date {base}?", "Create"
@@ -2585,10 +2598,7 @@ def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_iss
         state.github.create_draft_pull_request(
             base=configuration.base_branch,
             head=branch,
-            title=(
-                f"Implement Ralph issue #{parent_issue}" if state.standalone
-                else f"Implement Ralph parent #{parent_issue}"
-            ),
+            title=cumulative_draft_pull_request_title(parent_issue, standalone=state.standalone),
             body=f"Cumulative implementation for #{parent_issue}. Human merge required.",
         )
 

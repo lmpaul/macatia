@@ -24,6 +24,8 @@ from .loop_core import (
     RESET_MARKER_PREFIX,
     STANDARD_RUN,
     author_login,
+    branch_heads,
+    cumulative_draft_pull_request_title,
     labels,
     latest_implementation_heads,
     positive_integer,
@@ -34,6 +36,9 @@ from .progress import spinner
 # The lifecycle states a reset makes ready for an agent again, as label roles; a child
 # carrying several left the first one listed.
 RESET_STATES = ("human_review", "agent_working", "implemented")
+# Persisted in the comment a reset closes a cumulative draft PR with, so its value must
+# never change: a rerun reads from it what an interrupted reset closed and deleted.
+CLOSING_MARKER_PREFIX = "<!-- ralph-reset-closing: "
 
 
 class ResetRefused(RalphError):
@@ -66,11 +71,13 @@ class RunBranch:
     # Whether the checkout has it checked out: the reset switches to the base branch first.
     checked_out: bool
 
-    def head(self) -> str:
-        """The head the recap records: the remote one, else the local one."""
+    def record(self) -> dict[str, Any]:
+        """The deleted branch as the recap records it: its remote head, else its local one,
+        and its local head too when that differs."""
         head = self.remote_head or self.local_head
         assert head is not None
-        return head
+        local = {} if self.local_head in (None, head) else {"local_head": self.local_head}
+        return {"name": self.name, "head": head, **local}
 
 
 @dataclass(frozen=True)
@@ -83,6 +90,10 @@ class Plan:
     pulls: list[dict[str, Any]]
     # The run branch to delete, or None when it exists nowhere.
     branch: RunBranch | None
+    # The cumulative draft PRs from the run branch an interrupted reset already closed since
+    # the previous recap, and the run branch it recorded deleting, read from their comments.
+    already_closed: list[int]
+    recorded_branch: dict[str, Any] | None
     # The children to reset now, in order; a standalone issue is its own only child.
     children: list[ChildReset]
     # The children an interrupted reset already made ready for an agent, by number, with
@@ -195,22 +206,10 @@ def git(root: pathlib.Path, *arguments: str) -> str:
 def find_run_branch(root: pathlib.Path, config: RalphConfig, number: int) -> RunBranch | None:
     """The run branch of run target `number` on the configured remote and in the checkout."""
     name = f"{RUN_BRANCH_PREFIX}{number}"
-    # Lists the remote's heads without writing any local ref.
-    listing = command(root, ["git", "ls-remote", "--heads", config.remote, f"refs/heads/{name}"], check=False)
-    if listing.returncode != 0:
-        detail = " ".join((listing.stderr or "").split())
-        raise RalphError(f"Cannot reach {config.remote} to look for {name}, nothing reset: {detail}")
-    # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
-    remote_head = next(
-        (
-            line.split("\t")[0]
-            for line in listing.stdout.splitlines()
-            if line.split("\t")[-1] == f"refs/heads/{name}"
-        ),
-        None,
-    )
-    local = command(root, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{name}"], check=False)
-    local_head = local.stdout.strip() if local.returncode == 0 else None
+    try:
+        remote_head, local_head = branch_heads(root, config.remote, name)
+    except RalphError as error:
+        raise RalphError(f"Cannot look for {name}, nothing reset: {error}") from error
     if remote_head is None and local_head is None:
         return None
     return RunBranch(name, remote_head, local_head, local_head is not None and current_branch(root) == name)
@@ -218,11 +217,44 @@ def find_run_branch(root: pathlib.Path, config: RalphConfig, number: int) -> Run
 
 def cumulative_draft_pull_requests(github: Any, config: RalphConfig, number: int) -> list[dict[str, Any]]:
     """The open pull requests into the base branch titled as Ralph titles a cumulative draft PR."""
-    titles = {f"Implement Ralph parent #{number}", f"Implement Ralph issue #{number}"}
+    titles = {
+        cumulative_draft_pull_request_title(number, standalone=standalone) for standalone in (False, True)
+    }
     pulls = github.open_pull_requests_by_title(config.base_branch, titles)
     if not isinstance(pulls, list):
         raise RalphError("GitHub pull request lookup returned invalid data")
     return sorted(pulls, key=lambda pull: int(pull["number"]))
+
+
+def closing_marker(body: str) -> dict[str, Any] | None:
+    """The fields the closing marker of a cumulative draft PR's comment records, or None."""
+    match = re.search(re.escape(CLOSING_MARKER_PREFIX) + r"(\{.*?\}) -->", body)
+    try:
+        marker = json.loads(match.group(1)) if match else None
+    except json.JSONDecodeError:
+        return None
+    return marker if isinstance(marker, dict) else None
+
+
+def closed_by_interrupted_reset(
+    github: Any, config: RalphConfig, number: int, since: str | None
+) -> tuple[list[int], dict[str, Any] | None]:
+    """The cumulative draft PRs from the run branch a reset closed since the run target's
+    previous recap, and the run branch it recorded deleting, read from its closing comments."""
+    closed, branch = set(), None
+    for pull in github.closed_pull_requests(f"{RUN_BRANCH_PREFIX}{number}", config.base_branch):
+        for comment in github.issue_comments(int(pull["number"])):
+            if author_login(comment) not in config.trusted_authors:
+                continue
+            if since is not None and not str(comment.get("createdAt", "")) > since:
+                continue
+            marker = closing_marker(str(comment.get("body", "")))
+            if marker is None or marker.get("run_target") != number:
+                continue
+            closed.add(int(pull["number"]))
+            if isinstance(marker.get("deleted_branch"), dict):
+                branch = marker["deleted_branch"]
+    return sorted(closed), branch
 
 
 def inspect(
@@ -247,7 +279,10 @@ def inspect(
         ))
     if not is_open(target):
         failures.append(Failure(f"#{number} is closed"))
-    plan = Plan(target, False, [], None, [], {}, [])
+    plan = Plan(
+        target=target, standalone=False, pulls=[], branch=None, already_closed=[],
+        recorded_branch=None, children=[], already_reset={}, remove=[],
+    )
     if failures:
         return plan, failures
     sub_issues = github.sub_issues(number)
@@ -280,7 +315,10 @@ def inspect(
     remove = [] if standalone else stale_labels(config, target, run_target=True)
     pulls = cumulative_draft_pull_requests(github, config, number)
     branch = find_run_branch(root, config, number)
-    if not (resets or already_reset or remove or pulls or branch):
+    already_closed, recorded_branch = closed_by_interrupted_reset(
+        github, config, number, latest_recap_time(config, target)
+    )
+    if not (resets or already_reset or remove or pulls or branch or already_closed):
         failures.append(Failure(
             f"#{number} is not resettable",
             (f"#{number} is not agent working, implemented or in human review" if standalone
@@ -294,7 +332,11 @@ def inspect(
             f"commit or stash your changes, or switch to {config.base_branch}: the reset deletes "
             f"{branch.name}",
         ))
-    return Plan(target, standalone, pulls, branch, resets, already_reset, remove), failures
+    return Plan(
+        target=target, standalone=standalone, pulls=pulls, branch=branch,
+        already_closed=already_closed, recorded_branch=recorded_branch, children=resets,
+        already_reset=already_reset, remove=remove,
+    ), failures
 
 
 def stale_labels(config: RalphConfig, issue: dict[str, Any], *, run_target: bool) -> list[str]:
@@ -313,27 +355,32 @@ def child_marker(config: RalphConfig, run_target: int, state: str) -> str:
     )
 
 
-def undone(plan: Plan) -> tuple[dict[str, Any], str]:
+def deleted_branch(plan: Plan) -> dict[str, Any] | None:
+    """The run branch the reset deletes, or the one an interrupted reset recorded deleting."""
+    return plan.branch.record() if plan.branch is not None else plan.recorded_branch
+
+
+def closed_and_deleted(plan: Plan) -> tuple[dict[str, Any], str]:
     """The recap's fields for the closed cumulative draft PRs and the deleted run branch, and
     the sentence saying so; both empty when the reset closed and deleted nothing."""
     fields: dict[str, Any] = {}
     done = []
-    if plan.pulls:
-        fields["closed_pull_requests"] = [int(pull["number"]) for pull in plan.pulls]
-        done.append("closed " + ", ".join(f"PR #{pull['number']}" for pull in plan.pulls))
-    if plan.branch is not None:
-        branch = plan.branch
-        fields["deleted_branch"] = {"name": branch.name, "head": branch.head()}
-        text = f"deleted `{branch.name}` at `{branch.head()}`"
-        if branch.local_head not in (None, branch.head()):
-            fields["deleted_branch"]["local_head"] = branch.local_head
-            text += f" (`{branch.local_head}` in the checkout)"
+    closed = sorted({*plan.already_closed, *(int(pull["number"]) for pull in plan.pulls)})
+    if closed:
+        fields["closed_pull_requests"] = closed
+        done.append("closed " + ", ".join(f"PR #{number}" for number in closed))
+    branch = deleted_branch(plan)
+    if branch is not None:
+        fields["deleted_branch"] = branch
+        text = f"deleted `{branch.get('name')}` at `{branch.get('head')}`"
+        if "local_head" in branch:
+            text += f" (`{branch['local_head']}` in the checkout)"
         done.append(text)
     return fields, (f"It {' and '.join(done)}. " if done else "")
 
 
 def standalone_recap(config: RalphConfig, plan: Plan, state: str) -> str:
-    fields, sentence = undone(plan)
+    fields, sentence = closed_and_deleted(plan)
     marker = json.dumps({"previous_state": state, **fields}, separators=(",", ":"))
     return (
         f"{RESET_MARKER_PREFIX}{marker} -->\n"
@@ -345,7 +392,7 @@ def standalone_recap(config: RalphConfig, plan: Plan, state: str) -> str:
 
 def parent_recap(config: RalphConfig, plan: Plan, reset: dict[int, str]) -> str:
     children = [{"number": number, "previous_state": state} for number, state in sorted(reset.items())]
-    fields, sentence = undone(plan)
+    fields, sentence = closed_and_deleted(plan)
     marker = json.dumps({"children": children, **fields}, separators=(",", ":"))
     listing = (
         "It made these children ready for an agent again:\n\n" + "\n".join(
@@ -360,10 +407,20 @@ def parent_recap(config: RalphConfig, plan: Plan, reset: dict[int, str]) -> str:
     )
 
 
-def pull_request_comment(number: int) -> str:
+def closing_comment(plan: Plan, pull: dict[str, Any]) -> str:
+    number = int(plan.target["number"])
+    branch = deleted_branch(plan)
+    marker = json.dumps(
+        {"run_target": number, **({"deleted_branch": branch} if branch is not None else {})},
+        separators=(",", ":"),
+    )
+    kept = pull["head"] != f"{RUN_BRANCH_PREFIX}{number}"
     return (
+        f"{CLOSING_MARKER_PREFIX}{marker} -->\n"
         f"A reset of #{number} closed this cumulative draft PR: a run on #{number} starts again "
-        "from scratch. Its branch can be restored from this pull request."
+        "from scratch. "
+        + (f"Its branch `{pull['head']}` is kept." if kept
+           else f"Its branch `{pull['head']}` is deleted and can be restored from this pull request.")
     )
 
 
@@ -372,6 +429,8 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
     number = int(plan.target["number"])
     working = config.labels["agent_working"]
     print(f"📋 Resetting {'standalone issue ' if plan.standalone else ''}{issue_reference(plan.target)}:")
+    for closed in plan.already_closed:
+        print(f"   ✓ PR #{closed}: already closed by this reset")
     for pull in plan.pulls:
         print(f"   → close PR #{pull['number']} {pull['title']} from {pull['head']}, with a comment")
     branch = plan.branch
@@ -410,7 +469,8 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
                 f"⚠️  PR #{pull['number']} comes from {pull['head']}: it is closed, but {pull['head']} "
                 f"is kept; a reset deletes only {run_branch}"
             )
-    if branch is not None and not any(pull["head"] == run_branch for pull in plan.pulls):
+    restorable = plan.already_closed or any(pull["head"] == run_branch for pull in plan.pulls)
+    if branch is not None and not restorable:
         print(
             f"⚠️  {branch.name} has no open pull request to restore it from: once deleted, only "
             "its head SHA in the recap and your reflog can recover its commits"
@@ -468,7 +528,7 @@ def reset_target(
     try:
         # Before any label: a rerun finds what is left through the PR lookup and the branch.
         for pull in plan.pulls:
-            github.close_pull_request(int(pull["number"]), pull_request_comment(number))
+            github.close_pull_request(int(pull["number"]), closing_comment(plan, pull))
             print(f"   ✓ closed PR #{pull['number']}")
         branch = plan.branch
         if branch is not None:
@@ -478,7 +538,7 @@ def reset_target(
                 if branch.checked_out:
                     git(root, "switch", config.base_branch)
                 git(root, "branch", "--delete", "--force", branch.name)
-            print(f"   ✓ deleted {branch.name} at {branch.head()}")
+            print(f"   ✓ deleted {branch.name} at {branch.record()['head']}")
         reset = dict(plan.already_reset)
         for child in plan.children:
             child_number = int(child.issue["number"])

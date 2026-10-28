@@ -156,13 +156,10 @@ class PullRequestsByTitleTests(unittest.TestCase):
             check=True,
         )
         self.assertEqual(pulls, [
-            {
-                "number": 12, "title": "Implement Ralph parent #69",
-                "url": "https://github.com/lmpaul/ralph-kit/pull/12", "head": "ralph-kit/issue-69",
-            },
+            {"number": 12, "title": "Implement Ralph parent #69", "head": "ralph-kit/issue-69"},
             {
                 "number": 14, "title": "Implement Ralph issue #69",
-                "url": "https://github.com/lmpaul/ralph-kit/pull/14", "head": "fork:ralph-kit/issue-69",
+                "head": "fork/ralph-kit:ralph-kit/issue-69",
             },
         ])
 

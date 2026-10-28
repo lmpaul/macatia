@@ -308,7 +308,7 @@ class ResetTests(unittest.TestCase):
 
     def test_a_run_target_whose_only_trace_is_a_run_branch_or_a_pull_request_is_resettable(self):
         for name, trace in (
-            ("run branch", lambda: self.add_run_branch(pushed=True)),
+            ("run branch", self.add_run_branch),
             ("pull request", lambda: self.add_pull_request(head=BRANCH)),
         ):
             with self.subTest(name):
@@ -327,8 +327,8 @@ class ResetTests(unittest.TestCase):
     def test_a_rerun_after_an_interruption_between_the_pull_request_and_the_branch_finishes(self):
         self.add_parent()
         self.add_child(70)
-        self.add_run_branch(checked_out=True)
-        self.add_pull_request()
+        head = self.add_run_branch(checked_out=True)
+        pull = self.add_pull_request()
 
         def interrupt(number):
             raise KeyboardInterrupt
@@ -347,7 +347,45 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(self.branches(), set())
         self.assertEqual(self.checked_out(), "main")
         self.assertEqual(len(self.github.pull_requests[0].comments), 1)
+        self.assertIn(f"✓ PR #{pull}: already closed by this reset", self.stdout)
+        self.assertNotIn("no open pull request to restore it from", self.stdout)
         self.assert_reset_child(70, "implemented")
+        self.assertEqual(reset_markers(self.github.comments(PARENT)), [{
+            "children": [{"number": 70, "previous_state": "implemented"}],
+            "closed_pull_requests": [pull],
+            "deleted_branch": {"name": RUN_BRANCH, "head": head},
+        }])
+
+    def test_a_rerun_after_the_branch_was_deleted_still_recaps_it(self):
+        self.add_parent()
+        self.add_child(70)
+        head = self.add_run_branch()
+        pull = self.add_pull_request()
+        self.github.interrupt_after_comment_on = 70
+
+        with self.assertRaises(RunInterrupted):
+            self.reset(str(PARENT), "--yes")
+        self.assertEqual(self.branches(), set())
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(reset_markers(self.github.comments(PARENT)), [{
+            "children": [{"number": 70, "previous_state": "implemented"}],
+            "closed_pull_requests": [pull],
+            "deleted_branch": {"name": RUN_BRANCH, "head": head},
+        }])
+
+    def test_a_pull_request_closed_before_the_previous_recap_is_not_recapped_again(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_run_branch()
+        self.add_pull_request()
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+        self.github.edit_issue_labels(PARENT, add="work-started", remove=[])
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(reset_markers(self.github.comments(PARENT))[-1], {"children": []})
 
     def test_a_git_error_deleting_the_branch_exits_1_before_any_label_change(self):
         self.add_parent()

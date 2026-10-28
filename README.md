@@ -283,9 +283,9 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
 - **Reset** (every refusal, the plan, the confirmation, the cumulative draft PR,
-  the run branch, the labels, reset markers and recap, and resuming them): `tests/test_reset.py`, the reset command's entry
-  point with the GitHub fake, a scripted confirmer and a temporary checkout with
-  a bare `origin`.
+  the run branch, the labels, reset markers and recap, and resuming them):
+  `tests/test_reset.py`, the reset command's entry point with the GitHub fake, a
+  scripted confirmer and a temporary checkout with a bare `origin`.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,
   and `claude`: `tests/test_live.py`, skipped unless `RALPH_LIVE=1` (see below).
 
@@ -950,27 +950,29 @@ only the recap's head SHA and your reflog can then recover. It asks
 `Reset #N?` (No by default); `--yes` skips it, and without a terminal `reset`
 needs `--yes`. Declining or Ctrl-C writes nothing.
 
-The reset first closes each of those pull requests with a comment saying a
-reset closed it, then deletes `ralph-kit/issue-<N>` on the configured remote,
-then in the checkout, switching to the base branch first when it is checked
-out; no other branch is ever deleted. Each child in one of those states then
-gets a reset marker recording the state it left, and `ready-for-agent` as its only lifecycle label; other children,
-closed ones included, are untouched. Last, the parent loses `work-started` and
-its other lifecycle labels, gains `ready-for-agent`, and gets the recap reset
-marker naming the closed pull requests, the deleted run branch with its head
-SHA, and every child reset since its previous recap with its previous state, so
-its presence means the reset finished. A standalone issue keeps its
-`standalone` marker and gets a single reset marker, its recap, then
-`ready-for-agent` as its only lifecycle label. Ralph reads none of its records
-older than an issue's latest trusted reset marker, so the next run implements
-the children from scratch from the current branch head.
+The reset first closes each of those pull requests with a comment saying a reset
+closed it, then deletes `ralph-kit/issue-<N>` on the configured remote, then in
+the checkout, switching to the base branch first when it is checked out; no
+other branch is ever deleted. Each child in one of those states then gets a
+reset marker recording the state it left, and `ready-for-agent` as its only
+lifecycle label; other children, closed ones included, are untouched. Last, the
+parent loses `work-started` and its other lifecycle labels, gains
+`ready-for-agent`, and gets the recap reset marker naming the closed pull
+requests, the deleted run branch with its head SHA, and every child reset since
+its previous recap with its previous state, so its presence means the reset
+finished. A standalone issue keeps its `standalone` marker and gets a single
+reset marker, its recap, then `ready-for-agent` as its only lifecycle label.
+Ralph reads none of its records older than an issue's latest trusted reset
+marker, so the next run implements the children from scratch from the current
+branch head.
 
 After a GitHub or Git error or an interruption partway, rerun the same command:
 pull requests already closed, branches already deleted, and markers and labels
-already written are skipped, and the recap still lists
-the children the first attempt reset. Exit codes are those of `close`: 0 once
-reset; 1 for a refusal, a declined confirmation or a GitHub or Git error; 2 for
-a usage error; 130 for Ctrl-C.
+already written are skipped, and the recap still lists the children the first
+attempt reset, and the pull request it closed from `ralph-kit/issue-<N>` with
+the branch it deleted, which a hidden marker in the closing comment records.
+Exit codes are those of `close`: 0 once reset; 1 for a refusal, a declined
+confirmation or a GitHub or Git error; 2 for a usage error; 130 for Ctrl-C.
 
 ## Readiness check
 

@@ -294,6 +294,8 @@ class PullRequest:
     is_draft: bool = True
     comments: list[str] = field(default_factory=list)
     state: str = "open"
+    # The comments as the issue comments listing returns them, for those that list them.
+    comment_records: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -345,7 +347,7 @@ class FakeGitHub:
     its reason as `stateReason`; `close_error` maps an issue number to the error
     its next close raises instead, and `after_close`, when set, is called with
     the issue number and reason after each close. Closing a pull request stores its
-    comment and marks it closed; `after_pull_request_close`, when set, is called with
+    comment, which the issue comments listing of its number returns, and marks it closed; `after_pull_request_close`, when set, is called with
     its number after each close. Reading an unknown issue raises
     as `gh` does for an issue that does not exist. A commit is on a branch when
     `on_branch` maps its SHA to True; `compared` keeps each (branch, SHA) asked.
@@ -557,15 +559,30 @@ class FakeGitHub:
                 "number": pull.number,
                 "title": pull.title,
                 "head": pull.head,
-                "url": f"https://github.test/{self.repository}/pull/{pull.number}",
             }
             for pull in self.pull_requests
             if pull.base == base and pull.title in titles and pull.state == "open"
         ]
 
+    def closed_pull_requests(self, head, base):
+        return [
+            {"number": pull.number, "title": pull.title, "head": pull.head}
+            for pull in self.pull_requests
+            if pull.head == head and pull.base == base and pull.state == "closed"
+        ]
+
+    def issue_comments(self, number):
+        pull = next((pull for pull in self.pull_requests if pull.number == number), None)
+        if pull is not None:
+            return copy.deepcopy(pull.comment_records)
+        return self.issue(number)["comments"]
+
     def close_pull_request(self, number, comment):
         pull = self._pull(number)
         pull.comments.append(comment)
+        pull.comment_records.append({
+            "author": {"login": self.login}, "body": comment, "createdAt": self._timestamp(),
+        })
         pull.state = "closed"
         if self.after_pull_request_close is not None:
             self.after_pull_request_close(number)
