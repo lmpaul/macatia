@@ -1553,9 +1553,11 @@ def trusted_comment(state: RunState, comment: dict[str, Any]) -> bool:
     return author_login(comment) in state.config.trusted_authors
 
 
-def comments_that_count(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list[dict[str, Any]]:
-    """The issue's comments, whatever their author, that Ralph reads its records among:
-    those newer than its latest trusted reset marker, a barrier left by a reset (ADR 0003).
+def comments_since_reset_marker(
+    issue: dict[str, Any], trusted_authors: Iterable[str]
+) -> list[dict[str, Any]]:
+    """The issue's comments, whatever their author, newer than its latest trusted reset
+    marker: Ralph reads none of its own records older than it (ADR 0003).
 
     Every reader of Ralph's records goes through here or `ralph_records`.
     """
@@ -1572,7 +1574,7 @@ def ralph_records(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list
     """The issue's trusted comments that count as Ralph's records, oldest first."""
     trusted = set(trusted_authors)
     return [
-        comment for comment in comments_that_count(issue, trusted)
+        comment for comment in comments_since_reset_marker(issue, trusted)
         if author_login(comment) in trusted
     ]
 
@@ -1668,7 +1670,7 @@ def recoverable_implementation_heads(state: RunState, issue: dict[str, Any]) -> 
     summaries = (STANDARD_RUN.terminal_summary_marker, REVIEWED_RUN.terminal_summary_marker)
     after_summaries = False
     # Comments of any author count: an untrusted one after the summaries updated the issue.
-    for comment in reversed(comments_that_count(issue, state.config.trusted_authors)):
+    for comment in reversed(comments_since_reset_marker(issue, state.config.trusted_authors)):
         trusted = trusted_comment(state, comment)
         body = str(comment.get("body", ""))
         if trusted and state.mode.implementation_evidence_prefix in body:

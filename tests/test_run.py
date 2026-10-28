@@ -499,7 +499,6 @@ class RecoveryTests(RunLevelTestCase):
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [CHILD])
 
-
     def add_published_child(self, *later_comments):
         """A ready child whose evidence, on the branch, is followed by `later_comments`
         posted in the same second, so the evidence's time is still the child's latest update."""
