@@ -16,7 +16,8 @@ from .sanitize import format_findings
 
 
 MAX_CORRECTIONS = 3
-# Every handoff comment starts with this, so a stopped run can link the latest one.
+# The visible text of every handoff comment starts with this, so a stopped run can link
+# the latest one, including those posted before the handoff marker existed.
 HANDOFF_PREFIX = "Ralph stopped"
 
 

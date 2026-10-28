@@ -753,7 +753,9 @@ and `blocked` or `failed` results stop the run and leave the child open with
 outstanding findings and, for local gate or CI failures, the last diagnostic.
 Every handoff comment for a child whose child cycle started also says that the
 child's commits stay on the branch and will count as its work if it is
-relabelled `ready-for-agent`.
+relabelled `ready-for-agent`. Every handoff comment starts with a hidden
+machine-readable marker, in both run modes; handoff comments posted before
+Ralph wrote that marker carry none.
 
 Ralph publishes implementation evidence and adds `implemented` only after the
 issue review and configured verification succeed for the final commit. A child

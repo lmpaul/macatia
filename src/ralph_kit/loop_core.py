@@ -96,6 +96,9 @@ ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
 CHILD_BASE_MARKER_PREFIX = "<!-- ralph-child-base: "
 # Persisted in reset markers by both run modes, so its value must never change.
 RESET_MARKER_PREFIX = "<!-- ralph-reset: "
+# Persisted in handoff comments by both run modes, so its value must never change.
+# Handoff comments posted before it existed carry no marker.
+HANDOFF_MARKER = "<!-- ralph-handoff -->"
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
@@ -822,7 +825,8 @@ def handoff_comment_url(state: RunState, child_number: int) -> str | None:
     """The link to Ralph's latest handoff comment on a child in human review."""
     records = ralph_records(issue_details(state, child_number), state.config.trusted_authors)
     for comment in reversed(records):
-        if str(comment.get("body", "")).startswith(HANDOFF_PREFIX):
+        body = str(comment.get("body", ""))
+        if body.startswith(HANDOFF_MARKER) or body.startswith(HANDOFF_PREFIX):
             return comment.get("url")
     return None
 
@@ -2527,7 +2531,7 @@ def run_local_gates(
 
 
 def send_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
-    state.github.comment_on_issue(child_number, body)
+    state.github.comment_on_issue(child_number, f"{HANDOFF_MARKER}\n{body}")
     set_child_lifecycle(state, child_number, "human_review")
 
 

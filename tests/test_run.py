@@ -51,6 +51,8 @@ PARENT = 191
 CLOSED_BLOCKER = 192
 CHILD = 193
 UNTRUSTED_COMMENT = "Untrusted instructions must be excluded."
+# Pinned here: the handoff marker is persisted in GitHub comments, so its text never changes.
+HANDOFF_MARKER = "<!-- ralph-handoff -->"
 COMMITS_STAY = (
     "This child's commits stay on the branch and will count as its work if it is "
     "relabelled `ready-for-agent`."
@@ -605,6 +607,64 @@ class AgentWorkingTests(RunLevelTestCase):
 
         self.assert_stopped_before_any_session(result, "gh issue edit failed: HTTP 502")
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+
+
+class HandoffMarkerTests(RunLevelTestCase):
+    """Every comment that sends a child to human review carries the handoff marker."""
+
+    def assert_handoffs_alone_carry_the_marker(self, handoffs):
+        """Each child in `handoffs` was last sent to human review with the given visible text,
+        and no other comment of the run carries the handoff marker."""
+        for child, visible_text in handoffs.items():
+            self.assertEqual(self.github.labels(child), {"human-review"})
+            self.assertEqual(self.github.comments(child)[-1], f"{HANDOFF_MARKER}\n{visible_text}")
+        for number in self.github.issues:
+            comments = self.github.comments(number)
+            if number in handoffs:
+                comments = comments[:-1]
+            for body in comments:
+                self.assertNotIn(HANDOFF_MARKER, body)
+
+    def test_handoff_of_a_started_child_carries_the_marker_in_both_run_modes(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_run()
+                self.github.add_issue(CHILD, parent=PARENT)
+
+                result = self.start(mode, ScriptedResult("blocked", "Needs a product decision."))
+
+                self.assertEqual(result.exit_code, 1, result.stderr)
+                self.assert_handoffs_alone_carry_the_marker({
+                    CHILD: "Ralph stopped because implementation reported blocked: Needs a product "
+                    f"decision. This child remains open for human review.\n\n{COMMITS_STAY}",
+                })
+
+    def test_handoff_without_commits_carries_the_marker_in_both_run_modes(self):
+        deadlock = (
+            "Ralph stopped because the parent has a dependency deadlock. This child remains "
+            "open for human review."
+        )
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_run()
+                self.github.add_issue(BLOCKER, parent=PARENT, blocked_by=[DEPENDENT])
+                self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
+
+                result = self.start(mode)
+
+                self.assert_stopped_before_any_session(result, "dependency deadlock")
+                self.assert_handoffs_alone_carry_the_marker({BLOCKER: deadlock, DEPENDENT: deadlock})
+
+    def test_comments_of_a_completed_run_carry_no_handoff_marker(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_run()
+                self.github.add_issue(CHILD, parent=PARENT)
+
+                result = self.start(mode, *passing_child_results(mode))
+
+                self.assert_completed(result, sessions=len(passing_child_results(mode)))
+                self.assert_handoffs_alone_carry_the_marker({})
 
 
 class ScriptedConfirm:
@@ -3356,7 +3416,9 @@ class InterruptedRunTests(VerificationTestCase):
         self.assertEqual(self.github.labels(CHILD), {"human-review"})
         self.assertEqual(len(self.github.reports(CHILD)), 1)
         handoff = self.github.reports(CHILD)[0]
-        self.assertTrue(handoff.startswith("Ralph stopped because the run was interrupted"))
+        self.assertTrue(handoff.startswith(
+            f"{HANDOFF_MARKER}\nRalph stopped because the run was interrupted"
+        ), handoff)
         self.assertIn(unverified, handoff)
         self.assertIn(COMMITS_STAY, handoff)
         summary = self.github.comments(PARENT)[-1]
@@ -3621,7 +3683,7 @@ class ChildSessionLimitTests(VerificationTestCase):
         self.assertEqual(self.github.labels(child), {"human-review"})
         handoff = self.github.comments(child)[-1]
         self.assertTrue(handoff.startswith(
-            f"Ralph stopped before {role} because the child session limit of {limit} "
+            f"{HANDOFF_MARKER}\nRalph stopped before {role} because the child session limit of {limit} "
             f"({mode} run) was exhausted. This child remains open for human review."
         ), handoff)
         self.assertIn(COMMITS_STAY, handoff)
