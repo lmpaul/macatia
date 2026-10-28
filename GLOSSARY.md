@@ -246,7 +246,7 @@ Returning an open run target with no merged child to the state a run can start o
 _Avoid_: Rollback, undo, clean, rewind, restart
 
 **Resettable run target**:
-A run target a reset would act on now: open, with no merged child, and carrying the trace of a run: a child agent working, implemented, or in human review, a parent marked work started or human review, a run branch named after it, or an open cumulative draft PR; for a purge, a reset marker is such a trace too. A reset started without a run target offers these to choose from.
+A run target a reset would act on now: open, with no merged child, and carrying the trace of a run: a child agent working, implemented, or in human review, a parent marked work started or human review, a run branch named after it, or an open cumulative draft PR; for a purge, a reset marker, or any other of Ralph's own comments left on it, is such a trace too. A reset started without a run target offers these to choose from.
 _Avoid_: Stale issue, failed issue, candidate
 
 **Reset marker**:

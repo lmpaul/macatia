@@ -984,16 +984,16 @@ leaving reset markers, so later agent sessions, which read the issues
 themselves, no longer see them. Where a reset posts a reset marker it deletes
 every trusted comment carrying a Ralph marker: implementation evidence in every
 format, child base markers, handoff markers, parent completion, terminal
-summary, closure and reset markers. It touches the run target and each open
-child that is `agent-working`, `implemented` or `human-review` or carries such a
-comment; labels change, in the same order, as for a reset, and it leaves no
+summary, closure and reset markers. It touches the run target and each child
+still open that is `agent-working`, `implemented` or `human-review`, or
+`ready-for-agent` and carrying such a comment, as an earlier reset left it; labels change, in the same order, as for a reset, and it leaves no
 reset marker. Untrusted comments, trusted comments without a Ralph marker
 (handoff comments from before the handoff marker among them), and pull request
 comments are untouched. The plan counts the comments it deletes on each issue.
 For a purge, a Ralph comment on the run target, such as an earlier reset's
 recap, is the trace of a run too, so a reset run target can still be purged
-later, and the picker also offers the trusted open issues carrying a trusted
-reset marker.
+later, and the picker also offers the trusted open issues carrying a Ralph
+comment.
 
 After a GitHub or Git error or an interruption partway, rerun the same command:
 pull requests already closed, branches already deleted, and markers and labels

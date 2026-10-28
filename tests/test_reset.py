@@ -885,13 +885,14 @@ class ResetTests(unittest.TestCase):
         self.add_parent(labels=("work-started", "human-review"), comments=[*self.ralph_comments(), *kept])
         self.add_child(70, comments=[*kept, *self.ralph_comments()])
         self.add_child(71, labels=("human-review",), comments=self.ralph_comments())
-        # Untouched by a reset: no lifecycle label, nor any Ralph comment.
-        self.add_child(72, labels=("needs-triage",), comments=kept)
+        # Untouched: no lifecycle label, so its triage stays whatever it carries.
+        self.add_child(72, labels=("needs-triage",), comments=[*kept, *self.ralph_comments()])
 
         self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
 
-        for number in (PARENT, 70, 72):
+        for number in (PARENT, 70):
             self.assertEqual(self.github.comments(number), [comment["body"] for comment in kept])
+        self.assertEqual(len(self.github.comments(72)), len(kept) + len(self.ralph_comments()))
         self.assertEqual(self.github.comments(71), [])
         self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
         self.assertEqual(self.github.labels(70), {"ready-for-agent"})
@@ -917,7 +918,9 @@ class ResetTests(unittest.TestCase):
 
         self.assertEqual(self.github.labels(80), {"ready-for-agent", "standalone"})
         self.assertEqual(self.github.comments(80), [comment["body"] for comment in kept])
-        self.assertIn("-implemented, +ready-for-agent, deleting 10 Ralph comments", self.stdout)
+        self.assertIn(
+            f"-implemented, +ready-for-agent, deleting {len(self.ralph_comments())} Ralph comments", self.stdout
+        )
 
     def test_a_purge_leaves_the_pull_request_comments(self):
         self.add_parent()
@@ -980,7 +983,7 @@ class ResetTests(unittest.TestCase):
 
         self.assertIn(f"Rerun `ralph-kit reset --purge {PARENT}` to finish", self.stderr)
         self.assertEqual(self.github.comments(70), [])
-        self.assertEqual(len(self.github.comments(71)), 8)
+        self.assertEqual(len(self.github.comments(71)), len(self.ralph_comments()) - 2)
         self.assertEqual(self.github.labels(71), {"human-review"})
         self.github.after_comment_delete = None
 

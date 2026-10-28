@@ -376,8 +376,8 @@ def inspect(
 ) -> tuple[Plan, list[Failure]]:
     """The plan for resetting `target`, or purging it, and every reason it cannot be but a
     dirty worktree; its run branch and cumulative draft PRs are looked up unless `traces`
-    lists them. A purge touches each open child that is agent working, implemented, or in
-    human review, or carries a Ralph comment."""
+    lists them. A purge touches each child still open that is agent working, implemented, or
+    in human review, or ready for an agent and carrying a Ralph comment, as a reset left it."""
     number = int(target["number"])
     failures: list[Failure] = []
     try:
@@ -418,8 +418,11 @@ def inspect(
                 "merged into it; merged work is never reset",
             ))
         if purge:
-            state = previous_state(config, child) if is_open(child) else None
-            if state is not None or (is_open(child) and has_ralph_comment(config, child)):
+            if not is_open(child):
+                continue
+            state = previous_state(config, child)
+            ready = config.labels["ready_for_agent"] in labels(child)
+            if state is not None or (ready and has_ralph_comment(config, child)):
                 resets.append(ChildReset(child, state, marked=False))
             continue
         marked_state, marked_last = pending_reset_marker(config, child, since)
@@ -523,8 +526,8 @@ def resettable_run_targets(
     Open issues are first narrowed to those a trace of a run points to, through a run branch,
     a cumulative draft PR or their listing's labels: an issue marked work started or human
     review, the parent of an issue agent working, implemented, or in human review, else that
-    issue itself; for a purge, also a trusted issue whose details carry a trusted reset
-    marker. Each is then inspected as a reset of it would be. A failed lookup raises.
+    issue itself; for a purge, also a trusted issue whose details carry a Ralph comment,
+    such as a reset marker. Each is then inspected as a reset of it would be. A failed lookup raises.
     """
     issues = {int(issue["number"]): issue for issue in github.open_issues() if is_open(issue)}
     traces = run_traces(github, config, root, sorted(issues))
@@ -542,7 +545,7 @@ def resettable_run_targets(
     if purge:
         for number in sorted(trusted - traced):
             details[number] = github.issue(number)
-            if trusted_reset_markers(config, details[number]):
+            if has_ralph_comment(config, details[number]):
                 traced.add(number)
     targets = []
     for number in sorted(traced & trusted):
