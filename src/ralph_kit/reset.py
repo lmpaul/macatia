@@ -73,8 +73,9 @@ def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         prog=prog,
         description=(
-            "Reset a run target so a run can start on it as though no run had happened: make it "
-            "and its children agent working, implemented or in human review ready for an agent again."
+            "Reset a run target so a run can start on it as though no run had happened: make "
+            "ready for an agent again its children that are agent working, implemented or in human "
+            "review, then the run target itself."
         ),
     )
     parser.add_argument(
@@ -89,15 +90,16 @@ def parse_arguments(argv: list[str], prog: str) -> argparse.Namespace:
 
 
 def reset_marker_comment(body: str) -> dict[str, Any] | None:
-    """The fields a reset marker records, or None when `body` carries none or a malformed one."""
+    """The fields a reset marker records, or None when `body` carries none. A malformed
+    marker records nothing, but is still a barrier, as for the run."""
+    if RESET_MARKER_PREFIX not in body:
+        return None
     match = re.search(re.escape(RESET_MARKER_PREFIX) + r"(\{.*?\}) -->", body)
-    if match is None:
-        return None
     try:
-        marker = json.loads(match.group(1))
+        marker = json.loads(match.group(1)) if match else {}
     except json.JSONDecodeError:
-        return None
-    return marker if isinstance(marker, dict) else None
+        marker = {}
+    return marker if isinstance(marker, dict) else {}
 
 
 def trusted_reset_markers(config: RalphConfig, issue: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
@@ -199,21 +201,21 @@ def inspect(github: Any, config: RalphConfig, target: dict[str, Any]) -> tuple[P
             failures.append(Failure(
                 f"#{child['number']} is merged",
                 f"verified head {head[:7]} is on {config.base_branch} or in a pull request "
-                "merged into it; a reset never undoes merged work",
+                "merged into it; merged work is never reset",
             ))
-        if not is_open(child):
-            continue
         marked_state, marked_last = pending_reset_marker(config, child, since)
+        if not is_open(child):
+            # A child an interrupted reset reset, closed since, stays in the recap.
+            if marked_state is not None and not standalone:
+                already_reset[int(child["number"])] = marked_state
+            continue
         state = previous_state(config, child)
         if state is not None:
             resets.append(ChildReset(child, state, marked_last and marked_state == state))
         elif marked_state is not None and not standalone:
             already_reset[int(child["number"])] = marked_state
     # A standalone issue's labels are reset as its own only child's.
-    remove = [] if standalone else sorted(
-        labels(target) & ({config.labels["work_started"]} | config.lifecycle_labels)
-        - {config.labels["ready_for_agent"]}
-    )
+    remove = [] if standalone else stale_labels(config, target, run_target=True)
     if not (resets or already_reset or remove):
         failures.append(Failure(
             f"#{number} is not resettable",
@@ -222,6 +224,13 @@ def inspect(github: Any, config: RalphConfig, target: dict[str, Any]) -> tuple[P
             "marked neither work started nor human review",
         ))
     return Plan(target, standalone, resets, already_reset, remove), failures
+
+
+def stale_labels(config: RalphConfig, issue: dict[str, Any], *, run_target: bool) -> list[str]:
+    """The labels a reset removes from an issue: its lifecycle labels other than
+    ready-for-agent, and work started on a run target."""
+    stale = config.lifecycle_labels | ({config.labels["work_started"]} if run_target else set())
+    return sorted(labels(issue) & stale - {config.labels["ready_for_agent"]})
 
 
 def child_marker(config: RalphConfig, run_target: int, state: str) -> str:
@@ -266,7 +275,10 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
     if plan.standalone:
         reset = plan.children[0]
         print(f"📋 Resetting standalone issue {issue_reference(plan.target)}:")
-        print(f"   → {config.labels[reset.previous_state]} → {ready}, then a reset marker")
+        change = ", ".join([
+            *(f"-{name}" for name in stale_labels(config, plan.target, run_target=True)), f"+{ready}"
+        ])
+        print(f"   → {change}, with its recap reset marker")
     else:
         print(f"📋 Resetting {issue_reference(plan.target)}:")
         for reset in plan.children:
@@ -277,8 +289,11 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
             )
         for child, state in sorted(plan.already_reset.items()):
             print(f"   ✓ #{child}: already reset (was {config.labels[state]})")
-        change = ", ".join([*(f"-{name}" for name in plan.remove), f"+{ready}"])
-        print(f"   → then #{number}: {change}, then the recap reset marker")
+        change = ", ".join([
+            *(f"-{name}" for name in plan.remove),
+            *([] if ready in labels(plan.target) else [f"+{ready}"]),
+        ])
+        print(f"   → then #{number}: {change or 'labels unchanged'}, then the recap reset marker")
     for reset in plan.children:
         if working in labels(reset.issue):
             print(
@@ -304,7 +319,10 @@ def reset_target(
             raise RalphError(f"Cannot read #{number}, nothing reset: {error}") from error
         if int(target.get("number", 0)) != number:
             raise RalphError(f"GitHub returned the wrong issue for #{number}")
-        plan, failures = inspect(github, config, target)
+        try:
+            plan, failures = inspect(github, config, target)
+        except KeyboardInterrupt:
+            raise ResetCancelled from None
     if failures:
         raise ResetRefused(
             f"Cannot reset #{number}:\n\n"
@@ -329,16 +347,19 @@ def reset_target(
         for child in plan.children:
             child_number = int(child.issue["number"])
             # The marker comes first: a rerun after it reads the state the child left there.
+            # That holds for a standalone issue's recap too, else a rerun could not tell it
+            # from an issue no run touched.
             if not child.marked:
                 github.comment_on_issue(
                     child_number,
                     standalone_recap(config, child.previous_state) if plan.standalone
                     else child_marker(config, number, child.previous_state),
                 )
-            stale = sorted(labels(child.issue) & config.lifecycle_labels - {ready})
-            if plan.standalone:
-                stale = sorted({*stale, *(labels(child.issue) & {config.labels["work_started"]})})
-            github.edit_issue_labels(child_number, add=ready, remove=stale)
+            github.edit_issue_labels(
+                child_number,
+                add=ready,
+                remove=stale_labels(config, child.issue, run_target=plan.standalone),
+            )
             reset[child_number] = child.previous_state
             if not plan.standalone:
                 print(f"   ✓ #{child_number}")

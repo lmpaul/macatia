@@ -42,11 +42,7 @@ def sha(name):
 
 def reset_markers(bodies):
     """The fields of each reset marker among comment bodies, in order."""
-    return [
-        json.loads(match.group(1))
-        for body in bodies
-        if (match := re.search(re.escape(loop_core.RESET_MARKER_PREFIX) + r"(\{.*?\}) -->", body))
-    ]
+    return [marker for body in bodies if (marker := reset.reset_marker_comment(body)) is not None]
 
 
 class ResetTests(unittest.TestCase):
@@ -159,6 +155,7 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(self.github.labels(80), {"ready-for-agent", "standalone"})
         self.assertEqual(reset_markers(self.github.comments(80)), [{"previous_state": "implemented"}])
         self.assertIn("standalone issue", self.github.comments(80)[-1])
+        self.assertIn("-implemented, +ready-for-agent", self.stdout)
 
     # The plan and its confirmation.
 
@@ -256,7 +253,7 @@ class ResetTests(unittest.TestCase):
                 self.add_child(70)
                 self.add_child(71, state="closed", labels=())
                 merge(sha("verified-71"))
-                self.assert_refused(PARENT, "#71 is merged", "never undoes merged work")
+                self.assert_refused(PARENT, "#71 is merged", "merged work is never reset")
 
     def test_a_merged_standalone_issue_is_refused(self):
         self.github.add_issue(80, labels=("implemented",), comments=[self.evidence(80, merged=True)])
@@ -323,6 +320,37 @@ class ResetTests(unittest.TestCase):
             reset_markers(self.github.comments(PARENT)),
             [{"children": [{"number": 70, "previous_state": "implemented"}]}],
         )
+
+    def test_a_child_closed_after_an_interrupted_reset_stays_in_the_recap(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71)
+        self.github.interrupt_after_comment_on = 71
+
+        with self.assertRaises(RunInterrupted):
+            self.reset(str(PARENT), "--yes")
+        self.github.close_issue(70, "completed")
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertEqual(
+            reset_markers(self.github.comments(PARENT)),
+            [{"children": [
+                {"number": 70, "previous_state": "implemented"},
+                {"number": 71, "previous_state": "implemented"},
+            ]}],
+        )
+
+    def test_ctrl_c_while_inspecting_writes_nothing_and_says_so(self):
+        self.add_parent()
+        self.add_child(70)
+        self.github.parent_error = {PARENT: KeyboardInterrupt()}
+        before = self.snapshot()
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 130)
+
+        self.assertIn("Nothing reset", self.stderr)
+        self.assertEqual(self.snapshot(), before)
 
     def test_the_recap_lists_only_children_reset_since_the_previous_recap(self):
         self.add_parent()
