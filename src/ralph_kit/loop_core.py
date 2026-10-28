@@ -94,6 +94,8 @@ MAX_STOP_REASON_LENGTH = 1600
 ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
 # Persisted in child cycle start comments, so its value must never change.
 CHILD_BASE_MARKER_PREFIX = "<!-- ralph-child-base: "
+# Persisted in reset markers by both run modes, so its value must never change.
+RESET_MARKER_PREFIX = "<!-- ralph-reset: "
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
@@ -1552,11 +1554,18 @@ def trusted_comment(state: RunState, comment: dict[str, Any]) -> bool:
 
 
 def comments_that_count(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list[dict[str, Any]]:
-    """The issue's comments, whatever their author, that Ralph reads its records among.
+    """The issue's comments, whatever their author, that Ralph reads its records among:
+    those newer than its latest trusted reset marker, a barrier left by a reset (ADR 0003).
 
     Every reader of Ralph's records goes through here or `ralph_records`.
     """
-    return list(issue.get("comments", []))
+    trusted = set(trusted_authors)
+    comments = list(issue.get("comments", []))
+    for index in range(len(comments) - 1, -1, -1):
+        comment = comments[index]
+        if author_login(comment) in trusted and RESET_MARKER_PREFIX in str(comment.get("body", "")):
+            return comments[index + 1:]
+    return comments
 
 
 def ralph_records(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list[dict[str, Any]]:

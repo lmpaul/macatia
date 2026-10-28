@@ -41,6 +41,7 @@ from run_support import (
     implementation_evidence,
     is_child_cycle_start,
     legacy_implementation_evidence,
+    reset_marker,
     start_mode_run,
     start_run,
 )
@@ -390,6 +391,44 @@ class BlockerTests(RunLevelTestCase):
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [DEPENDENT])
 
+    def test_evidence_older_than_the_blockers_reset_marker_does_not_satisfy_its_dependent(self):
+        verified_head = self.commit_prior_child()
+        self.github.add_issue(BLOCKER, parent=PARENT, labels=("implemented",), comments=[
+            implementation_evidence(loop_core.STANDARD_RUN, verified_head),
+            reset_marker(),
+        ])
+        self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
+
+        result = self.start(loop_core.STANDARD_RUN)
+
+        self.assert_stopped_before_any_session(
+            result, f"parent issue #{PARENT} has children remaining but none is runnable"
+        )
+        self.assertEqual(self.github.labels(DEPENDENT), {"ready-for-agent"})
+
+    def test_evidence_after_the_blockers_reset_marker_or_before_an_untrusted_one_satisfies_its_dependent(self):
+        for name, comments in (
+            ("evidence after the reset marker", lambda head: [
+                reset_marker(), implementation_evidence(loop_core.STANDARD_RUN, head),
+            ]),
+            ("untrusted reset marker", lambda head: [
+                implementation_evidence(loop_core.STANDARD_RUN, head),
+                reset_marker(author="outside-contributor"),
+            ]),
+        ):
+            with self.subTest(name):
+                self.new_run()
+                verified_head = self.commit_prior_child()
+                self.github.add_issue(
+                    BLOCKER, parent=PARENT, labels=("implemented",), comments=comments(verified_head)
+                )
+                self.github.add_issue(DEPENDENT, parent=PARENT, blocked_by=[BLOCKER])
+
+                result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+                self.assert_completed(result, sessions=1)
+                self.assertEqual(self.session_children(), [DEPENDENT])
+
     def test_implemented_blocker_without_ancestor_evidence_stops_before_any_session(self):
         self.add_implemented_blocker_and_dependent(
             implementation_evidence(loop_core.STANDARD_RUN, self.commit_off_the_branch())
@@ -459,6 +498,35 @@ class RecoveryTests(RunLevelTestCase):
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.session_children(), [CHILD])
+
+
+    def add_published_child(self, *later_comments):
+        """A ready child whose evidence, on the branch, is followed by `later_comments`
+        posted in the same second, so the evidence's time is still the child's latest update."""
+        self.github.add_issue(CHILD, parent=PARENT)
+        self.github.comment_on_issue(
+            CHILD, implementation_evidence(loop_core.STANDARD_RUN, self.repository.base_sha)["body"]
+        )
+        updated_at = self.github.issues[CHILD]["updatedAt"]
+        for comment in later_comments:
+            self.github.issues[CHILD]["comments"].append({**comment, "createdAt": updated_at})
+
+    def test_child_whose_reset_marker_is_newer_than_its_evidence_is_implemented_again(self):
+        self.add_published_child(reset_marker())
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.session_children(), [CHILD])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_untrusted_reset_marker_does_not_stop_the_recovery_of_a_published_child(self):
+        self.add_published_child(reset_marker(author="outside-contributor"))
+
+        result = self.start(loop_core.STANDARD_RUN)
+
+        self.assert_completed(result, sessions=0)
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
 
 class AgentWorkingTests(RunLevelTestCase):
@@ -958,6 +1026,39 @@ class ChildBaseTests(RunLevelTestCase):
         self.assertNotIn("no longer on the branch", self.start_comment(CHILD))
         self.assert_evidence_starts_from(head)
 
+    def test_child_base_older_than_the_reset_marker_starts_from_the_current_head(self):
+        head = self.commit_prior_child()
+        self.github.add_issue(CHILD, parent=PARENT, comments=[
+            child_base_marker(self.repository.base_sha),
+            reset_marker(),
+        ])
+
+        result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.child_bases(CHILD)[-1], head)
+        self.assertNotIn("Ralph started from the current branch head", self.start_comment(CHILD))
+        self.assert_evidence_starts_from(head)
+
+    def test_child_base_after_the_reset_marker_or_before_an_untrusted_one_is_resumed(self):
+        base_sha = self.repository.base_sha
+        for name, comments in (
+            ("child base after the reset marker", [reset_marker(), child_base_marker(base_sha)]),
+            ("untrusted reset marker", [
+                child_base_marker(base_sha), reset_marker(author="outside-contributor"),
+            ]),
+        ):
+            with self.subTest(name):
+                self.new_run()
+                self.commit_prior_child()
+                self.github.add_issue(CHILD, parent=PARENT, comments=comments)
+
+                result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
+
+                self.assert_completed(result, sessions=1)
+                self.assertEqual(self.child_bases(CHILD)[-1], base_sha)
+                self.assert_evidence_starts_from(base_sha)
+
     def test_started_child_stopped_by_a_dependency_deadlock_keeps_its_commits(self):
         self.commit_prior_child()
         self.github.add_issue(CHILD, parent=PARENT, blocked_by=[OTHER_CHILD], comments=[
@@ -1378,6 +1479,39 @@ class ParentCompletionTests(ParentLabelTestCase):
                 self.assertEqual(
                     sum(marker in comment for comment in self.github.comments(PARENT)), 1
                 )
+
+    def test_parent_whose_reset_marker_is_newer_than_its_handoff_is_handed_off_again(self):
+        for mode in MODES:
+            for marker in (mode.parent_completion_marker, mode.terminal_summary_marker):
+                with self.subTest(mode=mode.diagnostics_label, marker=marker):
+                    self.new_run()
+                    self.github.add_issue(CHILD, parent=PARENT, state="closed", labels=())
+                    # Both posted in the same second, so the handoff's time is still the
+                    # parent's latest update.
+                    updated_at = self.github.issues[PARENT]["updatedAt"]
+                    self.github.issues[PARENT]["comments"] = [
+                        {"author": {"login": TRUSTED_LOGIN}, "body": f"{marker}\nHanded off.", "createdAt": updated_at},
+                        reset_marker(created_at=updated_at),
+                    ]
+
+                    result = self.start(mode)
+
+                    self.assert_completed(result, sessions=0)
+                    self.assertIn(mode.parent_completion_marker, self.github.comments(PARENT)[-2])
+
+    def test_untrusted_reset_marker_leaves_the_parent_handed_off(self):
+        self.github.add_issue(CHILD, parent=PARENT, state="closed", labels=())
+        updated_at = self.github.issues[PARENT]["updatedAt"]
+        marker = loop_core.STANDARD_RUN.parent_completion_marker
+        self.github.issues[PARENT]["comments"] = [
+            {"author": {"login": TRUSTED_LOGIN}, "body": f"{marker}\nHanded off.", "createdAt": updated_at},
+            reset_marker(author="outside-contributor", created_at=updated_at),
+        ]
+
+        result = self.start(loop_core.STANDARD_RUN)
+
+        self.assert_completed(result, sessions=0)
+        self.assertEqual(sum(marker in comment for comment in self.github.comments(PARENT)), 1)
 
     def test_completion_removes_work_started_from_the_parent(self):
         for parent_labels in (("work-started",), ("human-review", "work-started", "documentation")):

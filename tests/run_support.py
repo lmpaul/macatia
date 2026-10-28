@@ -262,6 +262,16 @@ def child_base_marker(child_base, author=TRUSTED_LOGIN):
     return {"author": {"login": author}, "body": body}
 
 
+def reset_marker(author=TRUSTED_LOGIN, created_at=None):
+    """A reset marker as a reset leaves it on a child it made ready for an agent again."""
+    marker = json.dumps({"previous_state": "implemented"}, separators=(",", ":"))
+    body = f"{loop_core.RESET_MARKER_PREFIX}{marker} -->\nA reset made this child ready for an agent again."
+    comment = {"author": {"login": author}, "body": body}
+    if created_at is not None:
+        comment["createdAt"] = created_at
+    return comment
+
+
 def legacy_implementation_evidence(base_sha, verified_head):
     """A trusted implementation evidence comment from before evidence carried JSON."""
     return {
