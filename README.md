@@ -81,6 +81,16 @@ offer, Ralph asks "Where should this run continue?":
 Without ISSUE, the run target is picked first, outside tmux. Without
 `--tmux`, nothing is asked.
 
+A `--tmux` run that cannot use a persistent terminal stops at once, before
+reading the configuration or GitHub and without taking the sleep lock:
+
+- `tmux not found: install tmux, or run without --tmux`
+- `already inside tmux: run without --tmux`
+- `--tmux needs a terminal: run in a terminal, or without --tmux`, when stdin
+  or stdout is not a terminal.
+
+`ralph-kit check` does not require tmux.
+
 Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean worktree.
 
 A run started on the base branch offers a run branch named

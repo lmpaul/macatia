@@ -7,6 +7,7 @@ import enum
 import os
 import pathlib
 import shlex
+import shutil
 import sys
 from typing import NamedTuple, NoReturn
 
@@ -20,6 +21,16 @@ class Continuation(enum.Enum):
     RESTART = "restart"
     CONTINUE_HERE = "continue here"
     STOP = "stop"
+
+
+class Unavailability(enum.Enum):
+    """Why a persistent terminal cannot be used, as the error that says what to do."""
+
+    TMUX_NOT_FOUND = "tmux not found: install tmux, or run without --tmux"
+    INSIDE_TMUX = "already inside tmux: run without --tmux"
+
+    def __str__(self) -> str:
+        return self.value
 
 
 class ContinuationChoice(NamedTuple):
@@ -62,6 +73,14 @@ def tmux_command(name: str, directory: pathlib.Path, command: str, shell: str) -
 
 class PersistentTerminal:
     """tmux, as the run reaches it."""
+
+    def unavailable(self) -> Unavailability | None:
+        """Why a persistent terminal cannot be used here, or None when it can."""
+        if shutil.which("tmux") is None:
+            return Unavailability.TMUX_NOT_FOUND
+        if os.environ.get("TMUX"):
+            return Unavailability.INSIDE_TMUX
+        return None
 
     def restart(self, name: str, command: str, directory: pathlib.Path) -> NoReturn:
         """Replace this process with a new session `name` in `directory` running the shell

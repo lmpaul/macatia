@@ -20,7 +20,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from ralph_kit import check, cli, loop, loop_core
 from ralph_kit.commands import RalphError
-from ralph_kit.persistent_terminal import Continuation
+from ralph_kit.persistent_terminal import Continuation, Unavailability
 from run_support import (
     BRANCH,
     REPOSITORY,
@@ -5346,11 +5346,53 @@ class PersistentTerminalTests(BaseBranchTestCase):
         self.assert_restarted(result, f"ralph-kit run --review {PARENT}")
         self.assertEqual(picked_before_question, [1])
 
-    def test_without_a_terminal_the_flag_stops_with_nothing_changed(self):
-        result = self.start_with("--tmux", PARENT, continuation=None)
+    def test_an_unavailable_persistent_terminal_stops_before_the_configuration_and_github(self):
+        tmux_not_found = "tmux not found: install tmux, or run without --tmux"
+        inside_tmux = "already inside tmux: run without --tmux"
+        needs_a_terminal = "--tmux needs a terminal: run in a terminal, or without --tmux"
+        for unavailability, continuation, error in (
+            (Unavailability.TMUX_NOT_FOUND, ScriptedContinuation(Continuation.RESTART),
+             tmux_not_found),
+            (Unavailability.INSIDE_TMUX, ScriptedContinuation(Continuation.RESTART), inside_tmux),
+            (None, None, needs_a_terminal),
+        ):
+            with self.subTest(error=error):
+                self.setUp()
+                self.sessions = ScriptedSessions(self.repository)
+                choose = ScriptedChoice(PARENT)
 
-        self.assert_nothing_changed(result, "--tmux needs a terminal")
-        self.assertEqual(result.persistent_terminal.restarts, [])
+                # A missing configuration shows it is never read.
+                result = start_run(
+                    self.repository, self.github, self.sessions,
+                    "--tmux", "--caffeinate", "--config", "missing.toml",
+                    choose_run_target=choose, choose_continuation=continuation,
+                    persistent_terminal_unavailability=unavailability,
+                )
+
+                self.assertEqual(result.exit_code, 1)
+                self.assertEqual(result.stderr.count(error), 1, result.stderr)
+                self.assertNotIn("missing.toml", result.stderr)
+                self.assertEqual(self.github.opened_for, [])
+                self.assertEqual(result.sleep_lock.taken, 0)
+                self.assertEqual(choose.offered, [])
+                self.assertEqual(result.persistent_terminal.restarts, [])
+                if continuation is not None:
+                    self.assertEqual(continuation.asked, [])
+
+    def test_without_the_flag_the_persistent_terminal_is_never_checked(self):
+        for unavailability in Unavailability:
+            with self.subTest(unavailability=unavailability):
+                self.setUp()
+                self.sessions = ScriptedSessions(self.repository, ScriptedResult("committed"))
+
+                result = start_run(
+                    self.repository, self.github, self.sessions, PARENT,
+                    confirm=ScriptedConfirm(CREATE), choose_continuation=None,
+                    persistent_terminal_unavailability=unavailability,
+                )
+
+                self.assert_completed(result, sessions=1)
+                self.assertEqual(result.persistent_terminal.checked, 0)
 
 
 if __name__ == "__main__":

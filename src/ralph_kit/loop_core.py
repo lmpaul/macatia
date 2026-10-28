@@ -1363,6 +1363,16 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
     return run_branch
 
 
+def require_persistent_terminal(state: RunState) -> None:
+    """Stop a `--tmux` run that cannot restart in a persistent terminal: without tmux, inside
+    tmux, or outside a terminal, where there is no continuation choice."""
+    unavailability = state.adapters.persistent_terminal.unavailable()
+    if unavailability is not None:
+        raise RalphError(str(unavailability))
+    if state.adapters.choose_continuation is None:
+        raise RalphError("--tmux needs a terminal: run in a terminal, or without --tmux")
+
+
 def ask_where_to_continue(state: RunState, parent_issue: int) -> bool:
     """Ask where the run continues: True to continue in this terminal. Restart releases what
     startup holds until the end, then restarts the run in the persistent terminal of
@@ -1370,8 +1380,8 @@ def ask_where_to_continue(state: RunState, parent_issue: int) -> bool:
     returns, which only a fake does. Stop and Ctrl-C stop with nothing changed."""
     name = persistent_terminal_name(state.config.repository, parent_issue)
     choose = state.adapters.choose_continuation
-    if choose is None:
-        raise RalphError("--tmux needs a terminal: run in a terminal, or without --tmux")
+    # Startup stopped a `--tmux` run outside a terminal.
+    assert choose is not None
     try:
         continuation = choose(name)
     except KeyboardInterrupt:
@@ -3144,8 +3154,9 @@ def real_run_adapters(
 def main(
     state: RunState, argv: list[str] | None = None, prog: str | None = None
 ) -> int:
-    """Start the run: read its arguments and configuration, take the sleep lock it asks for,
-    select its mode, read its quality policy, then run its children."""
+    """Start the run: read its arguments, stop a `--tmux` run that cannot use a persistent
+    terminal, read its configuration, take the sleep lock it asks for, select its mode, read
+    its quality policy, then run its children."""
     arguments = parse_arguments(
         sys.argv[1:] if argv is None else argv,
         prog,
@@ -3153,6 +3164,8 @@ def main(
     )
     state.rerun_command = rerun_command(arguments, arguments.parent_issue)
     state.offer_persistent_terminal = arguments.tmux
+    if arguments.tmux:
+        require_persistent_terminal(state)
     require_repository_root(state)
     config_path = arguments.config
     if not config_path.is_absolute():
