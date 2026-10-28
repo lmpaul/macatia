@@ -87,6 +87,10 @@ _Avoid_: Original loop, review loop (there is only one loop)
 The hold a run keeps on the machine so it does not idle-sleep until the run ends; when the machine cannot provide one, the run continues without it.
 _Avoid_: Caffeinate, keep-awake, wake lock
 
+**Persistent terminal**:
+The terminal a run continues in after the person's own terminal disconnects; a run started outside one can restart itself in one named after the repository and the run target.
+_Avoid_: tmux session, session (alone), detached run
+
 **Agent session**:
 One fresh, non-interactive invocation of a coding agent with a single role: an implementation session, a review session, or a correction session.
 _Avoid_: Iteration, agent run
