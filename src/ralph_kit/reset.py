@@ -37,7 +37,7 @@ from .progress import spinner
 # The lifecycle states a reset makes ready for an agent again, as label roles; a child
 # carrying several left the first one listed.
 RESET_STATES = ("human_review", "agent_working", "implemented")
-RUN_BRANCH = re.compile(re.escape(RUN_BRANCH_PREFIX) + r"([1-9][0-9]*)")
+RUN_BRANCH_NAME = re.compile(re.escape(RUN_BRANCH_PREFIX) + r"([1-9][0-9]*)")
 # Persisted in the comment a reset closes a cumulative draft PR with, so its value must
 # never change: a rerun reads from it what an interrupted reset closed and deleted.
 CLOSING_MARKER_PREFIX = "<!-- ralph-reset-closing: "
@@ -69,7 +69,7 @@ class ResettableRunTarget:
 @dataclass(frozen=True)
 class RunTraces:
     """The run branches and open cumulative draft PRs of every run target, each found with one
-    listing, as the picker reads them before inspecting each candidate."""
+    listing, as the picker reads them before inspecting each run target they point to."""
 
     # Run branch heads by run target number, on the configured remote and in the checkout.
     remote_heads: dict[int, str]
@@ -79,11 +79,9 @@ class RunTraces:
     checked_out: str | None
 
     def run_branch(self, number: int) -> RunBranch | None:
-        name = f"{RUN_BRANCH_PREFIX}{number}"
-        remote_head, local_head = self.remote_heads.get(number), self.local_heads.get(number)
-        if remote_head is None and local_head is None:
-            return None
-        return RunBranch(name, remote_head, local_head, local_head is not None and self.checked_out == name)
+        return RunBranch.found(
+            number, self.remote_heads.get(number), self.local_heads.get(number), self.checked_out
+        )
 
 
 @dataclass(frozen=True)
@@ -107,6 +105,17 @@ class RunBranch:
     local_head: str | None
     # Whether the checkout has it checked out: the reset switches to the base branch first.
     checked_out: bool
+
+    @staticmethod
+    def found(
+        number: int, remote_head: str | None, local_head: str | None, checked_out: str | None
+    ) -> RunBranch | None:
+        """The run branch of run target `number` at these heads, None when it exists nowhere;
+        `checked_out` is the checkout's current branch."""
+        name = f"{RUN_BRANCH_PREFIX}{number}"
+        if remote_head is None and local_head is None:
+            return None
+        return RunBranch(name, remote_head, local_head, local_head is not None and checked_out == name)
 
     def record(self) -> dict[str, Any]:
         """The deleted branch as the recap records it: its remote head, else its local one,
@@ -252,20 +261,26 @@ def find_run_branch(root: pathlib.Path, config: RalphConfig, number: int) -> Run
         remote_head, local_head = branch_heads(root, config.remote, name)
     except RalphError as error:
         raise RalphError(f"Cannot look for {name}, nothing reset: {error}") from error
-    if remote_head is None and local_head is None:
-        return None
-    return RunBranch(name, remote_head, local_head, local_head is not None and current_branch(root) == name)
+    return RunBranch.found(number, remote_head, local_head, current_branch(root))
 
 
-def cumulative_draft_pull_requests(github: Any, config: RalphConfig, number: int) -> list[dict[str, Any]]:
-    """The open pull requests into the base branch titled as Ralph titles a cumulative draft PR."""
+def open_cumulative_draft_pull_requests(
+    github: Any, config: RalphConfig, numbers: list[int]
+) -> dict[int, list[dict[str, Any]]]:
+    """The open pull requests into the base branch titled as Ralph titles the cumulative
+    draft PR of one of the run targets `numbers`, by run target, found with one lookup."""
     titles = {
-        cumulative_draft_pull_request_title(number, standalone=standalone) for standalone in (False, True)
+        cumulative_draft_pull_request_title(number, standalone=standalone): number
+        for number in numbers
+        for standalone in (False, True)
     }
-    pulls = github.open_pull_requests_by_title(config.base_branch, titles)
+    pulls = github.open_pull_requests_by_title(config.base_branch, set(titles))
     if not isinstance(pulls, list):
         raise RalphError("GitHub pull request lookup returned invalid data")
-    return sorted(pulls, key=lambda pull: int(pull["number"]))
+    by_target: dict[int, list[dict[str, Any]]] = {}
+    for pull in sorted(pulls, key=lambda pull: int(pull["number"])):
+        by_target.setdefault(titles[pull["title"]], []).append(pull)
+    return by_target
 
 
 def closing_marker(body: str) -> dict[str, Any] | None:
@@ -361,7 +376,7 @@ def inspect(
     # A standalone issue's labels are reset as its own only child's.
     remove = [] if standalone else stale_labels(config, target, run_target=True)
     if traces is None:
-        pulls = cumulative_draft_pull_requests(github, config, number)
+        pulls = open_cumulative_draft_pull_requests(github, config, [number]).get(number, [])
         branch = find_run_branch(root, config, number)
     else:
         pulls, branch = traces.pulls.get(number, []), traces.run_branch(number)
@@ -395,17 +410,17 @@ def dirty_worktree(config: RalphConfig, plan: Plan, root: pathlib.Path) -> list[
     )]
 
 
-def run_branch_numbers(lines: str, field: int) -> dict[int, str]:
-    """The run target numbers of the run branches a ref listing names, with their heads; each
-    line holds a head and a ref, the ref in field `field`."""
+def run_branch_heads(listing: str) -> dict[int, str]:
+    """The heads of the run branches a ref listing names, by run target number; each line
+    holds a head, then a ref."""
     heads = {}
-    for line in lines.splitlines():
+    for line in listing.splitlines():
         parts = line.split()
         if len(parts) != 2:
             continue
-        match = RUN_BRANCH.fullmatch(parts[field].removeprefix("refs/heads/"))
+        match = RUN_BRANCH_NAME.fullmatch(parts[1].removeprefix("refs/heads/"))
         if match:
-            heads[int(match.group(1))] = parts[1 - field]
+            heads[int(match.group(1))] = parts[0]
     return heads
 
 
@@ -418,45 +433,36 @@ def run_traces(
     listing = command(root, ["git", "ls-remote", "--heads", config.remote, pattern], check=False)
     if listing.returncode != 0:
         detail = " ".join((listing.stderr or "").split())
-        raise RalphError(f"could not reach {config.remote} to look for run branches: {detail}")
-    local = git(root, "for-each-ref", "--format=%(objectname) %(refname)", f"refs/heads/{RUN_BRANCH_PREFIX}")
-    titles = {
-        cumulative_draft_pull_request_title(number, standalone=standalone): number
-        for number in open_issues
-        for standalone in (False, True)
-    }
-    pulls = github.open_pull_requests_by_title(config.base_branch, set(titles))
-    if not isinstance(pulls, list):
-        raise RalphError("GitHub pull request lookup returned invalid data")
-    by_target: dict[int, list[dict[str, Any]]] = {}
-    for pull in sorted(pulls, key=lambda pull: int(pull["number"])):
-        by_target.setdefault(titles[pull["title"]], []).append(pull)
+        raise RalphError(
+            f"Cannot look for run branches on {config.remote}, nothing reset: {detail}"
+        )
+    local = git(root, "for-each-ref", "--format=%(objectname) %(refname)", pattern)
     return RunTraces(
-        run_branch_numbers(listing.stdout, 1), run_branch_numbers(local, 1), by_target,
-        current_branch(root),
+        run_branch_heads(listing.stdout), run_branch_heads(local),
+        open_cumulative_draft_pull_requests(github, config, open_issues), current_branch(root),
     )
 
 
 def resettable_run_targets(github: Any, config: RalphConfig, root: pathlib.Path) -> list[ResettableRunTarget]:
     """The resettable run targets of the repository, by ascending number.
 
-    Open issues are first narrowed to those carrying a trace of a run in their listing, a run
-    branch or a cumulative draft PR: an issue marked work started or human review, the
-    parent of an issue agent working, implemented, or in human review, else that issue
-    itself. Each candidate is then inspected as a reset of it would be. A failed lookup raises.
+    Open issues are first narrowed to those a trace of a run points to, through a run branch,
+    a cumulative draft PR or their listing's labels: an issue marked work started or human
+    review, the parent of an issue agent working, implemented, or in human review, else that
+    issue itself. Each is then inspected as a reset of it would be. A failed lookup raises.
     """
     issues = {int(issue["number"]): issue for issue in github.open_issues() if is_open(issue)}
     traces = run_traces(github, config, root, sorted(issues))
-    candidates = {*traces.remote_heads, *traces.local_heads, *traces.pulls}
+    traced = {*traces.remote_heads, *traces.local_heads, *traces.pulls}
     run_target_labels = {config.labels["work_started"], config.labels["human_review"]}
     for number, issue in issues.items():
         if labels(issue) & run_target_labels:
-            candidates.add(number)
+            traced.add(number)
         elif previous_state(config, issue) is not None:
             parent = github.parent(number)
-            candidates.add(number if parent is None else int(parent["number"]))
+            traced.add(number if parent is None else int(parent["number"]))
     targets = []
-    for number in sorted(candidates & issues.keys()):
+    for number in sorted(traced & issues.keys()):
         if author_login(issues[number]) not in config.trusted_authors:
             continue
         # The listing carries no comments: the evidence and reset markers are in the details.
@@ -665,8 +671,7 @@ def reset_target(
             raise RalphError(f"GitHub returned the wrong issue for #{number}")
         try:
             plan, failures = inspect(github, config, target, root)
-            if not failures:
-                failures = dirty_worktree(config, plan, root)
+            failures += dirty_worktree(config, plan, root)
         except KeyboardInterrupt:
             raise ResetCancelled from None
     if failures:

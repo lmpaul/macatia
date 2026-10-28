@@ -678,6 +678,16 @@ class ResetTests(unittest.TestCase):
             "#80  Issue 80  (standalone)",
         ]])
 
+    def test_a_run_target_whose_only_trace_is_an_unpushed_run_branch_is_offered(self):
+        self.add_parent(labels=("ready-for-agent",))
+        self.add_child(70, labels=("ready-for-agent",))
+        self.add_run_branch(pushed=False)
+        picker = ScriptedPicker(KeyboardInterrupt())
+
+        self.reset(choose=picker)
+
+        self.assertEqual(picker.offered, [[f"#{PARENT}  Issue {PARENT}  (parent · 0 children to reset)"]])
+
     def test_the_picked_run_target_resets_as_if_its_number_had_been_passed(self):
         self.add_resettable_and_refused_run_targets()
         confirmer = ScriptedConfirmer(True)

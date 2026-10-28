@@ -955,8 +955,8 @@ Without `ISSUE`, at a terminal, `reset` offers the resettable run targets by
 ascending number, each named as a parent with its count of children to reset
 or as a standalone issue: the open issues the checks above accept. It finds
 them with one listing of the remote's `ralph-kit/issue-` heads, one of the open
-cumulative draft PRs, and the open issues' labels, then inspects each candidate
-as a reset of it would. On the run branch of a listed issue
+cumulative draft PRs, and the open issues' labels, then inspects each run target
+they point to as a reset of it would. On the run branch of a listed issue
 (`ralph-kit/issue-<N>`), the picker preselects it. With no resettable run
 target, `reset` says so, naming the repository, and exits 0; Ctrl-C in the
 picker resets nothing and exits 130. Without a terminal, the issue is required.
@@ -982,8 +982,9 @@ pull requests already closed, branches already deleted, and markers and labels
 already written are skipped, and the recap still lists the children the first
 attempt reset, and the pull request it closed from `ralph-kit/issue-<N>` with
 the branch it deleted, which a hidden marker in the closing comment records.
-Exit codes are those of `close`: 0 once reset or with no resettable run target; 1 for a refusal, a declined
-confirmation or a GitHub or Git error; 2 for a usage error; 130 for Ctrl-C.
+Exit codes are those of `close`: 0 once reset or with no resettable run
+target; 1 for a refusal, a declined confirmation or a GitHub or Git error; 2 for
+a usage error; 130 for Ctrl-C.
 
 ## Readiness check
 
