@@ -1356,6 +1356,28 @@ class RunUsageCommandLineTests(unittest.TestCase):
                 self.assertIn("argument --no-review: not allowed with argument --review", error)
 
 
+class BakeCommandLineTests(unittest.TestCase):
+    """`ralph-kit bake` is an undocumented alias of `ralph-kit run`."""
+
+    def run_call(self, command):
+        with (
+            mock.patch.object(sys.stdin, "isatty", return_value=False),
+            mock.patch.object(loop, "run", return_value=0) as run,
+            mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
+        ):
+            self.assertEqual(cli.main([command, "--review", "5"]), 0)
+        return run.call_args
+
+    def test_bake_runs_like_run(self):
+        self.assertEqual(self.run_call("bake"), self.run_call("run"))
+
+    def test_usage_leaves_bake_out(self):
+        stdout = io.StringIO()
+        with contextlib.redirect_stdout(stdout):
+            self.assertEqual(cli.main(["--help"]), 0)
+        self.assertNotIn("bake", stdout.getvalue())
+
+
 class StartupChoiceCommandLineTests(unittest.TestCase):
     """`ralph-kit run` asks the startup question with the arrow keys only in a terminal."""
 

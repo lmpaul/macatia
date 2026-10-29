@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
 
     sys.dont_write_bytecode = True
     command, arguments = argv[0], argv[1:]
-    if command == "run":
+    if command in {"run", "bake"}:  # bake: an undocumented alias, an easter egg.
         from . import loop
 
         terminal = sys.stdin.isatty() and sys.stdout.isatty()
