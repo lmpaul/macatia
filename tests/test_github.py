@@ -120,5 +120,62 @@ class OpenIssuesTests(unittest.TestCase):
                 self.open_issues([[issue]])
 
 
+
+def listed_pull(number, title, ref, owner="lmpaul/ralph-kit"):
+    """A pull request as GitHub's REST pull request listing returns it."""
+    return {
+        "number": number,
+        "title": title,
+        "html_url": f"https://github.com/lmpaul/ralph-kit/pull/{number}",
+        "head": {"ref": ref, "user": {"login": owner.split("/")[0]}, "repo": {"full_name": owner}},
+    }
+
+
+class PullRequestsByTitleTests(unittest.TestCase):
+    def test_only_open_pull_requests_into_the_base_with_a_listed_title_are_read(self):
+        github = GitHub(pathlib.Path("/repository"), "lmpaul/ralph-kit")
+        pages = [
+            [listed_pull(12, "Implement Ralph parent #69", "ralph-kit/issue-69")],
+            [
+                listed_pull(13, "Implement Ralph parent #690", "ralph-kit/issue-690"),
+                listed_pull(14, "Implement Ralph issue #69", "ralph-kit/issue-69", owner="fork/ralph-kit"),
+            ],
+        ]
+        with mock.patch("ralph_kit.github.command") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, json.dumps(pages), "")
+            pulls = github.open_pull_requests_by_title(
+                "main", {"Implement Ralph parent #69", "Implement Ralph issue #69"}
+            )
+
+        command.assert_called_once_with(
+            pathlib.Path("/repository"),
+            [
+                "gh", "api", "repos/lmpaul/ralph-kit/pulls?state=open&base=main&per_page=100",
+                "--paginate", "--slurp",
+            ],
+            check=True,
+        )
+        self.assertEqual(pulls, [
+            {"number": 12, "title": "Implement Ralph parent #69", "head": "ralph-kit/issue-69"},
+            {
+                "number": 14, "title": "Implement Ralph issue #69",
+                "head": "fork/ralph-kit:ralph-kit/issue-69",
+            },
+        ])
+
+
+class DeleteIssueCommentTests(unittest.TestCase):
+    def test_an_issue_comment_is_deleted_by_its_listed_identifier(self):
+        github = GitHub(pathlib.Path("/repository"), "lmpaul/ralph-kit")
+        with mock.patch("ralph_kit.github.command") as command:
+            command.return_value = subprocess.CompletedProcess([], 0, "", "")
+            github.delete_issue_comment(6470121943)
+
+        command.assert_called_once_with(
+            pathlib.Path("/repository"),
+            ["gh", "api", "--method", "DELETE", "repos/lmpaul/ralph-kit/issues/comments/6470121943"],
+            check=True,
+        )
+
 if __name__ == "__main__":
     unittest.main()

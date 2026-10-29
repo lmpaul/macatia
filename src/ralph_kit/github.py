@@ -209,6 +209,57 @@ class GitHub:
             "number,isDraft,url",
         )
 
+    def open_pull_requests_by_title(self, base: str, titles: set[str]) -> list[dict[str, Any]]:
+        """The open pull requests into `base` titled one of `titles`, each with its number,
+        title and head branch; a head in another repository is named `owner:branch`."""
+        base_query = urllib.parse.quote(base, safe="")
+        pulls = []
+        for pull in self._list(f"repos/{self.repository}/pulls?state=open&base={base_query}&per_page=100"):
+            if pull.get("title") not in titles:
+                continue
+            number, head = pull.get("number"), pull.get("head") or {}
+            if not isinstance(number, int) or not isinstance(head.get("ref"), str):
+                raise RalphError(f"GitHub listed a pull request without a number or head: {pull!r}")
+            repository = (head.get("repo") or {}).get("full_name")
+            pulls.append({
+                "number": number,
+                "title": pull["title"],
+                "head": head["ref"] if repository == self.repository
+                else f"{repository or 'a deleted fork'}:{head['ref']}",
+            })
+        return pulls
+
+    def closed_pull_requests(self, head: str, base: str) -> Any:
+        """The closed pull requests from branch `head` into `base`, merged or not."""
+        return self._json(
+            "pr", "list", "--repo", self.repository, "--head", head, "--base", base,
+            "--state", "closed", "--json", "number,title,headRefName", "--jq",
+            "map({number, title, head: .headRefName})",
+        )
+
+    def issue_comments(self, number: int) -> list[dict[str, Any]]:
+        """Every comment on an issue or pull request, read as `issue` reads its comments:
+        author, body and creation time, with its identifier."""
+        return [
+            {
+                "id": comment.get("id"),
+                "author": {"login": (comment.get("user") or {}).get("login")},
+                "body": str(comment.get("body") or ""),
+                "createdAt": str(comment.get("created_at", "")),
+            }
+            for comment in self._list(f"repos/{self.repository}/issues/{number}/comments?per_page=100")
+        ]
+
+    def delete_issue_comment(self, comment_id: Any) -> None:
+        """Delete an issue comment by the identifier `issue_comments` lists it with."""
+        self._gh(
+            "api", "--method", "DELETE", f"repos/{self.repository}/issues/comments/{comment_id}"
+        )
+
+    def close_pull_request(self, number: int, comment: str) -> None:
+        """Close a pull request with a comment, keeping its branch."""
+        self._gh("pr", "close", str(number), "--repo", self.repository, "--comment", comment)
+
     def comment_on_pull_request(self, number: int, body: str) -> None:
         self._gh("pr", "comment", str(number), "--body", body)
 

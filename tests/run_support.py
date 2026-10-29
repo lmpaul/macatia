@@ -262,6 +262,16 @@ def child_base_marker(child_base, author=TRUSTED_LOGIN):
     return {"author": {"login": author}, "body": body}
 
 
+def reset_marker(author=TRUSTED_LOGIN, created_at=None):
+    """A reset marker as a reset leaves it on a child it made ready for an agent again."""
+    marker = json.dumps({"previous_state": "implemented"}, separators=(",", ":"))
+    body = f"{loop_core.RESET_MARKER_PREFIX}{marker} -->\nA reset made this child ready for an agent again."
+    comment = {"author": {"login": author}, "body": body}
+    if created_at is not None:
+        comment["createdAt"] = created_at
+    return comment
+
+
 def legacy_implementation_evidence(base_sha, verified_head):
     """A trusted implementation evidence comment from before evidence carried JSON."""
     return {
@@ -283,6 +293,9 @@ class PullRequest:
     body: str
     is_draft: bool = True
     comments: list[str] = field(default_factory=list)
+    state: str = "open"
+    # The comments as the issue comments listing returns them, for those that list them.
+    comment_records: list[dict] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -333,7 +346,11 @@ class FakeGitHub:
     failed `gh` call would, without changing labels. Closing an issue records
     its reason as `stateReason`; `close_error` maps an issue number to the error
     its next close raises instead, and `after_close`, when set, is called with
-    the issue number and reason after each close. Reading an unknown issue raises
+    the issue number and reason after each close. Closing a pull request stores its
+    comment, which the issue comments listing of its number returns, and marks it closed; `after_pull_request_close`, when set, is called with
+    its number after each close. Every issue comment gets an identifier, by which it can be
+    deleted; `after_comment_delete`, when set, is called with the issue number after each
+    deletion. Reading an unknown issue raises
     as `gh` does for an issue that does not exist. A commit is on a branch when
     `on_branch` maps its SHA to True; `compared` keeps each (branch, SHA) asked.
     `commit_pulls` maps a commit SHA to the pull requests GitHub associates with
@@ -380,6 +397,9 @@ class FakeGitHub:
         self.label_edit_error = None
         self.close_error = {}
         self.after_close = None
+        self.after_pull_request_close = None
+        self.after_comment_delete = None
+        self.next_comment_id = 1000
         self.on_branch = {}
         self.compared = []
         self.commit_pulls = {}
@@ -407,7 +427,7 @@ class FakeGitHub:
             "state": state.upper(),
             "labels": [{"name": label} for label in labels],
             "author": {"login": author},
-            "comments": [dict(comment) for comment in comments],
+            "comments": [{"id": self._comment_id(), **comment} for comment in comments],
             "updatedAt": self._timestamp(),
         }
         if parent is not None:
@@ -435,6 +455,10 @@ class FakeGitHub:
     def _timestamp(self):
         self.revision += 1
         return f"2026-08-29T00:{self.revision // 60:02d}:{self.revision % 60:02d}Z"
+
+    def _comment_id(self):
+        self.next_comment_id += 1
+        return self.next_comment_id
 
     def _touch(self, number):
         timestamp = self._timestamp()
@@ -493,6 +517,7 @@ class FakeGitHub:
     def comment_on_issue(self, number, body):
         created_at = self._touch(number)
         self.issues[number]["comments"].append({
+            "id": self._comment_id(),
             "author": {"login": self.login},
             "body": body,
             "createdAt": created_at,
@@ -534,8 +559,52 @@ class FakeGitHub:
                 "url": f"https://github.test/{self.repository}/pull/{pull.number}",
             }
             for pull in self.pull_requests
-            if pull.head == head and pull.base == base
+            if pull.head == head and pull.base == base and pull.state == "open"
         ]
+
+    def open_pull_requests_by_title(self, base, titles):
+        return [
+            {
+                "number": pull.number,
+                "title": pull.title,
+                "head": pull.head,
+            }
+            for pull in self.pull_requests
+            if pull.base == base and pull.title in titles and pull.state == "open"
+        ]
+
+    def closed_pull_requests(self, head, base):
+        return [
+            {"number": pull.number, "title": pull.title, "head": pull.head}
+            for pull in self.pull_requests
+            if pull.head == head and pull.base == base and pull.state == "closed"
+        ]
+
+    def issue_comments(self, number):
+        pull = next((pull for pull in self.pull_requests if pull.number == number), None)
+        if pull is not None:
+            return copy.deepcopy(pull.comment_records)
+        return self.issue(number)["comments"]
+
+    def delete_issue_comment(self, comment_id):
+        for number, issue in self.issues.items():
+            for index, comment in enumerate(issue["comments"]):
+                if comment.get("id") == comment_id:
+                    del issue["comments"][index]
+                    if self.after_comment_delete is not None:
+                        self.after_comment_delete(number)
+                    return
+        raise RalphError(f"command failed (gh api --method DELETE issues/comments/{comment_id}): Not Found")
+
+    def close_pull_request(self, number, comment):
+        pull = self._pull(number)
+        pull.comments.append(comment)
+        pull.comment_records.append({
+            "author": {"login": self.login}, "body": comment, "createdAt": self._timestamp(),
+        })
+        pull.state = "closed"
+        if self.after_pull_request_close is not None:
+            self.after_pull_request_close(number)
 
     def comment_on_pull_request(self, number, body):
         self._pull(number).comments.append(body)

@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure, update-config and close."""
+"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure, update-config, close and reset."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ if TYPE_CHECKING:
     from .close import ClosableRunTarget
     from .loop_core import StartableRunTarget
     from .persistent_terminal import Continuation
+    from .reset import ResettableRunTarget
 
 
 USAGE = """usage: ralph-kit <command> [options]
@@ -49,6 +50,16 @@ commands:
       --yes closes without asking; without a terminal, close needs --yes.
       --force closes despite failed checks, shown as warnings, once you type ISSUE at a terminal;
       it needs ISSUE.
+  reset [--yes] [--purge] [--config PATH] [ISSUE]
+      Reset, after one confirmation: close the open cumulative draft PR of ISSUE, delete
+      ralph-kit/issue-ISSUE on the remote and in this checkout, then label ready-for-agent again
+      each child of ISSUE that is agent-working, implemented or in human-review, then ISSUE itself,
+      each with a reset marker Ralph reads none of its earlier records past; ISSUE must be open
+      with no merged child.
+      Without ISSUE, at a terminal, offers the resettable run targets to choose from.
+      --yes resets without asking; without a terminal, reset needs --yes.
+      --purge deletes Ralph's comments on ISSUE and those children instead of leaving reset
+      markers; a reset marker on ISSUE then counts as the trace of a run too.
 
 Run every command from the target repository root. Configuration defaults to ./ralph.toml.
 """
@@ -111,7 +122,9 @@ def startup_choice_with_arrows(question: str, accept: str, *, accept_by_default:
 
 
 def pick_run_target_with_arrows(
-    question: str, targets: list[StartableRunTarget] | list[ClosableRunTarget], preselected: int | None
+    question: str,
+    targets: list[StartableRunTarget] | list[ClosableRunTarget] | list[ResettableRunTarget],
+    preselected: int | None,
 ) -> int:
     """The number of the run target picked, `preselected` or the first one listed by default;
     Ctrl-C raises KeyboardInterrupt."""
@@ -135,6 +148,12 @@ def close_target_with_arrows(targets: list[ClosableRunTarget], preselected: int 
     """The number of the closable run target picked, `preselected` or the first one listed
     by default; Ctrl-C raises KeyboardInterrupt, which close counts as a cancellation."""
     return pick_run_target_with_arrows("Which run target should Ralph close?", targets, preselected)
+
+
+def reset_target_with_arrows(targets: list[ResettableRunTarget], preselected: int | None) -> int:
+    """The number of the resettable run target picked, `preselected` or the first one listed
+    by default; Ctrl-C raises KeyboardInterrupt, which reset counts as a cancellation."""
+    return pick_run_target_with_arrows("Which run target should Ralph reset?", targets, preselected)
 
 
 def continuation_with_arrows(name: str) -> Continuation:
@@ -207,6 +226,15 @@ def main(argv: list[str] | None = None) -> int:
             confirm=yes_no_with_arrows if terminal else None,
             type_answer=input if terminal else None,
             choose_run_target=close_target_with_arrows if terminal else None,
+        )
+    if command == "reset":
+        from . import reset
+
+        terminal = sys.stdin.isatty() and sys.stdout.isatty()
+        return reset.run(
+            arguments,
+            confirm=yes_no_with_arrows if terminal else None,
+            choose_run_target=reset_target_with_arrows if terminal else None,
         )
     print(f"ralph-kit: unknown command {command!r}\n\n{USAGE}", end="", file=sys.stderr)
     return 2

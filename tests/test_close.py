@@ -24,6 +24,7 @@ from run_support import (  # noqa: E402
     FakeGitHub,
     implementation_evidence,
     legacy_implementation_evidence,
+    reset_marker,
 )
 
 
@@ -697,6 +698,32 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
 
         self.assertEqual(self.github.compared, [("main", sha("verified-70-v1"))])
+
+    def test_evidence_older_than_a_childs_reset_marker_is_ignored(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71, comments=[self.evidence(71), reset_marker()])
+
+        self.assertEqual(self.close(str(PARENT), "--yes"), 1)
+
+        self.assertIn("#71", self.stderr)
+        self.assertIn("terminal", self.stderr)
+        self.assertEqual(self.github.compared, [("main", sha("verified-70-v1"))])
+        self.assert_nothing_written(PARENT, 70, 71)
+
+    def test_evidence_after_a_reset_marker_or_before_an_untrusted_one_counts(self):
+        for name, comments in (
+            ("evidence after the reset marker", lambda: [reset_marker(), self.evidence(70)]),
+            ("untrusted reset marker", lambda: [self.evidence(70), reset_marker(author="intruder")]),
+        ):
+            with self.subTest(name):
+                self.github = FakeGitHub()
+                self.add_parent()
+                self.add_child(70, comments=comments())
+
+                self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
+
+                self.assertEqual(self.state(70), ("CLOSED", "COMPLETED"))
 
     def test_an_implemented_child_without_trusted_evidence_is_listed_apart(self):
         self.add_parent()

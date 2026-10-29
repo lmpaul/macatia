@@ -204,6 +204,10 @@ _Avoid_: Done, closed
 The lifecycle state of a child or parent handed to a human: either because Ralph stopped on it, or because all children are implemented. Ralph never resumes a child in this state.
 _Avoid_: Escalation, stuck
 
+**Handoff comment**:
+The trusted comment Ralph posts on a child when it sends the child to human review, saying why it stopped. Since resets exist, each one carries a hidden marker so a purge can find it; earlier ones carry none.
+_Avoid_: Stop comment, failure comment
+
 **Work started**:
 The label role marking a parent on which Ralph has started work. It is neither a triage label nor a lifecycle label, and it is informational only: Ralph never reads it to decide anything.
 _Avoid_: Parent in progress, parent agent-working
@@ -242,7 +246,7 @@ Returning an open run target with no merged child to the state a run can start o
 _Avoid_: Rollback, undo, clean, rewind, restart
 
 **Resettable run target**:
-A run target a reset would act on now: open, with no merged child, and carrying the trace of a run: a child agent working, implemented, or in human review, a parent marked work started or human review, a run branch named after it, or an open cumulative draft PR; for a purge, a reset marker is such a trace too. A reset started without a run target offers these to choose from.
+A run target a reset would act on now: open, with no merged child, and carrying the trace of a run: a child agent working, implemented, or in human review, a parent marked work started or human review, a run branch named after it, or an open cumulative draft PR; for a purge, a reset marker, or any other of Ralph's own comments left on it, is such a trace too. A reset started without a run target offers these to choose from.
 _Avoid_: Stale issue, failed issue, candidate
 
 **Reset marker**:

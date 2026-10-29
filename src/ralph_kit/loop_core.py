@@ -94,6 +94,11 @@ MAX_STOP_REASON_LENGTH = 1600
 ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
 # Persisted in child cycle start comments, so its value must never change.
 CHILD_BASE_MARKER_PREFIX = "<!-- ralph-child-base: "
+# Persisted in reset markers by both run modes, so its value must never change.
+RESET_MARKER_PREFIX = "<!-- ralph-reset: "
+# Persisted in handoff comments by both run modes, so its value must never change.
+# Handoff comments posted before it existed carry no marker.
+HANDOFF_MARKER = "<!-- ralph-handoff -->"
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
@@ -818,11 +823,10 @@ def unsatisfied_blockers(state: RunState, child_number: int) -> str:
 
 def handoff_comment_url(state: RunState, child_number: int) -> str | None:
     """The link to Ralph's latest handoff comment on a child in human review."""
-    comments = issue_details(state, child_number).get("comments", [])
-    for comment in reversed(comments):
-        if trusted_comment(state, comment) and str(comment.get("body", "")).startswith(
-            HANDOFF_PREFIX
-        ):
+    records = ralph_records(issue_details(state, child_number), state.config.trusted_authors)
+    for comment in reversed(records):
+        body = str(comment.get("body", ""))
+        if body.startswith((HANDOFF_MARKER, HANDOFF_PREFIX)):
             return comment.get("url")
     return None
 
@@ -1294,6 +1298,38 @@ def preflight(state: RunState) -> str:
     return branch
 
 
+def branch_heads(
+    repository_root: pathlib.Path, remote: str, branch: str
+) -> tuple[str | None, str | None]:
+    """The head of `branch` on `remote` and in the checkout, None where it does not exist."""
+    # Lists the remote's heads without writing any local ref.
+    listing = run_command(
+        repository_root, ["git", "ls-remote", "--heads", remote, f"refs/heads/{branch}"], check=False
+    )
+    if listing.returncode != 0:
+        detail = " ".join((listing.stderr or "").split())
+        raise RalphError(f"could not reach {remote} to look for {branch}: {detail}")
+    # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
+    remote_head = next(
+        (
+            line.split("\t")[0]
+            for line in listing.stdout.splitlines()
+            if line.split("\t")[-1] == f"refs/heads/{branch}"
+        ),
+        None,
+    )
+    local_lookup = run_command(
+        repository_root, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{branch}"], check=False
+    )
+    local_head = local_lookup.stdout.strip() if local_lookup.returncode == 0 else None
+    return remote_head, local_head
+
+
+def cumulative_draft_pull_request_title(run_target: int, *, standalone: bool) -> str:
+    """The title Ralph gives the cumulative draft PR of a run target."""
+    return f"Implement Ralph {'issue' if standalone else 'parent'} #{run_target}"
+
+
 def offer_run_branch(state: RunState, parent_issue: int) -> str:
     """On the base branch, offer the parent's run branch and return it once it is published.
 
@@ -1306,26 +1342,7 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
     configuration = state.config
     base, remote = configuration.base_branch, configuration.remote
     run_branch = f"{RUN_BRANCH_PREFIX}{parent_issue}"
-    # Lists the remote's heads without writing any local ref.
-    listing = command(
-        state, ["git", "ls-remote", "--heads", remote, f"refs/heads/{run_branch}"], check=False
-    )
-    if listing.returncode != 0:
-        detail = " ".join((listing.stderr or "").split())
-        raise RalphError(f"could not reach {remote} to look for {run_branch}: {detail}")
-    # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
-    remote_head = next(
-        (
-            line.split("\t")[0]
-            for line in listing.stdout.splitlines()
-            if line.split("\t")[-1] == f"refs/heads/{run_branch}"
-        ),
-        None,
-    )
-    local_lookup = command(
-        state, ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{run_branch}"], check=False
-    )
-    local_head = local_lookup.stdout.strip() if local_lookup.returncode == 0 else None
+    remote_head, local_head = branch_heads(state.repository_root, remote, run_branch)
 
     if local_head is None and remote_head is None:
         question, accept = f"Create {run_branch} from an up-to-date {base}?", "Create"
@@ -1553,6 +1570,32 @@ def trusted_comment(state: RunState, comment: dict[str, Any]) -> bool:
     return author_login(comment) in state.config.trusted_authors
 
 
+def comments_since_reset_marker(
+    issue: dict[str, Any], trusted_authors: Iterable[str]
+) -> list[dict[str, Any]]:
+    """The issue's comments, whatever their author, newer than its latest trusted reset
+    marker: Ralph reads none of its own records older than it (ADR 0003).
+
+    Every reader of Ralph's records goes through here or `ralph_records`.
+    """
+    trusted = set(trusted_authors)
+    comments = list(issue.get("comments", []))
+    for index in range(len(comments) - 1, -1, -1):
+        comment = comments[index]
+        if author_login(comment) in trusted and RESET_MARKER_PREFIX in str(comment.get("body", "")):
+            return comments[index + 1:]
+    return comments
+
+
+def ralph_records(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list[dict[str, Any]]:
+    """The issue's trusted comments that count as Ralph's records, oldest first."""
+    trusted = set(trusted_authors)
+    return [
+        comment for comment in comments_since_reset_marker(issue, trusted)
+        if author_login(comment) in trusted
+    ]
+
+
 def implementation_evidence_heads(
     body: str, mode: RunMode, *, allow_original: bool = False
 ) -> list[str] | None:
@@ -1611,10 +1654,7 @@ def latest_implementation_heads(
 
     The standard run accepts every format: its own, the reviewed run's, and the legacy one.
     """
-    trusted = set(trusted_authors)
-    for comment in reversed(issue.get("comments", [])):
-        if author_login(comment) not in trusted:
-            continue
+    for comment in reversed(ralph_records(issue, trusted_authors)):
         heads = implementation_evidence_heads(
             str(comment.get("body", "")), mode, allow_original=True
         )
@@ -1646,7 +1686,8 @@ def recoverable_implementation_heads(state: RunState, issue: dict[str, Any]) -> 
     # A run of either mode may have stopped on the issue since it published the evidence.
     summaries = (STANDARD_RUN.terminal_summary_marker, REVIEWED_RUN.terminal_summary_marker)
     after_summaries = False
-    for comment in reversed(issue.get("comments", [])):
+    # Comments of any author count: an untrusted one after the summaries updated the issue.
+    for comment in reversed(comments_since_reset_marker(issue, state.config.trusted_authors)):
         trusted = trusted_comment(state, comment)
         body = str(comment.get("body", ""))
         if trusted and state.mode.implementation_evidence_prefix in body:
@@ -1672,10 +1713,9 @@ def latest_update_is_trusted_marker_comment(
     if not isinstance(updated_at, str):
         return False
     return any(
-        trusted_comment(state, comment)
-        and any(marker in str(comment.get("body", "")) for marker in markers)
+        any(marker in str(comment.get("body", "")) for marker in markers)
         and comment.get("createdAt") == updated_at
-        for comment in reversed(issue.get("comments", []))
+        for comment in ralph_records(issue, state.config.trusted_authors)
     )
 
 
@@ -1806,9 +1846,9 @@ def warn_informational_label_failed(
 
 def latest_child_base_comment(state: RunState, issue: dict[str, Any]) -> str | None:
     """The body of the child's latest trusted comment carrying a child base marker."""
-    for comment in reversed(issue.get("comments", [])):
+    for comment in reversed(ralph_records(issue, state.config.trusted_authors)):
         body = str(comment.get("body", ""))
-        if trusted_comment(state, comment) and CHILD_BASE_MARKER_PREFIX in body:
+        if CHILD_BASE_MARKER_PREFIX in body:
             return body
     return None
 
@@ -2504,7 +2544,7 @@ def run_local_gates(
 
 
 def send_child_to_human_review(state: RunState, child_number: int, body: str) -> None:
-    state.github.comment_on_issue(child_number, body)
+    state.github.comment_on_issue(child_number, f"{HANDOFF_MARKER}\n{body}")
     set_child_lifecycle(state, child_number, "human_review")
 
 
@@ -2558,10 +2598,7 @@ def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_iss
         state.github.create_draft_pull_request(
             base=configuration.base_branch,
             head=branch,
-            title=(
-                f"Implement Ralph issue #{parent_issue}" if state.standalone
-                else f"Implement Ralph parent #{parent_issue}"
-            ),
+            title=cumulative_draft_pull_request_title(parent_issue, standalone=state.standalone),
             body=f"Cumulative implementation for #{parent_issue}. Human merge required.",
         )
 
