@@ -1,19 +1,42 @@
 # ralph-kit
 
-Ralph runs a loop of coding agents (Codex or Claude Code) over a parent GitHub
-issue, one runnable child (a GitHub sub-issue) at a time, or over a standalone
-issue on its own: implement, verify, correct, publish a draft PR. A human
-reviews and merges. The project vocabulary is defined in
-[GLOSSARY.md](GLOSSARY.md).
+A coding agent handles one issue well. Hand it ten and it loses the thread:
+skipped tests, tangled commits, work you can't tell is finished. Ralph is the
+loop around the agent: one fresh session per sub-issue, your tests and CI as
+the judge, a correction session when they fail, and a stop that hands the issue
+back to you when it can't converge. Nothing merges without a human.
 
-`ralph-kit` is installed once per machine and run from any repository. Each
-repository only keeps its own `ralph.toml` (plus, when verification is enabled,
-its quality module and manifest).
+Ralph is built around [Matt Pocock's skills](https://github.com/mattpocock/skills).
+Their workflow takes an idea through `/grill-with-docs` and `/to-spec`, and
+`/to-tickets` splits the spec into GitHub sub-issues labelled `ready-for-agent`,
+with their blocking links. From there, the workflow has you run `/implement` on
+each ticket yourself, clearing the context between tickets. Ralph does that part
+for you, unattended, and checks each result before moving on.
+
+## How it works
+
+`ralph-kit run <parent>` takes the parent's `ready-for-agent` children in turn,
+skipping any whose blockers are not done yet. Issues written by hand work as well
+as tickets from `/to-tickets`, and a small change can stay a standalone issue with
+no sub-issues. For each child, Ralph:
+
+1. starts a fresh Claude Code or Codex session that runs `/implement` on it;
+2. runs your local gates, the test and lint commands you configure, and starts a
+   correction session when they fail;
+3. pushes to the run branch, updates a single draft pull request for the whole
+   parent, and waits for CI, correcting again when it fails;
+4. labels the child `implemented` and moves on to the next one.
+
+A child still failing after three corrections, or that the agent reports as
+blocked, is labelled `human-review` and the run stops, its commits left on the
+branch for you to inspect. When every child is implemented, the parent goes to
+`human-review`: you review the draft pull request, merge it, and
+`ralph-kit close <parent>` closes the issues.
 
 ## Install
 
-Requires Python 3.11+ (uv can provide it), Git, an authenticated `gh` 2.70.0 or
-newer, and the CLI of each configured agent engine.
+You need Python 3.11+ (uv can provide it), Git, an authenticated `gh` 2.70.0 or
+newer, and Claude Code or Codex.
 
 ```sh
 curl -LsSf https://astral.sh/uv/install.sh | sh        # once per machine
@@ -23,46 +46,79 @@ uv tool upgrade ralph-kit --reinstall                   # pick up the latest com
 
 Pin a release with `git+https://github.com/lmpaul/ralph-kit@v0.6.3`.
 
-## Use in a repository
+Each repository Ralph works on also needs an `implement` skill checked in, under
+`.claude/skills/` for Claude Code or `.agents/skills/` for Codex. See
+[mattpocock/skills](https://github.com/mattpocock/skills) to install his into the
+repository.
 
-From the repository root:
+## Quickstart
+
+From the root of the repository you want Ralph to work on:
 
 ```sh
-ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
-ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
-ralph-kit configure            # change sections of ./ralph.toml from a menu
-ralph-kit update-config        # add the defaulted settings ./ralph.toml leaves out, then their GitHub labels
-ralph-kit check                # readiness check (offers to create or recolour labels)
-ralph-kit check --review       # also checks the review role (implied by review_by_default = true)
-ralph-kit run                  # at a terminal, pick among the startable run targets
-ralph-kit run 123              # standard run: implement the children of parent issue #123
-ralph-kit run --review 123     # reviewed run: adds an independent review session per child
-ralph-kit run --no-review 123  # standard run, even when review_by_default = true
-ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
-ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
-ralph-kit run --tmux 123       # offer to restart the run in a persistent terminal (tmux)
-ralph-kit close                # at a terminal, pick among the closable run targets
-ralph-kit close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
-ralph-kit close --yes 123      # same, without the confirmation
-ralph-kit close --force 123    # close despite failed checks, after typing 123
-ralph-kit reset                # at a terminal, pick among the resettable run targets
-ralph-kit reset 123            # reset: make #123 and its children ready for an agent again (asks first)
-ralph-kit reset --yes 123      # same, without the confirmation
-ralph-kit reset --purge 123    # same, deleting Ralph's comments instead of leaving reset markers
+ralph-kit init        # writes ralph.toml: detects what it can, asks the rest
+ralph-kit check       # readiness check; offers to create missing labels
+git add ralph.toml .gitignore && git commit -m "Configure ralph-kit"
+ralph-kit run 123     # works through the ready children of parent issue #123
 ```
+
+`init` asks which engine, model and reasoning effort each session uses, and which
+GitHub accounts are trusted authors: Ralph only acts on issues they wrote. The
+run starts on a clean worktree and offers to create the run branch
+`ralph-kit/issue-123`. Add `--review` for an independent review session on each
+child before it is published. Once you have merged the draft pull request,
+`ralph-kit close 123` closes the children and the parent.
+
+Local gates and CI checks need a quality module and manifest
+(`.github/scripts/quality.py` and `.github/quality-gates.json`). Without them,
+`init` turns both off and Ralph checks nothing beyond the agent's own result; see
+[verification](docs/verification.md).
+
+## Safety
+
+Ralph runs agents unattended, so it turns their approval prompts off: Claude Code
+gets `--dangerously-skip-permissions` and Codex
+`--dangerously-bypass-approvals-and-sandbox`. Both can run any command and change
+any file the session can reach. Run Ralph in a checkout and on a machine where
+that is acceptable, such as a dedicated clone, a VM, a VPS or a container.
+
+What it keeps under control:
+
+- it only acts on issues written by a trusted author, so a stranger's issue on a
+  public repository cannot steer an agent;
+- it never commits to the base branch, only to the run branch, and it never
+  merges: a human merges the draft pull request.
+
+## Commands
+
+| Command | What it does |
+| --- | --- |
+| `ralph-kit init` | Writes `ralph.toml`, detecting what it can and asking the rest. |
+| `ralph-kit configure` | Changes sections of an existing `ralph.toml` from a menu. |
+| `ralph-kit update-config` | Adds the settings a newer ralph-kit introduced, with their defaults. |
+| `ralph-kit check` | Checks that the machine, repository and GitHub are ready for a run. |
+| `ralph-kit run [ISSUE]` | Works through a parent's ready children, or a standalone issue. |
+| `ralph-kit close [ISSUE]` | Once the work is merged, closes the children, then the parent. |
+| `ralph-kit reset [ISSUE]` | Makes an issue and its children ready to run again from scratch. |
+
+Without `ISSUE`, at a terminal, `run`, `close` and `reset` list the issues they
+can act on. `run` also takes `--review`, `--caffeinate` (keep the machine awake)
+and `--tmux` (continue in a persistent terminal). Every command takes
+`--config PATH` to use another configuration file.
 
 ## Documentation
 
-See [docs/](docs/README.md): [configuration](docs/configuration.md),
-[readiness check](docs/check.md), [the loop](docs/run.md),
-[Codex and Claude Code](docs/engines.md), [verification](docs/verification.md),
-[incomplete issue work](docs/incomplete-work.md), [closure](docs/close.md)
-and [reset](docs/reset.md).
+The [documentation](docs/README.md) covers each command and setting in detail:
+[configuration](docs/configuration.md), [readiness check](docs/check.md),
+[the loop](docs/run.md), [Codex and Claude Code](docs/engines.md),
+[verification](docs/verification.md), [incomplete issue work](docs/incomplete-work.md),
+[closure](docs/close.md) and [reset](docs/reset.md). The terms Ralph uses in its
+output, comments and docs are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md).
+See [CONTRIBUTING.md](CONTRIBUTING.md) to develop ralph-kit and run its test suites.
 
 ## License
 
-MIT, see [LICENSE](LICENSE).
+[MIT](LICENSE) © PLM STUDIO
