@@ -33,7 +33,8 @@ commands:
       --worktree offers, once the run target passes its startup checks, to create a run worktree on
       ralph-kit/issue-<run target> from the remote base branch, next to the repository in
       <repository>.worktrees/issue-<run target>, or to continue in that run worktree when it exists,
-      then restarts the run there; your checkout is left as it is, dirty or on any branch.
+      prepares it with worktree_setup when configured, then restarts the run there; your checkout
+      is left as it is, dirty or on any branch.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
       --review also checks the review role, as review_by_default = true does.

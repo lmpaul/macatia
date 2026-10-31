@@ -151,7 +151,9 @@ ralph-kit check --config review.toml
 - `worktree_setup` is optional, with no default: a non-empty string without
   surrounding whitespace, the shell command that prepares a run worktree for
   `ralph-kit run --worktree`, such as `pnpm install --frozen-lockfile` or
-  `uv sync`. Leaving it out prepares nothing.
+  `uv sync`, run in the run worktree on every `--worktree` run (see
+  [Run worktree](run.md#preparing-the-run-worktree-worktree_setup)). Leaving it
+  out prepares nothing.
   `init` never asks for it and `update-config` never adds it: set it with
   `configure` or by hand. `check` validates it without running it.
 

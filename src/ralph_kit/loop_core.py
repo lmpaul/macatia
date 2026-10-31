@@ -1453,7 +1453,8 @@ def run_worktree_path(state: RunState, run_target: int) -> pathlib.Path:
 def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | None:
     """Offer to create the run worktree of the parent, on its run branch where it exists and
     otherwise on a new run branch from the remote base branch, or to continue in the existing
-    one, and return it once accepted; None when the run already runs in it.
+    one, prepare it with `worktree_setup`, and return it once accepted; None when the run
+    already runs in it, once prepared and found clean.
 
     Anything other than Create or Continue, a run branch checked out in another checkout, a
     path that already exists but not as the run worktree of the parent on its run branch, a
@@ -1466,12 +1467,14 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
     run_branch = f"{RUN_BRANCH_PREFIX}{parent_issue}"
     path = run_worktree_path(state, parent_issue)
     if state.repository_root == path and state.branch == run_branch:
+        prepare_run_worktree(state, path)
         require_clean_worktree(state, "at startup")
         return None
     remote_head, local_head = branch_heads(state.repository_root, remote, run_branch)
     if is_run_worktree(state, path, run_branch):
         assert local_head is not None
         continue_in_run_worktree(state, run_branch, path, local_head, remote_head)
+        prepare_run_worktree(state, path)
         return path
     require_run_branch_checked_out_nowhere(state, run_branch)
     # Git keeps a deleted worktree registered, and would not add another at its path.
@@ -1530,7 +1533,24 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
         if remote_head is not None:
             git(state, "branch", "--quiet", f"--set-upstream-to={remote}/{run_branch}", run_branch)
             follow_remote_run_branch(state, run_branch, local_head, remote_head, path)
+    prepare_run_worktree(state, path)
     return path
+
+
+def prepare_run_worktree(state: RunState, path: pathlib.Path) -> None:
+    """Run the configured `worktree_setup` through the shell in the run worktree `path`, its
+    output in the terminal; a non-zero exit stops the run. Without it, nothing runs."""
+    setup = state.config.worktree_setup
+    if setup is None:
+        return
+    print(f"🔧 Preparing the run worktree {path}: {setup}", flush=True)
+    # Not captured: the command writes its own progress to the terminal.
+    completed = subprocess.run(setup, shell=True, cwd=path, check=False)
+    if completed.returncode != 0:
+        raise RalphError(
+            f"worktree_setup exited with {completed.returncode} in {path}: fix it, or run "
+            "without --worktree"
+        )
 
 
 def worktree_entries(state: RunState) -> list[list[str]]:

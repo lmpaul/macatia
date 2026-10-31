@@ -13,6 +13,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import unittest
 from unittest import mock
 
@@ -6404,6 +6405,193 @@ class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
         )
         self.assertEqual(confirm.questions, [])
         self.assertEqual(git(self.run_worktree, "branch", "--show-current"), "other")
+
+
+class RunWorktreeSetupTests(RunWorktreeTestCase):
+    """`worktree_setup` prepares the run worktree on every `--worktree` run, in the run
+    worktree and never in the person's checkout, before the restart or any session."""
+
+    PREPARE = "pwd -P >> prepared.txt"
+
+    def configure_setup(self, setup):
+        """Commit and push `setup` as `worktree_setup`, with its marker file ignored."""
+        configuration = self.repository.path / "ralph.toml"
+        configuration.write_text(
+            f"worktree_setup = {json.dumps(setup)}\n" + configuration.read_text(encoding="utf-8"),
+            encoding="utf-8",
+        )
+        with (self.repository.path / ".gitignore").open("a", encoding="utf-8") as ignored:
+            ignored.write("prepared.txt\n")
+        git(self.repository.path, "commit", "-q", "-am", "Prepare run worktrees")
+        git(self.repository.path, "push", "-q", "origin", "main")
+        self.base_head = self.repository.head()
+
+    def prepared_in(self):
+        """The directories `worktree_setup` ran in, once per line."""
+        marker = self.run_worktree / "prepared.txt"
+        if not marker.exists():
+            return []
+        return [pathlib.Path(line) for line in marker.read_text(encoding="utf-8").splitlines()]
+
+    def add_run_worktree(self):
+        git(self.repository.path, "worktree", "add", "-q", "-b", RUN_BRANCH, str(self.run_worktree), "main")
+
+    def capturing_the_terminal(self, start, *arguments, **keywords):
+        """Call `start`, returning its result and what was written to the process's standard
+        output, where a command not captured by Ralph writes."""
+        with tempfile.TemporaryFile() as terminal:
+            sys.stdout.flush()
+            saved = os.dup(1)
+            os.dup2(terminal.fileno(), 1)
+            try:
+                result = start(*arguments, **keywords)
+            finally:
+                os.dup2(saved, 1)
+                os.close(saved)
+            terminal.seek(0)
+            return result, terminal.read().decode()
+
+    def test_create_prepares_the_run_worktree_then_restarts_in_it(self):
+        self.configure_setup(f'{self.PREPARE} && echo "dependencies installed"')
+        self.persons_checkout()
+
+        result, terminal = self.capturing_the_terminal(
+            self.start_with, "--worktree", PARENT, confirm=ScriptedConfirm(CREATE)
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.prepared_in(), [self.run_worktree])
+        self.assertIn("dependencies installed", terminal)
+        self.assertLess(
+            result.stdout.index(f"Preparing the run worktree {self.run_worktree}"),
+            result.stdout.index("Restarting the run"),
+        )
+        self.assertEqual(len(result.persistent_terminal.restarts), 1)
+        self.assertEqual(git(self.run_worktree, "status", "--porcelain"), "")
+        self.assertFalse((self.repository.path / "prepared.txt").exists())
+        self.assert_checkout_untouched()
+        self.assertEqual(self.sessions.requests, [])
+
+    def test_continue_prepares_the_existing_run_worktree_then_restarts_in_it(self):
+        self.configure_setup(self.PREPARE)
+        self.add_run_worktree()
+        self.persons_checkout()
+
+        result = self.start_with("--worktree", PARENT, confirm=ScriptedConfirm(RESUME))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.prepared_in(), [self.run_worktree])
+        self.assertEqual(len(result.persistent_terminal.restarts), 1)
+        self.assertFalse((self.repository.path / "prepared.txt").exists())
+        self.assert_checkout_untouched()
+
+    def test_the_restarted_run_prepares_its_run_worktree_again_before_its_sessions(self):
+        self.configure_setup(self.PREPARE)
+        self.persons_checkout()
+        restarted = self.start_with("--worktree", PARENT, confirm=ScriptedConfirm(CREATE))
+        [restart] = restarted.persistent_terminal.restarts
+
+        result = self.start_inside(
+            restart.directory, *shlex.split(restart.command)[2:], confirm=ScriptedConfirm(CREATE),
+            results=[ScriptedResult("committed")],
+        )
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.prepared_in(), [self.run_worktree, self.run_worktree])
+        self.assertFalse((self.repository.path / "prepared.txt").exists())
+        self.assert_checkout_untouched()
+
+    def test_with_tmux_the_run_worktree_is_prepared_once_before_the_restart(self):
+        self.configure_setup(self.PREPARE)
+        self.persons_checkout()
+        self.sessions = ScriptedSessions(self.repository)
+
+        result = start_run(
+            self.repository, self.github, self.sessions, "--worktree", "--tmux", PARENT,
+            confirm=ScriptedConfirm(CREATE),
+            choose_continuation=ScriptedContinuation(Continuation.RESTART), terminal=True,
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.prepared_in(), [self.run_worktree])
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(PERSISTENT_TERMINAL, f"ralph-kit run --worktree {PARENT}",
+                     self.run_worktree, sleep_lock_held=False)],
+        )
+        self.assert_checkout_untouched()
+
+    def test_a_failing_setup_stops_the_run_before_the_restart(self):
+        self.configure_setup("echo cannot install; exit 3")
+        self.persons_checkout()
+
+        result, terminal = self.capturing_the_terminal(
+            self.start_with, "--worktree", PARENT, confirm=ScriptedConfirm(CREATE)
+        )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(
+            f"worktree_setup exited with 3 in {self.run_worktree}: fix it, or run without "
+            "--worktree",
+            result.stderr,
+        )
+        self.assertIn("cannot install", terminal)
+        self.assertEqual(result.persistent_terminal.restarts, [])
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assert_checkout_untouched()
+
+    def test_a_failing_setup_stops_a_run_in_its_run_worktree_before_any_session(self):
+        self.configure_setup("exit 4")
+        self.add_run_worktree()
+
+        result = self.start_inside(
+            self.run_worktree, "--worktree", PARENT, confirm=ScriptedConfirm(CREATE),
+            results=[ScriptedResult("committed")],
+        )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(
+            f"worktree_setup exited with 4 in {self.run_worktree}: fix it, or run without "
+            "--worktree",
+            result.stderr,
+        )
+        self.assertEqual(result.persistent_terminal.restarts, [])
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+
+    def test_a_setup_that_dirties_the_run_worktree_stops_the_run_before_any_session(self):
+        self.configure_setup("touch generated.txt")
+        self.add_run_worktree()
+
+        result = self.start_inside(
+            self.run_worktree, "--worktree", PARENT, confirm=ScriptedConfirm(CREATE),
+            results=[ScriptedResult("committed")],
+        )
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("worktree is dirty at startup", result.stderr)
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+
+    def test_without_worktree_setup_nothing_runs(self):
+        self.persons_checkout()
+
+        result = self.start_with("--worktree", PARENT, confirm=ScriptedConfirm(CREATE))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertNotIn("Preparing the run worktree", result.stdout)
+        self.assertEqual(self.prepared_in(), [])
+
+    def test_a_run_without_worktree_never_runs_it(self):
+        self.configure_setup(self.PREPARE)
+        git(self.repository.path, "switch", "-q", "--create", RUN_BRANCH)
+
+        result = self.start_with(PARENT, results=[ScriptedResult("committed")])
+
+        self.assert_completed(result, sessions=1)
+        self.assertNotIn("Preparing the run worktree", result.stdout)
+        self.assertFalse((self.repository.path / "prepared.txt").exists())
 
 
 if __name__ == "__main__":

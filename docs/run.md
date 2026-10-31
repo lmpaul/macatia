@@ -328,8 +328,8 @@ offer, and before the `--tmux` question, Ralph fetches the base branch, then
 asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
 
 - **Create** (the default) adds the run worktree on a new run branch
-  `ralph-kit/issue-N` from `<remote>/<base>`, releases the sleep lock, then
-  restarts the run in the run worktree, in this terminal, or in a persistent
+  `ralph-kit/issue-N` from `<remote>/<base>`, prepares it with
+  `worktree_setup` (see below), releases the sleep lock, then restarts the run in the run worktree, in this terminal, or in a persistent
   terminal with `--tmux` (see below). The restarted run has
   the same `--review`, `--caffeinate`, `--config` and `--worktree` flags, never
   `--tmux`, and the run target, the one picked when the run started without
@@ -352,11 +352,13 @@ stopped or interrupted run, Ralph asks "Continue in the existing run worktree at
 - **Continue** (the default) has the run branch follow the remote one, as the
   switch to an existing run branch does: a run branch behind the remote one is
   fast-forwarded, and one that has diverged from it stops the run with nothing
-  rewritten. Ralph then restarts the run in the run worktree, as for Create.
+  rewritten. Ralph then prepares the run worktree and restarts the run in it,
+  as for Create.
 - **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
 
 A run started with `--worktree` from inside the run worktree of its run target,
-as the restarted run is, asks nothing and continues in place. A stopped run's
+as the restarted run is, asks nothing, prepares the run worktree and continues
+in place. A stopped run's
 rerun command keeps `--worktree`, so the same command resumes the run from your
 own checkout or from the run worktree. Started from inside the run worktree of
 another run target, `--worktree` works as from your own checkout: the path is
@@ -393,6 +395,29 @@ git branch -d ralph-kit/issue-123
 `git worktree remove` refuses a run worktree with uncommitted changes, and
 `git branch -d` a run branch that is not merged; check them before forcing
 either.
+
+### Preparing the run worktree: `worktree_setup`
+
+A new run worktree holds only what Git tracks: no installed dependencies such
+as `node_modules` or `.venv`. Set `worktree_setup` in the configuration (see
+[Configuration](configuration.md)) to the command that prepares it, for
+instance:
+
+```toml
+worktree_setup = "pnpm install --frozen-lockfile"
+```
+
+or `worktree_setup = "uv sync"`. On every `--worktree` run, Ralph runs it
+through the shell in the run worktree, never in your checkout, with its output
+in the terminal: after Create or Continue, before the restart (and before the
+`--tmux` question), and again in the restarted run, which continues in place,
+before its startup checks and any agent session. Without `worktree_setup`,
+nothing runs.
+
+A non-zero exit stops the run before any agent session, with its exit code:
+fix the command, or run without `--worktree`. The command must leave the run
+worktree clean: what it creates must be ignored by Git, or the run stops with
+`worktree is dirty at startup`. A run without `--worktree` never runs it.
 
 ### Combining `--worktree` with `--tmux`
 
