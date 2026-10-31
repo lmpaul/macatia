@@ -5712,14 +5712,14 @@ class RunWorktreeTestCase(BaseBranchTestCase):
         git(clone, "push", "-q", "origin", RUN_BRANCH)
         return git(clone, "rev-parse", "HEAD")
 
-    def start_inside(self, run_worktree, *arguments, confirm, results=()):
+    def start_inside(self, run_worktree, *arguments, confirm, continuation=None, results=()):
         """Start a run with `arguments` from inside `run_worktree`, as a terminal would."""
         in_run_worktree = copy.copy(self.repository)
         in_run_worktree.path = run_worktree
         self.sessions = ScriptedSessions(in_run_worktree, *results)
         return start_run(
             in_run_worktree, self.github, self.sessions, *arguments,
-            confirm=confirm, terminal=True, cwd=run_worktree,
+            confirm=confirm, choose_continuation=continuation, terminal=True, cwd=run_worktree,
         )
 
 
@@ -5895,7 +5895,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
         super().setUp()
         self.persons_checkout()
 
-    def start_with(self, *arguments, continuation, unavailability=None, existing=()):
+    def start_with_tmux(self, *arguments, continuation, unavailability=None, existing=()):
         self.confirm = ScriptedConfirm(CREATE)
         self.sessions = ScriptedSessions(self.repository)
         # The run worktree question comes before the continuation choice.
@@ -5910,10 +5910,10 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
             existing_persistent_terminals=existing,
         )
 
-    def test_restart_starts_the_persistent_terminal_in_the_run_worktree_only(self):
+    def test_restart_starts_the_persistent_terminal_in_the_run_worktree_once(self):
         continuation = ScriptedContinuation(Continuation.RESTART)
 
-        result = self.start_with("--review", PARENT, continuation=continuation)
+        result = self.start_with_tmux("--review", PARENT, continuation=continuation)
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(
@@ -5931,7 +5931,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
         self.assert_checkout_untouched()
 
     def test_continue_here_restarts_in_the_run_worktree_in_this_terminal_once(self):
-        result = self.start_with(PARENT, continuation=ScriptedContinuation(Continuation.CONTINUE_HERE))
+        result = self.start_with_tmux(PARENT, continuation=ScriptedContinuation(Continuation.CONTINUE_HERE))
 
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(
@@ -5947,7 +5947,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
             with self.subTest(answer=answer):
                 self.setUp()
 
-                result = self.start_with(PARENT, continuation=ScriptedContinuation(answer))
+                result = self.start_with_tmux(PARENT, continuation=ScriptedContinuation(answer))
 
                 self.assertEqual(result.exit_code, 1)
                 self.assertIn(f"{PERSISTENT_TERMINAL} was not started", result.stderr)
@@ -5957,7 +5957,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
                 self.assert_checkout_untouched()
 
                 continuation = ScriptedContinuation(Continuation.RESTART)
-                again = self.start_with(PARENT, continuation=continuation)
+                again = self.start_with_tmux(PARENT, continuation=continuation)
 
                 self.assertEqual(again.exit_code, 0, again.stderr)
                 self.assertEqual(
@@ -5970,10 +5970,28 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
                              self.run_worktree, sleep_lock_held=False)],
                 )
 
+    def test_from_inside_the_run_worktree_restart_starts_the_persistent_terminal_there(self):
+        self.start_with_tmux(PARENT, continuation=ScriptedContinuation(Continuation.STOP))
+        continuation = ScriptedContinuation(Continuation.RESTART)
+        self.sessions = ScriptedSessions(self.repository)
+
+        result = self.start_inside(
+            self.run_worktree, "--worktree", "--tmux", PARENT, confirm=ScriptedConfirm(CREATE),
+            continuation=continuation,
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(continuation.asked, [PERSISTENT_TERMINAL])
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(PERSISTENT_TERMINAL, f"ralph-kit run --worktree {PARENT}",
+                     self.run_worktree, sleep_lock_held=False)],
+        )
+
     def test_an_existing_persistent_terminal_stops_the_run_before_the_run_worktree_offer(self):
         continuation = ScriptedContinuation(Continuation.RESTART)
 
-        result = self.start_with(PARENT, continuation=continuation, existing=[PERSISTENT_TERMINAL])
+        result = self.start_with_tmux(PARENT, continuation=continuation, existing=[PERSISTENT_TERMINAL])
 
         self.assert_nothing_created(
             result,
@@ -5992,7 +6010,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
             with self.subTest(unavailability=unavailability):
                 self.setUp()
 
-                result = self.start_with(
+                result = self.start_with_tmux(
                     PARENT, continuation=ScriptedContinuation(Continuation.RESTART),
                     unavailability=unavailability,
                 )

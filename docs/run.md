@@ -278,14 +278,15 @@ provide the sleep lock, as a warning only: a run continues without one.
 named `ralph-kit-<repository name>-<run target>`, where the repository name is
 the part after `owner/` in the configured `repository`, with `.` and `:` replaced
 by `_`. Once the run target passes its startup checks, and before the run branch
-offer, Ralph asks "Where should this run continue?":
+offer (after the run worktree offer with `--worktree`, see below), Ralph asks
+"Where should this run continue?":
 
 - **Restart in ralph-kit-…** (the default) releases the sleep lock, then
   restarts the run in a new persistent terminal started in the repository root
-  (in the run worktree with `--worktree`),
-  and attaches this terminal to it. The restarted run has the same `--review`,
-  `--caffeinate` and `--config` flags, never `--tmux`, and the run target, the
-  one picked when the run started without one. When the run ends, the
+  (in the run worktree with `--worktree`), and attaches this terminal to it.
+  The restarted run has the same `--review`, `--caffeinate`, `--config` and
+  `--worktree` flags, never `--tmux`, and the run target, the one picked when
+  the run started without one. When the run ends, the
   persistent terminal stays open on your shell. Detach with `Ctrl-b d`; reattach with
   `tmux attach -t ralph-kit-…`.
 - **Continue here** runs in this terminal, as without `--tmux`.
@@ -328,8 +329,8 @@ asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
 
 - **Create** (the default) adds the run worktree on a new run branch
   `ralph-kit/issue-N` from `<remote>/<base>`, releases the sleep lock, then
-  restarts the run in the run worktree, in this terminal (with `--tmux`, see
-  below). The restarted run has
+  restarts the run in the run worktree, in this terminal, or in a persistent
+  terminal with `--tmux` (see below). The restarted run has
   the same `--review`, `--caffeinate`, `--config` and `--worktree` flags, never
   `--tmux`, and the run target, the one picked when the run started without
   one. It runs the usual startup checks in the run worktree, reads its
