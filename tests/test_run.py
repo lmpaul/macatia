@@ -5661,7 +5661,6 @@ class PersistentTerminalTests(BaseBranchTestCase):
                 self.assertEqual(result.persistent_terminal.checked, 0)
 
 
-
 class RunWorktreeTests(BaseBranchTestCase):
     """`--worktree` offers, in place of the run branch offer, to create the run worktree of
     the run target, then restarts the run in it, leaving the person's checkout untouched."""
@@ -5726,7 +5725,6 @@ class RunWorktreeTests(BaseBranchTestCase):
         self.assertEqual(self.github.comments(PARENT), [])
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
 
-
     def test_restart_keeps_the_flags_but_tmux_in_any_position(self):
         (self.repository.path / "config").mkdir()
         git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
@@ -5753,6 +5751,16 @@ class RunWorktreeTests(BaseBranchTestCase):
                     result.persistent_terminal.restarts,
                     [Restart(None, command, self.run_worktree, sleep_lock_held=False)],
                 )
+
+    def test_restart_reads_an_absolute_configuration_in_the_run_worktree(self):
+        configuration = self.repository.path.resolve() / "ralph.toml"
+
+        result = self.start_with("--worktree", "--config", configuration, PARENT, confirm=ScriptedConfirm(CREATE))
+
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
+        )
 
     def test_restart_releases_the_sleep_lock_first(self):
         result = self.start_with("--worktree", "--caffeinate", PARENT, confirm=ScriptedConfirm(CREATE))

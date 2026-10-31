@@ -336,8 +336,7 @@ asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
 
 A run started with `--worktree` from inside the run worktree of its run target,
 as the restarted run is, asks nothing and continues in place. A stopped run's
-rerun command keeps `--worktree`, so the same command resumes the run from your
-checkout or from the run worktree.
+rerun command keeps `--worktree`: run it from the run worktree to resume the run.
 
 The run stops with nothing changed:
 

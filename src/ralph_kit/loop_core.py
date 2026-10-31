@@ -1185,9 +1185,9 @@ def parse_arguments(
 ) -> argparse.Namespace:
     """Read the run's arguments; `--review` and `--no-review`, accepted in any position, are
     `review` and `no_review`, and together a usage error. So are `--caffeinate` and
-    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`. `--tmux`, in any position too,
-    is `tmux`, and `--worktree` is `worktree`. Without the run target `ISSUE`, `parent_issue` is None, a usage error when
-    `issue_required`."""
+    `--no-caffeinate`, as `caffeinate` and `no_caffeinate`. `--tmux` and `--worktree`, in
+    any position too, are `tmux` and `worktree`. Without the run target `ISSUE`,
+    `parent_issue` is None, a usage error when `issue_required`."""
     flags = [flag for flag in ("--review", "--no-review") if flag in argv]
     sleep_lock_flags = [flag for flag in ("--caffeinate", "--no-caffeinate") if flag in argv]
     tmux = "--tmux" in argv
@@ -1490,7 +1490,10 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
     if not accepted:
         raise RalphError(f"the run worktree for {run_branch} was not created")
     # --no-track: the run branch follows its own remote branch once pushed, never the base.
-    git(state, "worktree", "add", "--quiet", "--no-track", "-b", run_branch, str(path), f"{remote}/{base}")
+    git(
+        state, "worktree", "add", "--quiet", "--no-track", "-b", run_branch, str(path),
+        f"{remote}/{base}",
+    )
     return path
 
 
@@ -3315,6 +3318,10 @@ def main(
     if not config_path.is_absolute():
         config_path = state.repository_root / config_path
     state.config_path = config_path.resolve()
+    if arguments.worktree and state.config_path.is_relative_to(state.repository_root):
+        # The restarted run reads the configuration at the same place in the run worktree.
+        arguments.config = state.config_path.relative_to(state.repository_root)
+        state.rerun_command = rerun_command(arguments, arguments.parent_issue)
     try:
         configuration = load_config(
             config_path.resolve(), state.repository_root, require_review=arguments.review
