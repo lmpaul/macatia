@@ -106,5 +106,21 @@ class ExistsTests(unittest.TestCase):
         self.assertFalse(self.exists(1))
 
 
+class RestartHereTests(unittest.TestCase):
+    def test_replaces_this_process_with_the_command_through_the_shell_in_the_directory(self):
+        with (
+            mock.patch.dict(persistent_terminal.os.environ, {"SHELL": "/bin/zsh"}, clear=True),
+            mock.patch.object(persistent_terminal.os, "chdir") as chdir,
+            mock.patch.object(persistent_terminal.os, "execvp") as execvp,
+        ):
+            persistent_terminal.restart_here(
+                "ralph-kit run --worktree 191", pathlib.Path("/work/buyr.worktrees/issue-191")
+            )
+        chdir.assert_called_once_with(pathlib.Path("/work/buyr.worktrees/issue-191"))
+        execvp.assert_called_once_with(
+            "/bin/zsh", ["/bin/zsh", "-c", "ralph-kit run --worktree 191"]
+        )
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -58,6 +58,7 @@ from .persistent_terminal import (
     PersistentTerminal,
     already_exists,
     persistent_terminal_name,
+    restart_here,
 )
 from .progress import Countdown, Elapsed, duration_text, spinner
 from .sanitize import (
@@ -444,6 +445,9 @@ class RunAdapters:
     keep_awake: Callable[[], contextlib.AbstractContextManager[None]] = keep_awake
     # Restarts the run in a persistent terminal for `--tmux`.
     persistent_terminal: PersistentTerminal = field(default_factory=PersistentTerminal)
+    # Restarts the run in this terminal, in the run worktree of a `--worktree` run:
+    # (command, directory).
+    restart_here: Callable[[str, pathlib.Path], None] = restart_here
     # Asks where a `--tmux` run continues: (persistent terminal name) -> the answer. Ctrl-C raises
     # KeyboardInterrupt, which the run counts as Stop. None when Ralph is not in a terminal.
     choose_continuation: Callable[[str], Continuation] | None = None
@@ -471,6 +475,10 @@ class RunState:
     rerun_command: str | None = None
     # Whether `--tmux` asked to offer a persistent terminal once the run target is accepted.
     offer_persistent_terminal: bool = False
+    # Whether `--worktree` asked to run in the run worktree of the run target, and the
+    # selected configuration file it reads there.
+    offer_run_worktree: bool = False
+    config_path: pathlib.Path | None = None
     # Whether the run target is a standalone issue, the run's only child; set by the
     # startup checks.
     standalone: bool = False
@@ -1178,12 +1186,13 @@ def parse_arguments(
     """Read the run's arguments; `--review` and `--no-review`, accepted in any position, are
     `review` and `no_review`, and together a usage error. So are `--caffeinate` and
     `--no-caffeinate`, as `caffeinate` and `no_caffeinate`. `--tmux`, in any position too,
-    is `tmux`. Without the run target `ISSUE`, `parent_issue` is None, a usage error when
+    is `tmux`, and `--worktree` is `worktree`. Without the run target `ISSUE`, `parent_issue` is None, a usage error when
     `issue_required`."""
     flags = [flag for flag in ("--review", "--no-review") if flag in argv]
     sleep_lock_flags = [flag for flag in ("--caffeinate", "--no-caffeinate") if flag in argv]
     tmux = "--tmux" in argv
-    read = {*flags, *sleep_lock_flags, "--tmux"}
+    worktree = "--worktree" in argv
+    read = {*flags, *sleep_lock_flags, "--tmux", "--worktree"}
     argv = [argument for argument in argv if argument not in read]
     parser = argparse.ArgumentParser(
         prog=None if prog is None else " ".join([prog, *flags]),
@@ -1209,6 +1218,7 @@ def parse_arguments(
             caffeinate="--caffeinate" in sleep_lock_flags,
             no_caffeinate="--no-caffeinate" in sleep_lock_flags,
             tmux=tmux,
+            worktree=worktree,
         ),
     )
     if arguments.parent_issue is None and issue_required:
@@ -1278,7 +1288,9 @@ def preflight(state: RunState) -> str:
     if branch_result.returncode != 0:
         raise RalphError("detached HEAD is not allowed")
     branch = branch_result.stdout.strip()
-    require_clean_worktree(state, "at startup")
+    # A `--worktree` run leaves the person's checkout alone; the restarted run checks its own.
+    if not state.offer_run_worktree:
+        require_clean_worktree(state, "at startup")
 
     worktrees = git(state, "worktree", "list", "--porcelain")
     expected_entry = (
@@ -1391,12 +1403,15 @@ def require_persistent_terminal(state: RunState) -> None:
         raise RalphError("--tmux needs a terminal: run in a terminal, or without --tmux")
 
 
-def ask_where_to_continue(state: RunState, parent_issue: int) -> bool:
+def ask_where_to_continue(
+    state: RunState, parent_issue: int, directory: pathlib.Path | None = None
+) -> bool:
     """Ask where the run continues: True to continue in this terminal. An existing persistent
     terminal of `parent_issue` stops the run before the question.
     Restart releases what startup holds until the end, then restarts the run in that
-    persistent terminal, which does everything from scratch, and returns False once the
-    adapter returns, which only a fake does. Stop and Ctrl-C stop with nothing changed."""
+    persistent terminal, in `directory` or the repository root, which does everything from
+    scratch, and returns False once the adapter returns, which only a fake does. Stop and
+    Ctrl-C stop with nothing changed."""
     name = persistent_terminal_name(state.config.repository, parent_issue)
     if state.adapters.persistent_terminal.exists(name):
         raise RalphError(already_exists(name))
@@ -1415,8 +1430,95 @@ def ask_where_to_continue(state: RunState, parent_issue: int) -> bool:
     # Replacing the process keeps its PID: a held sleep lock would last while attached.
     state.held_until_the_end.close()
     print(f"🔁 Restarting the run in {name}.", flush=True)
-    state.adapters.persistent_terminal.restart(name, state.rerun_command, state.repository_root)
+    state.adapters.persistent_terminal.restart(
+        name, state.rerun_command, directory or state.repository_root
+    )
     return False
+
+
+def run_worktree_path(state: RunState, run_target: int) -> pathlib.Path:
+    """Where the run worktree of `run_target` goes: next to the repository's main checkout,
+    found through the common Git directory whichever checkout the run starts from."""
+    common = git(state, "rev-parse", "--path-format=absolute", "--git-common-dir")
+    main_checkout = pathlib.Path(common).resolve().parent
+    return main_checkout.parent / f"{main_checkout.name}.worktrees" / f"issue-{run_target}"
+
+
+def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | None:
+    """Offer to create the run worktree of the parent on a new run branch from the remote
+    base branch, and return it once created; None when the run already runs in it.
+
+    Anything other than Create, a run branch or path that already exists, and a selected
+    configuration file missing from the remote base branch stop with nothing changed in
+    the person's checkout.
+    """
+    configuration = state.config
+    base, remote = configuration.base_branch, configuration.remote
+    run_branch = f"{RUN_BRANCH_PREFIX}{parent_issue}"
+    path = run_worktree_path(state, parent_issue)
+    if state.repository_root == path and state.branch == run_branch:
+        require_clean_worktree(state, "at startup")
+        return None
+    remote_head, local_head = branch_heads(state.repository_root, remote, run_branch)
+    if remote_head is not None or local_head is not None or path.exists():
+        raise RalphError(
+            f"{run_branch} or its run worktree {path} already exists: run without --worktree"
+        )
+    confirm = state.adapters.confirm
+    if confirm is None:
+        raise RalphError(
+            f"{run_branch} has no run worktree: run `{state.rerun_command}` in a terminal "
+            f"to create it at {path}"
+        )
+    print(f"⬇️  Fetching {base} from {remote}.", flush=True)
+    # Not under a spinner: git writes its own progress to the terminal.
+    fetched = command(
+        state,
+        ["git", "fetch", remote, f"+refs/heads/{base}:refs/remotes/{remote}/{base}"],
+        check=False,
+        capture_output=False,
+    )
+    if fetched.returncode != 0:
+        raise RalphError(f"could not fetch {base} from {remote}; no run worktree was created")
+    require_configuration_on(state, f"{remote}/{base}")
+    try:
+        accepted = confirm(
+            f"Create a run worktree for {run_branch} at {path}?", "Create", accept_by_default=True
+        )
+    except KeyboardInterrupt:
+        accepted = False
+    if not accepted:
+        raise RalphError(f"the run worktree for {run_branch} was not created")
+    # --no-track: the run branch follows its own remote branch once pushed, never the base.
+    git(state, "worktree", "add", "--quiet", "--no-track", "-b", run_branch, str(path), f"{remote}/{base}")
+    return path
+
+
+def require_configuration_on(state: RunState, revision: str) -> None:
+    """Stop unless the selected configuration file is on `revision`, where the restarted run
+    reads it."""
+    assert state.config_path is not None
+    try:
+        relative = state.config_path.relative_to(state.repository_root).as_posix()
+    except ValueError:
+        relative = None
+    if relative is None or command(
+        state, ["git", "cat-file", "-e", f"{revision}:{relative}"], check=False
+    ).returncode != 0:
+        raise RalphError(
+            f"{state.config_path} is not on {revision}, where the run worktree reads it: "
+            "commit and push it, or run without --worktree"
+        )
+
+
+def restart_in_run_worktree(state: RunState, directory: pathlib.Path) -> None:
+    """Release what startup holds until the end, then restart the run in the run worktree
+    `directory`, in this terminal; returns only with a fake adapter."""
+    assert state.rerun_command is not None
+    # Replacing the process keeps its PID: a held sleep lock would last the whole run.
+    state.held_until_the_end.close()
+    print(f"🔁 Restarting the run in the run worktree {directory}.", flush=True)
+    state.adapters.restart_here(state.rerun_command, directory)
 
 
 def switch_to_run_branch(
@@ -3205,12 +3307,14 @@ def main(
     )
     state.rerun_command = rerun_command(arguments, arguments.parent_issue)
     state.offer_persistent_terminal = arguments.tmux
+    state.offer_run_worktree = arguments.worktree
     if arguments.tmux:
         require_persistent_terminal(state)
     require_repository_root(state)
     config_path = arguments.config
     if not config_path.is_absolute():
         config_path = state.repository_root / config_path
+    state.config_path = config_path.resolve()
     try:
         configuration = load_config(
             config_path.resolve(), state.repository_root, require_review=arguments.review
@@ -3265,8 +3369,8 @@ def main(
 
 
 def rerun_command(arguments: argparse.Namespace, parent_issue: int | None) -> str:
-    """How to start the run again on `parent_issue`; never with `--tmux`, which a run
-    restarted or stopped in a persistent terminal does not need."""
+    """How to start the run again on `parent_issue`, with `--worktree` when given; never with
+    `--tmux`, which a run restarted or stopped in a persistent terminal does not need."""
     return shlex.join([
         "ralph-kit",
         "run",
@@ -3274,6 +3378,7 @@ def rerun_command(arguments: argparse.Namespace, parent_issue: int | None) -> st
         *(["--no-review"] if arguments.no_review else []),
         *(["--caffeinate"] if arguments.caffeinate else []),
         *(["--no-caffeinate"] if arguments.no_caffeinate else []),
+        *(["--worktree"] if arguments.worktree else []),
         *(["--config", str(arguments.config)] if arguments.config != DEFAULT_CONFIG_PATH else []),
         *([str(parent_issue)] if parent_issue is not None else []),
     ])
@@ -3342,8 +3447,9 @@ def run_children(
     """Implement the parent's runnable children one at a time, then hand the parent to a human.
 
     Startup has loaded the configuration and quality policy, opened GitHub
-    access, and accepted the branch; a run on the base branch first offers its
-    run branch. The run reaches everything else through its adapters.
+    access, and accepted the branch; a `--worktree` run first offers its run
+    worktree and restarts there, and a run on the base branch offers its run
+    branch. The run reaches everything else through its adapters.
     """
     assert state.branch is not None
     infrastructure = InfrastructureRetryTracker(state)
@@ -3358,6 +3464,14 @@ def run_children(
         else:
             state.standalone = True
             require_startable_standalone(state, issue)
+    if state.offer_run_worktree:
+        run_worktree = offer_run_worktree(state, parent_issue)
+        if run_worktree is not None:
+            if not state.offer_persistent_terminal or ask_where_to_continue(
+                state, parent_issue, run_worktree
+            ):
+                restart_in_run_worktree(state, run_worktree)
+            return 0
     if state.offer_persistent_terminal and not ask_where_to_continue(state, parent_issue):
         return 0
     if state.branch == state.config.base_branch:

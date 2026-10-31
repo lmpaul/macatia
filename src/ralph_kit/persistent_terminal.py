@@ -106,3 +106,12 @@ class PersistentTerminal:
         sys.stdout.flush()
         sys.stderr.flush()
         os.execvp(arguments[0], arguments)
+
+
+def restart_here(command: str, directory: pathlib.Path) -> NoReturn:
+    """Replace this process with the shell `command` run in `directory`, in this terminal."""
+    shell = os.environ.get("SHELL") or "sh"
+    sys.stdout.flush()
+    sys.stderr.flush()
+    os.chdir(directory)
+    os.execvp(shell, [shell, "-c", command])

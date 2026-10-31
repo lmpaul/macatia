@@ -8,6 +8,7 @@ ralph-kit run --no-review 123  # standard run, even when review_by_default = tru
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
 ralph-kit run --tmux 123       # offer to restart the run in a persistent terminal (tmux)
+ralph-kit run --worktree 123   # run in a run worktree, away from your own checkout
 ```
 
 Each run executes the loop over the runnable children of its run target: a
@@ -306,3 +307,57 @@ reading the configuration or GitHub and without taking the sleep lock:
   or stdout is not a terminal.
 
 `ralph-kit check` does not require tmux.
+
+## Run worktree: `--worktree`
+
+`--worktree` runs in a run worktree: a separate checkout of the run target's
+run branch, so you can keep working in your own checkout while the run goes.
+Your checkout may be dirty and on any branch; nothing in it changes, not even
+its local base branch.
+
+The run worktree of run target N is always at
+`<parent of the main checkout>/<main checkout directory name>.worktrees/issue-N`:
+for a repository cloned at `~/code/buyr`, `~/code/buyr.worktrees/issue-123`.
+The main checkout is found through Git, so the path is the same whichever
+checkout of the repository the run starts from.
+
+Once the run target passes its startup checks, in place of the run branch
+offer, and before the `--tmux` question, Ralph fetches the base branch, then
+asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
+
+- **Create** (the default) adds the run worktree on a new run branch
+  `ralph-kit/issue-N` from `<remote>/<base>`, releases the sleep lock, then
+  restarts the run in the run worktree, in this terminal. The restarted run has
+  the same `--review`, `--caffeinate`, `--config` and `--worktree` flags, never
+  `--tmux`, and the run target, the one picked when the run started without
+  one. It runs the usual startup checks in the run worktree, reads its
+  configuration and keeps its run diagnostics there, and pushes the run branch.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
+A run started with `--worktree` from inside the run worktree of its run target,
+as the restarted run is, asks nothing and continues in place. A stopped run's
+rerun command keeps `--worktree`, so the same command resumes the run from your
+checkout or from the run worktree.
+
+The run stops with nothing changed:
+
+- without a terminal, naming the run worktree it would create and the command
+  to run in a terminal to create it;
+- when the selected configuration file is not on `<remote>/<base>`, where the
+  run worktree reads it: commit and push it, or run without `--worktree`;
+- when the run branch or the run worktree path already exists.
+
+Without ISSUE, the run target is picked first, in your checkout. Without
+`--worktree`, nothing is asked and the run works in your checkout as above.
+
+Nothing removes a run worktree yet. Once you are done with it, remove it by
+hand from your own checkout, then delete its run branch:
+
+```sh
+git worktree remove ../buyr.worktrees/issue-123
+git branch -d ralph-kit/issue-123
+```
+
+`git worktree remove` refuses a run worktree with uncommitted changes, and
+`git branch -d` a run branch that is not merged; check them before forcing
+either.
