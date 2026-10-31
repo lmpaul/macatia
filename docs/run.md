@@ -334,6 +334,14 @@ asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
   configuration and keeps its run diagnostics there, and pushes the run branch.
 - **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
 
+When the run branch already exists, locally, on the remote or both, but is
+checked out nowhere, as after a run without `--worktree`, Ralph asks the same
+question without fetching the base branch, and Create adds the run worktree on
+that run branch, tracking the remote one: a run branch only on the remote is
+checked out tracking it, and a local run branch behind the remote one is
+fast-forwarded. A local run branch that has diverged from the remote one stops
+the run before the question, with nothing rewritten.
+
 When the run worktree already exists at that path on the run branch, as after a
 stopped or interrupted run, Ralph asks "Continue in the existing run worktree at
 ‹path›?" instead:
@@ -356,10 +364,13 @@ The run stops with nothing changed:
 - without a terminal, naming the run worktree it would create or continue in
   and the command to run in a terminal to do so;
 - when the selected configuration file is not where the run worktree reads it,
-  `<remote>/<base>` for a new run worktree or the run branch for an existing
-  one: commit and push it, or run without `--worktree`;
-- when the run branch or the run worktree path already exists, but not as the
-  run worktree of the run target on its run branch.
+  `<remote>/<base>` for a new run branch, or the run branch otherwise: commit
+  and push it, or run without `--worktree`;
+- when the run branch is checked out in another checkout, such as your own,
+  naming that checkout: switch it to another branch there, or run without
+  `--worktree`;
+- when the run worktree path already exists, but not as this repository's run
+  worktree on the run branch.
 
 Without ISSUE, the run target is picked first, in your checkout. Without
 `--worktree`, nothing is asked and the run works in your checkout as above.

@@ -6008,7 +6008,11 @@ class ExistingRunWorktreeTests(RunWorktreeTestCase):
         result = self.start_with("--worktree", PARENT, confirm=confirm)
 
         self.assertEqual(result.exit_code, 1)
-        self.assertIn("already exists", result.stderr)
+        self.assertIn(
+            f"{RUN_BRANCH} is checked out in {self.run_worktree}, which no longer exists: "
+            "remove it with `git worktree prune`, or run without --worktree",
+            result.stderr,
+        )
         self.assertEqual(confirm.questions, [])
         self.assertEqual(result.persistent_terminal.restarts, [])
 
@@ -6040,6 +6044,226 @@ class ExistingRunWorktreeTests(RunWorktreeTestCase):
         self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
         self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), self.run_worktree_head)
         self.assert_checkout_untouched()
+
+
+class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
+    """A `--worktree` run whose run branch exists, checked out nowhere, offers to create the
+    run worktree on it, following the remote one."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.repository.path, "branch", RUN_BRANCH, "main")
+        self.local_head = self.commit_on_run_branch("progress.txt")
+        self.persons_checkout()
+
+    def commit_on_run_branch(self, name, *, push=False):
+        """Commit `name` on the local run branch without checking it out; returns its sha."""
+        scratch = self.repository.path.parent / f"scratch-{name}"
+        git(self.repository.path, "worktree", "add", "-q", str(scratch), RUN_BRANCH)
+        (scratch / name).write_text(f"{name}\n", encoding="utf-8")
+        git(scratch, "add", name)
+        git(scratch, "commit", "-q", "-m", f"Add {name}")
+        if push:
+            git(scratch, "push", "-q", "origin", RUN_BRANCH)
+        head = git(scratch, "rev-parse", "HEAD")
+        git(self.repository.path, "worktree", "remove", str(scratch))
+        return head
+
+    def push_to_origin_run_branch(self, name):
+        """Another clone pushes a commit to `origin`'s run branch; returns its sha."""
+        clone = self.repository.path.parent / f"other-run-clone-{name}"
+        git(self.repository.path.parent, "clone", "-q", "-b", RUN_BRANCH, str(self.repository.origin), str(clone))
+        git(clone, "config", "user.email", "other@example.com")
+        git(clone, "config", "user.name", "Other")
+        (clone / name).write_text(f"{name}\n", encoding="utf-8")
+        git(clone, "add", name)
+        git(clone, "commit", "-q", "-m", f"Add {name}")
+        git(clone, "push", "-q", "origin", RUN_BRANCH)
+        return git(clone, "rev-parse", "HEAD")
+
+    def assert_created_at(self, result, confirm, head):
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            confirm.questions, [f"Create a run worktree for {RUN_BRANCH} at {self.run_worktree}?"]
+        )
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
+        )
+        self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
+        self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), head)
+        self.assertEqual(git(self.run_worktree, "status", "--porcelain"), "")
+        self.assert_checkout_untouched()
+        self.assertEqual(self.sessions.requests, [])
+
+    def assert_upstream(self):
+        self.assertEqual(
+            git(self.run_worktree, "rev-parse", "--abbrev-ref", f"{RUN_BRANCH}@{{upstream}}"),
+            f"origin/{RUN_BRANCH}",
+        )
+
+    def assert_stopped(self, result, reason):
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(reason, result.stderr)
+        self.assertEqual(result.persistent_terminal.restarts, [])
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assert_checkout_untouched()
+
+    def test_create_adds_the_run_worktree_on_a_local_run_branch(self):
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_created_at(result, confirm, self.local_head)
+        self.assertNotIn(RUN_BRANCH, self.origin_branches())
+
+    def test_create_fast_forwards_a_local_run_branch_behind_the_remote_one(self):
+        git(self.repository.path, "push", "-q", "origin", RUN_BRANCH)
+        remote_head = self.push_to_origin_run_branch("remote.txt")
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_created_at(result, confirm, remote_head)
+        self.assert_upstream()
+
+    def test_create_checks_out_a_run_branch_only_on_the_remote_tracking_it(self):
+        git(self.repository.path, "push", "-q", "origin", RUN_BRANCH)
+        git(self.repository.path, "branch", "-q", "-D", RUN_BRANCH)
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_created_at(result, confirm, self.local_head)
+        self.assert_upstream()
+
+    def test_a_diverged_run_branch_stops_with_nothing_rewritten(self):
+        git(self.repository.path, "push", "-q", "origin", RUN_BRANCH)
+        remote_head = self.push_to_origin_run_branch("remote.txt")
+        local_head = self.commit_on_run_branch("local.txt")
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_stopped(
+            result,
+            f"{RUN_BRANCH} has diverged from origin/{RUN_BRANCH}; reconcile them, "
+            f"then run `ralph-kit run --worktree {PARENT}` again",
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertFalse(self.run_worktree.exists())
+        self.assertEqual(git(self.repository.path, "rev-parse", RUN_BRANCH), local_head)
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), remote_head)
+
+    def test_stop_and_ctrl_c_change_nothing(self):
+        for answer in (STOP, KeyboardInterrupt()):
+            with self.subTest(answer=answer):
+                confirm = ScriptedConfirm(answer)
+
+                result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+                self.assert_stopped(result, f"the run worktree for {RUN_BRANCH} was not created")
+                self.assertEqual(len(confirm.questions), 1)
+                self.assertFalse(self.run_worktree.exists())
+                self.assertEqual(git(self.repository.path, "rev-parse", RUN_BRANCH), self.local_head)
+
+    def test_without_a_terminal_the_run_stops_and_names_the_run_worktree_it_would_create(self):
+        result = self.start_with("--worktree", PARENT)
+
+        self.assert_stopped(
+            result,
+            f"{RUN_BRANCH} has no run worktree: run `ralph-kit run --worktree {PARENT}` "
+            f"in a terminal to create it at {self.run_worktree}",
+        )
+        self.assertFalse(self.run_worktree.exists())
+
+    def test_the_configuration_is_required_on_the_run_branch_not_the_remote_base(self):
+        # On origin/main but not on the run branch.
+        git(self.repository.path, "stash", "-q", "--include-untracked")
+        git(self.repository.path, "switch", "-q", "main")
+        shutil.copy(self.repository.path / "ralph.toml", self.repository.path / "local.toml")
+        git(self.repository.path, "add", "local.toml")
+        git(self.repository.path, "commit", "-q", "-m", "Add local.toml")
+        git(self.repository.path, "push", "-q", "origin", "main")
+        self.base_head = self.repository.head()
+        git(self.repository.path, "switch", "-q", "feature")
+        git(self.repository.path, "merge", "-q", "--ff-only", "main")
+        git(self.repository.path, "stash", "pop", "-q")
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", "--config", "local.toml", PARENT, confirm=confirm)
+
+        self.assert_stopped(
+            result,
+            f"{self.repository.path.resolve() / 'local.toml'} is not on {RUN_BRANCH}, where the "
+            "run worktree reads it: commit and push it, or run without --worktree",
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertFalse(self.run_worktree.exists())
+
+    def test_a_run_branch_checked_out_in_another_checkout_stops_naming_it(self):
+        elsewhere = (self.repository.path.parent / "elsewhere").resolve()
+        git(self.repository.path, "worktree", "add", "-q", str(elsewhere), RUN_BRANCH)
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_stopped(
+            result,
+            f"{RUN_BRANCH} is checked out in {elsewhere}: switch it to another branch there, "
+            "or run without --worktree",
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertFalse(self.run_worktree.exists())
+
+    def test_a_run_branch_checked_out_in_the_persons_checkout_stops_naming_it(self):
+        git(self.repository.path, "stash", "-q", "--include-untracked")
+        git(self.repository.path, "switch", "-q", RUN_BRANCH)
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(
+            f"{RUN_BRANCH} is checked out in {self.repository.path.resolve()}: switch it to "
+            "another branch there, or run without --worktree",
+            result.stderr,
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(result.persistent_terminal.restarts, [])
+        self.assertFalse(self.run_worktree.exists())
+        self.assertEqual(self.current_branch(), RUN_BRANCH)
+        self.assertEqual(git(self.repository.path, "rev-parse", "HEAD"), self.local_head)
+
+    def test_a_path_that_is_not_the_run_worktree_stops(self):
+        self.run_worktree.mkdir(parents=True)
+        (self.run_worktree / "notes.txt").write_text("mine\n", encoding="utf-8")
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_stopped(
+            result,
+            f"{self.run_worktree} already exists but is not the run worktree of {RUN_BRANCH}: "
+            "move it away, or run without --worktree",
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(os.listdir(self.run_worktree), ["notes.txt"])
+        self.assertEqual(git(self.repository.path, "rev-parse", RUN_BRANCH), self.local_head)
+
+    def test_a_run_worktree_path_on_another_branch_stops(self):
+        git(self.repository.path, "worktree", "add", "-q", "-b", "other", str(self.run_worktree), "main")
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_stopped(
+            result,
+            f"{self.run_worktree} already exists but is not the run worktree of {RUN_BRANCH}",
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(git(self.run_worktree, "branch", "--show-current"), "other")
 
 
 if __name__ == "__main__":

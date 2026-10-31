@@ -1445,14 +1445,15 @@ def run_worktree_path(state: RunState, run_target: int) -> pathlib.Path:
 
 
 def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | None:
-    """Offer to create the run worktree of the parent on a new run branch from the remote
-    base branch, or to continue in the existing one, and return it once accepted; None when
-    the run already runs in it.
+    """Offer to create the run worktree of the parent, on its run branch where it exists and
+    otherwise on a new run branch from the remote base branch, or to continue in the existing
+    one, and return it once accepted; None when the run already runs in it.
 
-    Anything other than Create or Continue, a run branch or path that already exists but
-    not as the run worktree of the parent on its run branch, and a selected configuration
-    file missing from where the run worktree reads it stop with nothing changed in the
-    person's checkout.
+    Anything other than Create or Continue, a run branch checked out in another checkout, a
+    path that already exists but not as the run worktree of the parent on its run branch, a
+    run branch that has diverged from the remote one, and a selected configuration file
+    missing from where the run worktree reads it stop with nothing changed in the person's
+    checkout.
     """
     configuration = state.config
     base, remote = configuration.base_branch, configuration.remote
@@ -1466,9 +1467,11 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
         assert local_head is not None
         continue_in_run_worktree(state, run_branch, path, local_head, remote_head)
         return path
-    if remote_head is not None or local_head is not None or path.exists():
+    require_run_branch_checked_out_nowhere(state, run_branch)
+    if path.exists():
         raise RalphError(
-            f"{run_branch} or its run worktree {path} already exists: run without --worktree"
+            f"{path} already exists but is not the run worktree of {run_branch}: move it "
+            "away, or run without --worktree"
         )
     confirm = state.adapters.confirm
     if confirm is None:
@@ -1476,17 +1479,29 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
             f"{run_branch} has no run worktree: run `{state.rerun_command}` in a terminal "
             f"to create it at {path}"
         )
-    print(f"⬇️  Fetching {base} from {remote}.", flush=True)
-    # Not under a spinner: git writes its own progress to the terminal.
-    fetched = command(
-        state,
-        ["git", "fetch", remote, f"+refs/heads/{base}:refs/remotes/{remote}/{base}"],
-        check=False,
-        capture_output=False,
-    )
-    if fetched.returncode != 0:
-        raise RalphError(f"could not fetch {base} from {remote}; no run worktree was created")
-    require_configuration_on(state, f"{remote}/{base}")
+    if local_head is None and remote_head is None:
+        print(f"⬇️  Fetching {base} from {remote}.", flush=True)
+        # Not under a spinner: git writes its own progress to the terminal.
+        fetched = command(
+            state,
+            ["git", "fetch", remote, f"+refs/heads/{base}:refs/remotes/{remote}/{base}"],
+            check=False,
+            capture_output=False,
+        )
+        if fetched.returncode != 0:
+            raise RalphError(f"could not fetch {base} from {remote}; no run worktree was created")
+        require_configuration_on(state, f"{remote}/{base}")
+    else:
+        remote_head, revision = followed_run_branch(state, run_branch, local_head, remote_head)
+        if local_head is not None and remote_head is not None and not (
+            is_ancestor(state, local_head, remote_head)
+            or is_ancestor(state, remote_head, local_head)
+        ):
+            raise RalphError(
+                f"{run_branch} has diverged from {remote}/{run_branch}; reconcile them, then "
+                f"run `{state.rerun_command}` again"
+            )
+        require_configuration_on(state, revision)
     try:
         accepted = confirm(
             f"Create a run worktree for {run_branch} at {path}?", "Create", accept_by_default=True
@@ -1495,12 +1510,32 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
         accepted = False
     if not accepted:
         raise RalphError(f"the run worktree for {run_branch} was not created")
-    # --no-track: the run branch follows its own remote branch once pushed, never the base.
-    git(
-        state, "worktree", "add", "--quiet", "--no-track", "-b", run_branch, str(path),
-        f"{remote}/{base}",
-    )
+    if local_head is None and remote_head is None:
+        # --no-track: the run branch follows its own remote branch once pushed, never the base.
+        git(
+            state, "worktree", "add", "--quiet", "--no-track", "-b", run_branch, str(path),
+            f"{remote}/{base}",
+        )
+    elif local_head is None:
+        git(
+            state, "worktree", "add", "--quiet", "--track", "-b", run_branch, str(path),
+            f"{remote}/{run_branch}",
+        )
+    else:
+        git(state, "worktree", "add", "--quiet", str(path), run_branch)
+        if remote_head is not None:
+            git(state, "branch", "--quiet", f"--set-upstream-to={remote}/{run_branch}", run_branch)
+            follow_remote_run_branch(state, run_branch, local_head, remote_head, path)
     return path
+
+
+def worktree_entries(state: RunState) -> list[list[str]]:
+    """The lines of each entry of `git worktree list --porcelain`."""
+    return [
+        entry.splitlines()
+        for entry in git(state, "worktree", "list", "--porcelain").split("\n\n")
+        if entry.strip()
+    ]
 
 
 def is_run_worktree(state: RunState, path: pathlib.Path, run_branch: str) -> bool:
@@ -1508,16 +1543,44 @@ def is_run_worktree(state: RunState, path: pathlib.Path, run_branch: str) -> boo
     # Git still lists a worktree whose directory was deleted, as prunable.
     if not path.is_dir():
         return False
-    for entry in git(state, "worktree", "list", "--porcelain").split("\n\n"):
-        lines = entry.splitlines()
-        if (
-            lines
-            and lines[0].startswith("worktree ")
-            and pathlib.Path(lines[0].removeprefix("worktree ")).resolve() == path
-            and f"branch refs/heads/{run_branch}" in lines
-        ):
-            return True
-    return False
+    return any(
+        lines[0].startswith("worktree ")
+        and pathlib.Path(lines[0].removeprefix("worktree ")).resolve() == path
+        and f"branch refs/heads/{run_branch}" in lines
+        for lines in worktree_entries(state)
+    )
+
+
+def require_run_branch_checked_out_nowhere(state: RunState, run_branch: str) -> None:
+    """Stop when `run_branch` is checked out in a checkout of this repository, naming it."""
+    for lines in worktree_entries(state):
+        if f"branch refs/heads/{run_branch}" not in lines:
+            continue
+        checkout = lines[0].removeprefix("worktree ")
+        # Git lists a worktree whose directory was deleted as prunable, and keeps its branch.
+        if any(line.startswith("prunable") for line in lines):
+            raise RalphError(
+                f"{run_branch} is checked out in {checkout}, which no longer exists: remove "
+                "it with `git worktree prune`, or run without --worktree"
+            )
+        raise RalphError(
+            f"{run_branch} is checked out in {checkout}: switch it to another branch there, "
+            "or run without --worktree"
+        )
+
+
+def followed_run_branch(
+    state: RunState, run_branch: str, local_head: str | None, remote_head: str | None
+) -> tuple[str | None, str]:
+    """Fetch the remote `run_branch` where it exists; return its head and the revision the
+    run branch will be at once it follows it: the remote one, unless the local one is ahead
+    or has diverged."""
+    if remote_head is None:
+        return None, run_branch
+    remote_head = fetch_run_branch(state, run_branch)
+    if local_head is None or is_ancestor(state, local_head, remote_head):
+        return remote_head, f"{state.config.remote}/{run_branch}"
+    return remote_head, run_branch
 
 
 def continue_in_run_worktree(
@@ -1537,11 +1600,7 @@ def continue_in_run_worktree(
             f"{run_branch} has a run worktree at {path}: run `{state.rerun_command}` "
             "in a terminal to continue in it"
         )
-    continued_on = run_branch
-    if remote_head is not None:
-        remote_head = fetch_run_branch(state, run_branch)
-        if is_ancestor(state, local_head, remote_head):
-            continued_on = f"{state.config.remote}/{run_branch}"
+    remote_head, continued_on = followed_run_branch(state, run_branch, local_head, remote_head)
     require_configuration_on(state, continued_on)
     try:
         accepted = confirm(
