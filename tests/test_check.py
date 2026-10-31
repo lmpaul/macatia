@@ -586,6 +586,26 @@ class ReadinessTests(unittest.TestCase):
             cli.main(["check", "--no-review"])
         self.assertEqual(raised.exception.code, 2)
 
+    def set_worktree_setup(self, value):
+        self.config.write_text(f"worktree_setup = {value}\n" + self.config.read_text())
+
+    def test_a_worktree_setup_command_is_accepted_and_never_run(self):
+        self.set_worktree_setup('"touch ran-worktree-setup"')
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertFalse(any("touch ran-worktree-setup" in " ".join(args) for args in self.commands))
+        self.assertFalse((self.root / "ran-worktree-setup").exists())
+
+    def test_a_worktree_setup_that_is_not_a_non_empty_string_fails_the_configuration(self):
+        for value in ('""', '"   "', "true", "1", '["uv", "sync"]'):
+            with self.subTest(value=value):
+                self.setUp()
+                self.set_worktree_setup(value)
+                code, output = self.run_check()
+                self.assertEqual(code, 1, output)
+                self.assertIn("configuration.worktree_setup must be a non-empty string", output)
+                self.assertEqual(self.commands, [])
+
     def set_caffeinate_by_default(self, value):
         self.config.write_text(f"caffeinate_by_default = {value}\n" + self.config.read_text())
 

@@ -126,6 +126,7 @@ SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] 
         lambda config: f"standard {config.child_session_limits.standard} · reviewed {config.child_session_limits.reviewed}",
         lambda key: key.startswith("child_session_limit."),
     ),
+    "Run worktree setup": (lambda config: config.worktree_setup or "none", lambda key: key == "worktree_setup"),
 }
 
 
@@ -144,6 +145,8 @@ def _toml_values(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
             for key in DEFAULT_CHILD_SESSION_LIMITS
         },
     }
+    if config.worktree_setup is not None:
+        keys["worktree_setup"] = config.worktree_setup
     for role, profile in {**config.models, BACKUP_MODEL_KEY: config.backup}.items():
         if profile is not None:
             keys |= {f"models.{role}.{field}": getattr(profile, field) for field in ("engine", "name", "display_name", "reasoning_effort")}
@@ -437,6 +440,29 @@ def _edit_child_session_limits(prompter: Prompter, config: RalphConfig, state: E
         prompter.say(f"  ✓ {answer}: {value} agent sessions per child")
 
 
+def _edit_worktree_setup(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+    while True:
+        current = config.worktree_setup
+        actions = (
+            [("Change the command", ""), ("Remove the command", "")] if current
+            else [("Set the command", "the shell command that prepares a run worktree for ralph-kit run --worktree")]
+        )
+        answer = prompter.choice(f"Run worktree setup: {current or 'none'} — what do you want to do?", [*actions, (BACK, "")], BACK)
+        if answer == BACK:
+            return config
+        if answer == "Remove the command":
+            config = dataclasses.replace(config, worktree_setup=None)
+            prompter.say("  ✓ run worktree setup removed")
+            continue
+        # Without a current command, an empty answer goes back; with one, Enter keeps it.
+        value = prompter.text(
+            "Shell command that prepares a run worktree, such as `uv sync`", default=current, required=False
+        )
+        if value and value != current:
+            config = dataclasses.replace(config, worktree_setup=value)
+            prompter.say(f"  ✓ run worktree setup: {value}")
+
+
 class GitField(NamedTuple):
     key: str
     question: str
@@ -504,6 +530,7 @@ EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = 
     "Reviewed runs by default": _edit_review_by_default,
     "Keep the machine awake by default": _edit_caffeinate_by_default,
     "Child session limits": _edit_child_session_limits,
+    "Run worktree setup": _edit_worktree_setup,
 }
 
 

@@ -546,6 +546,14 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
         # A set has no order of its own; sorting keeps the file stable from one save to the next.
         f"trusted_authors = [{', '.join(_string(author) for author in sorted(config.trusted_authors))}]",
         *(line for key in TOP_LEVEL_COMMENTS for line in top_level_setting(key, getattr(config, key))),
+        *(
+            [
+                "# Prepares a run worktree: ralph-kit run --worktree runs it through the shell inside the run worktree.",
+                f"worktree_setup = {_string(config.worktree_setup)}",
+            ]
+            if config.worktree_setup
+            else []
+        ),
         "",
         "[labels]",
         *(f"{key} = {_string(config.labels[key])}" for key in LABELS),
