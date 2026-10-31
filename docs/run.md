@@ -369,8 +369,10 @@ The run stops with nothing changed:
 - when the run branch is checked out in another checkout, such as your own,
   naming that checkout: switch it to another branch there, or run without
   `--worktree`;
-- when the run worktree path already exists, but not as this repository's run
-  worktree on the run branch.
+- when the run worktree path already exists, or Git still has a deleted
+  worktree registered there, but not as this repository's run worktree on the
+  run branch; a run branch still checked out in a deleted worktree is named as
+  such, with `git worktree prune` to remove it.
 
 Without ISSUE, the run target is picked first, in your checkout. Without
 `--worktree`, nothing is asked and the run works in your checkout as above.

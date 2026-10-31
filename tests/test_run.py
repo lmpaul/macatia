@@ -5700,6 +5700,18 @@ class RunWorktreeTestCase(BaseBranchTestCase):
         self.assertEqual(self.sessions.requests, [])
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
 
+    def push_to_origin_run_branch(self, name):
+        """Another clone pushes a commit to `origin`'s run branch; returns its sha."""
+        clone = self.repository.path.parent / f"other-run-clone-{name}"
+        git(self.repository.path.parent, "clone", "-q", "-b", RUN_BRANCH, str(self.repository.origin), str(clone))
+        git(clone, "config", "user.email", "other@example.com")
+        git(clone, "config", "user.name", "Other")
+        (clone / name).write_text(f"{name}\n", encoding="utf-8")
+        git(clone, "add", name)
+        git(clone, "commit", "-q", "-m", f"Add {name}")
+        git(clone, "push", "-q", "origin", RUN_BRANCH)
+        return git(clone, "rev-parse", "HEAD")
+
     def start_inside(self, run_worktree, *arguments, confirm, results=()):
         """Start a run with `arguments` from inside `run_worktree`, as a terminal would."""
         in_run_worktree = copy.copy(self.repository)
@@ -5908,18 +5920,6 @@ class ExistingRunWorktreeTests(RunWorktreeTestCase):
         git(self.run_worktree, "commit", "-q", "-m", f"Add {name}")
         return git(self.run_worktree, "rev-parse", "HEAD")
 
-    def push_to_origin_run_branch(self, name):
-        """Another clone pushes a commit to `origin`'s run branch; returns its sha."""
-        clone = self.repository.path.parent / "other-run-clone"
-        git(self.repository.path.parent, "clone", "-q", "-b", RUN_BRANCH, str(self.repository.origin), str(clone))
-        git(clone, "config", "user.email", "other@example.com")
-        git(clone, "config", "user.name", "Other")
-        (clone / name).write_text(f"{name}\n", encoding="utf-8")
-        git(clone, "add", name)
-        git(clone, "commit", "-q", "-m", f"Add {name}")
-        git(clone, "push", "-q", "origin", RUN_BRANCH)
-        return git(clone, "rev-parse", "HEAD")
-
     def assert_nothing_continued(self, result, reason):
         self.assertEqual(result.exit_code, 1)
         self.assertIn(reason, result.stderr)
@@ -6056,30 +6056,16 @@ class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
         self.local_head = self.commit_on_run_branch("progress.txt")
         self.persons_checkout()
 
-    def commit_on_run_branch(self, name, *, push=False):
+    def commit_on_run_branch(self, name):
         """Commit `name` on the local run branch without checking it out; returns its sha."""
         scratch = self.repository.path.parent / f"scratch-{name}"
         git(self.repository.path, "worktree", "add", "-q", str(scratch), RUN_BRANCH)
         (scratch / name).write_text(f"{name}\n", encoding="utf-8")
         git(scratch, "add", name)
         git(scratch, "commit", "-q", "-m", f"Add {name}")
-        if push:
-            git(scratch, "push", "-q", "origin", RUN_BRANCH)
         head = git(scratch, "rev-parse", "HEAD")
         git(self.repository.path, "worktree", "remove", str(scratch))
         return head
-
-    def push_to_origin_run_branch(self, name):
-        """Another clone pushes a commit to `origin`'s run branch; returns its sha."""
-        clone = self.repository.path.parent / f"other-run-clone-{name}"
-        git(self.repository.path.parent, "clone", "-q", "-b", RUN_BRANCH, str(self.repository.origin), str(clone))
-        git(clone, "config", "user.email", "other@example.com")
-        git(clone, "config", "user.name", "Other")
-        (clone / name).write_text(f"{name}\n", encoding="utf-8")
-        git(clone, "add", name)
-        git(clone, "commit", "-q", "-m", f"Add {name}")
-        git(clone, "push", "-q", "origin", RUN_BRANCH)
-        return git(clone, "rev-parse", "HEAD")
 
     def assert_created_at(self, result, confirm, head):
         self.assertEqual(result.exit_code, 0, result.stderr)
@@ -6127,6 +6113,18 @@ class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
 
         self.assert_created_at(result, confirm, remote_head)
         self.assert_upstream()
+
+    def test_create_keeps_a_local_run_branch_ahead_of_the_remote_one(self):
+        git(self.repository.path, "push", "-q", "origin", RUN_BRANCH)
+        pushed_head = self.local_head
+        local_head = self.commit_on_run_branch("local.txt")
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_created_at(result, confirm, local_head)
+        self.assert_upstream()
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), pushed_head)
 
     def test_create_checks_out_a_run_branch_only_on_the_remote_tracking_it(self):
         git(self.repository.path, "push", "-q", "origin", RUN_BRANCH)
@@ -6251,6 +6249,20 @@ class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
         self.assertEqual(confirm.questions, [])
         self.assertEqual(os.listdir(self.run_worktree), ["notes.txt"])
         self.assertEqual(git(self.repository.path, "rev-parse", RUN_BRANCH), self.local_head)
+
+    def test_a_deleted_worktree_on_another_branch_at_the_path_stops_before_the_question(self):
+        git(self.repository.path, "worktree", "add", "-q", "-b", "other", str(self.run_worktree), "main")
+        shutil.rmtree(self.run_worktree)
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assert_stopped(
+            result,
+            f"{self.run_worktree} already exists but is not the run worktree of {RUN_BRANCH}",
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertFalse(self.run_worktree.exists())
 
     def test_a_run_worktree_path_on_another_branch_stops(self):
         git(self.repository.path, "worktree", "add", "-q", "-b", "other", str(self.run_worktree), "main")

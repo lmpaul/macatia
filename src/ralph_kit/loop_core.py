@@ -1468,7 +1468,11 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
         continue_in_run_worktree(state, run_branch, path, local_head, remote_head)
         return path
     require_run_branch_checked_out_nowhere(state, run_branch)
-    if path.exists():
+    # Git keeps a deleted worktree registered, and would not add another at its path.
+    if path.exists() or any(
+        pathlib.Path(lines[0].removeprefix("worktree ")).resolve() == path
+        for lines in worktree_entries(state)
+    ):
         raise RalphError(
             f"{path} already exists but is not the run worktree of {run_branch}: move it "
             "away, or run without --worktree"
@@ -1493,14 +1497,8 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
         require_configuration_on(state, f"{remote}/{base}")
     else:
         remote_head, revision = followed_run_branch(state, run_branch, local_head, remote_head)
-        if local_head is not None and remote_head is not None and not (
-            is_ancestor(state, local_head, remote_head)
-            or is_ancestor(state, remote_head, local_head)
-        ):
-            raise RalphError(
-                f"{run_branch} has diverged from {remote}/{run_branch}; reconcile them, then "
-                f"run `{state.rerun_command}` again"
-            )
+        if local_head is not None and remote_head is not None:
+            require_not_diverged(state, run_branch, local_head, remote_head)
         require_configuration_on(state, revision)
     try:
         accepted = confirm(
@@ -1692,12 +1690,19 @@ def follow_remote_run_branch(
     the run with nothing rewritten when it has diverged from it."""
     if is_ancestor(state, remote_head, local_head):
         return
-    if not is_ancestor(state, local_head, remote_head):
+    require_not_diverged(state, run_branch, local_head, remote_head)
+    run_command(checkout, ["git", "merge", "--ff-only", remote_head])
+
+
+def require_not_diverged(state: RunState, run_branch: str, local_head: str, remote_head: str) -> None:
+    """Stop the run with nothing rewritten when `run_branch` has diverged from the remote one."""
+    if not (
+        is_ancestor(state, local_head, remote_head) or is_ancestor(state, remote_head, local_head)
+    ):
         raise RalphError(
             f"{run_branch} has diverged from {state.config.remote}/{run_branch}; reconcile "
             f"them, then run `{state.rerun_command}` again"
         )
-    run_command(checkout, ["git", "merge", "--ff-only", remote_head])
 
 
 def create_run_branch(state: RunState, run_branch: str) -> None:
