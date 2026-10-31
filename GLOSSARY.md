@@ -75,6 +75,10 @@ _Avoid_: Runner, execution
 The branch a run commits to and publishes from. A run started on the base branch offers to switch to `ralph-kit/issue-<run target>`, creating it from an up-to-date base branch unless it already exists.
 _Avoid_: Work branch, feature branch, Ralph branch
 
+**Run worktree**:
+The separate checkout of a run target's run branch, where a run works away from the person's own checkout.
+_Avoid_: Worktree (alone), sandbox, isolated checkout
+
 **Standard run**:
 A run whose loop has no review session.
 _Avoid_: Implementation-only loop, experimental loop
