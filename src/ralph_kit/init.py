@@ -551,7 +551,7 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
                 "# Prepares a run worktree: ralph-kit run --worktree runs it through the shell inside the run worktree.",
                 f"worktree_setup = {_string(config.worktree_setup)}",
             ]
-            if config.worktree_setup
+            if config.worktree_setup is not None
             else []
         ),
         "",
