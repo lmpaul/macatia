@@ -380,8 +380,10 @@ The run stops with nothing changed:
 Without ISSUE, the run target is picked first, in your checkout. Without
 `--worktree`, nothing is asked and the run works in your checkout as above.
 
-Nothing removes a run worktree yet. Once you are done with it, remove it by
-hand from your own checkout, then delete its run branch:
+`ralph-kit reset` removes the run worktree of the run target along with its
+run branch (see [Reset](reset.md)). To keep the run's work but drop its run
+worktree once you are done with it, remove it by hand from your own checkout,
+then delete its run branch:
 
 ```sh
 git worktree remove ../buyr.worktrees/issue-123

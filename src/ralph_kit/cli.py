@@ -55,11 +55,11 @@ commands:
       --force closes despite failed checks, shown as warnings, once you type ISSUE at a terminal;
       it needs ISSUE.
   reset [--yes] [--purge] [--config PATH] [ISSUE]
-      Reset, after one confirmation: close the open cumulative draft PR of ISSUE, delete
-      ralph-kit/issue-ISSUE on the remote and in this checkout, then label ready-for-agent again
-      each child of ISSUE that is agent-working, implemented or in human-review, then ISSUE itself,
-      each with a reset marker Ralph reads none of its earlier records past; ISSUE must be open
-      with no merged child.
+      Reset, after one confirmation: close the open cumulative draft PR of ISSUE, remove its run
+      worktree, delete ralph-kit/issue-ISSUE on the remote and in this checkout, then label
+      ready-for-agent again each child of ISSUE that is agent-working, implemented or in
+      human-review, then ISSUE itself, each with a reset marker Ralph reads none of its earlier
+      records past; ISSUE must be open with no merged child.
       Without ISSUE, at a terminal, offers the resettable run targets to choose from.
       --yes resets without asking; without a terminal, reset needs --yes.
       --purge deletes Ralph's comments on ISSUE and those children instead of leaving reset

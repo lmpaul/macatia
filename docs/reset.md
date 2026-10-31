@@ -32,11 +32,20 @@ refuses, printing every reason:
   draft PR, and `ralph-kit/issue-<N>` exists neither on the remote nor in the
   checkout;
 - a dirty worktree while `ralph-kit/issue-<N>` is checked out, since the reset
-  deletes it.
+  deletes it;
+- a dirty run worktree, untracked files included, since the reset removes it;
+- a reset started from inside the run worktree of the run target, which it
+  would remove: run it from outside, for instance from your own checkout.
+
+The run worktree of the run target is the checkout, other than the main one,
+where `ralph-kit/issue-<N>` is checked out, as `ralph-kit run --worktree`
+creates it; the reset finds it by that run branch, wherever it is. A run target
+without a run worktree resets as though run without `--worktree`.
 
 It then prints the plan: the open cumulative draft PRs to close (open pull
 requests into the base branch titled `Implement Ralph parent #N` or
-`Implement Ralph issue #N`), `ralph-kit/issue-<N>` to delete with its head SHA
+`Implement Ralph issue #N`), the run worktree to remove, `ralph-kit/issue-<N>`
+to delete with its head SHA
 on the remote and in the checkout, and every label change. A `⚠️` warning
 flags each child still `agent-working`, since a run may still be working on it;
 a pull request from another branch, which is closed but whose branch is kept;
@@ -56,7 +65,9 @@ target, `reset` says so, naming the repository, and exits 0; Ctrl-C in the
 picker resets nothing and exits 130. Without a terminal, the issue is required.
 
 The reset first closes each of those pull requests with a comment saying a reset
-closed it, then deletes `ralph-kit/issue-<N>` on the configured remote, then in
+closed it, then removes the run worktree with `git worktree remove`, ignored
+files in it (dependencies, run diagnostics) going with it, then deletes
+`ralph-kit/issue-<N>` on the configured remote, then in
 the checkout, switching to the base branch first when it is checked out; no
 other branch is ever deleted. Each child in one of those states then gets a
 reset marker recording the state it left, and `ready-for-agent` as its only
@@ -88,7 +99,8 @@ later, and the picker also offers the trusted open issues carrying a Ralph
 comment.
 
 After a GitHub or Git error or an interruption partway, rerun the same command:
-pull requests already closed, branches already deleted, and markers and labels
+pull requests already closed, a run worktree already removed, branches already
+deleted, and markers and labels
 already written are skipped, and the recap still lists the children the first
 attempt reset, and the pull request it closed from `ralph-kit/issue-<N>` with
 the branch it deleted, which a hidden marker in the closing comment records.
