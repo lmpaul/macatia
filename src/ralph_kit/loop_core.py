@@ -1446,11 +1446,13 @@ def run_worktree_path(state: RunState, run_target: int) -> pathlib.Path:
 
 def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | None:
     """Offer to create the run worktree of the parent on a new run branch from the remote
-    base branch, and return it once created; None when the run already runs in it.
+    base branch, or to continue in the existing one, and return it once accepted; None when
+    the run already runs in it.
 
-    Anything other than Create, a run branch or path that already exists, and a selected
-    configuration file missing from the remote base branch stop with nothing changed in
-    the person's checkout.
+    Anything other than Create or Continue, a run branch or path that already exists but
+    not as the run worktree of the parent on its run branch, and a selected configuration
+    file missing from where the run worktree reads it stop with nothing changed in the
+    person's checkout.
     """
     configuration = state.config
     base, remote = configuration.base_branch, configuration.remote
@@ -1460,6 +1462,10 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
         require_clean_worktree(state, "at startup")
         return None
     remote_head, local_head = branch_heads(state.repository_root, remote, run_branch)
+    if is_run_worktree(state, path, run_branch):
+        assert local_head is not None
+        continue_in_run_worktree(state, run_branch, path, local_head, remote_head)
+        return path
     if remote_head is not None or local_head is not None or path.exists():
         raise RalphError(
             f"{run_branch} or its run worktree {path} already exists: run without --worktree"
@@ -1495,6 +1501,58 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
         f"{remote}/{base}",
     )
     return path
+
+
+def is_run_worktree(state: RunState, path: pathlib.Path, run_branch: str) -> bool:
+    """Whether `path` is a worktree of this repository with `run_branch` checked out."""
+    # Git still lists a worktree whose directory was deleted, as prunable.
+    if not path.is_dir():
+        return False
+    for entry in git(state, "worktree", "list", "--porcelain").split("\n\n"):
+        lines = entry.splitlines()
+        if (
+            lines
+            and lines[0].startswith("worktree ")
+            and pathlib.Path(lines[0].removeprefix("worktree ")).resolve() == path
+            and f"branch refs/heads/{run_branch}" in lines
+        ):
+            return True
+    return False
+
+
+def continue_in_run_worktree(
+    state: RunState,
+    run_branch: str,
+    path: pathlib.Path,
+    local_head: str,
+    remote_head: str | None,
+) -> None:
+    """Offer to continue in the existing run worktree `path`, then have its run branch
+    follow the remote one, as `follow_remote_run_branch` does. Anything other than Continue,
+    and a selected configuration file missing from the run branch it continues on, stop with
+    nothing changed."""
+    confirm = state.adapters.confirm
+    if confirm is None:
+        raise RalphError(
+            f"{run_branch} has a run worktree at {path}: run `{state.rerun_command}` "
+            "in a terminal to continue in it"
+        )
+    continued_on = run_branch
+    if remote_head is not None:
+        remote_head = fetch_run_branch(state, run_branch)
+        if is_ancestor(state, local_head, remote_head):
+            continued_on = f"{state.config.remote}/{run_branch}"
+    require_configuration_on(state, continued_on)
+    try:
+        accepted = confirm(
+            f"Continue in the existing run worktree at {path}?", "Continue", accept_by_default=True
+        )
+    except KeyboardInterrupt:
+        accepted = False
+    if not accepted:
+        raise RalphError(f"the run did not continue in the run worktree {path}")
+    if remote_head is not None:
+        follow_remote_run_branch(state, run_branch, local_head, remote_head, path)
 
 
 def require_configuration_on(state: RunState, revision: str) -> None:
@@ -1538,6 +1596,18 @@ def switch_to_run_branch(
     if remote_head is None:
         git(state, "switch", run_branch)
         return None
+    remote_head = fetch_run_branch(state, run_branch)
+    if local_head is None:
+        git(state, "switch", "--create", run_branch, "--track", f"{remote}/{run_branch}")
+        return remote_head
+    git(state, "switch", run_branch)
+    follow_remote_run_branch(state, run_branch, local_head, remote_head, state.repository_root)
+    return remote_head
+
+
+def fetch_run_branch(state: RunState, run_branch: str) -> str:
+    """Fetch `run_branch` from the remote into its remote-tracking branch; return its head."""
+    remote = state.config.remote
     tracking = f"refs/remotes/{remote}/{run_branch}"
     print(f"⬇️  Fetching {run_branch} from {remote}.", flush=True)
     # Not under a spinner: git writes its own progress to the terminal.
@@ -1549,20 +1619,26 @@ def switch_to_run_branch(
     )
     if fetched.returncode != 0:
         raise RalphError(f"could not fetch {run_branch} from {remote}")
-    remote_head = git(state, "rev-parse", tracking)
-    if local_head is None:
-        git(state, "switch", "--create", run_branch, "--track", f"{remote}/{run_branch}")
-        return remote_head
-    git(state, "switch", run_branch)
+    return git(state, "rev-parse", tracking)
+
+
+def follow_remote_run_branch(
+    state: RunState,
+    run_branch: str,
+    local_head: str,
+    remote_head: str,
+    checkout: pathlib.Path,
+) -> None:
+    """Fast-forward `run_branch`, checked out in `checkout`, when behind the remote one; stop
+    the run with nothing rewritten when it has diverged from it."""
     if is_ancestor(state, remote_head, local_head):
-        return remote_head
+        return
     if not is_ancestor(state, local_head, remote_head):
         raise RalphError(
-            f"{run_branch} has diverged from {remote}/{run_branch}; reconcile them, "
-            f"then run `{state.rerun_command}` again"
+            f"{run_branch} has diverged from {state.config.remote}/{run_branch}; reconcile "
+            f"them, then run `{state.rerun_command}` again"
         )
-    git(state, "merge", "--ff-only", remote_head)
-    return remote_head
+    run_command(checkout, ["git", "merge", "--ff-only", remote_head])
 
 
 def create_run_branch(state: RunState, run_branch: str) -> None:

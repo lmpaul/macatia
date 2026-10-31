@@ -5661,9 +5661,8 @@ class PersistentTerminalTests(BaseBranchTestCase):
                 self.assertEqual(result.persistent_terminal.checked, 0)
 
 
-class RunWorktreeTests(BaseBranchTestCase):
-    """`--worktree` offers, in place of the run branch offer, to create the run worktree of
-    the run target, then restarts the run in it, leaving the person's checkout untouched."""
+class RunWorktreeTestCase(BaseBranchTestCase):
+    """A `--worktree` run started from the person's checkout."""
 
     def setUp(self):
         super().setUp()
@@ -5700,6 +5699,21 @@ class RunWorktreeTests(BaseBranchTestCase):
         self.assertNotIn(RUN_BRANCH, self.origin_branches())
         self.assertEqual(self.sessions.requests, [])
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+
+    def start_inside(self, run_worktree, *arguments, confirm, results=()):
+        """Start a run with `arguments` from inside `run_worktree`, as a terminal would."""
+        in_run_worktree = copy.copy(self.repository)
+        in_run_worktree.path = run_worktree
+        self.sessions = ScriptedSessions(in_run_worktree, *results)
+        return start_run(
+            in_run_worktree, self.github, self.sessions, *arguments,
+            confirm=confirm, terminal=True, cwd=run_worktree,
+        )
+
+
+class RunWorktreeTests(RunWorktreeTestCase):
+    """`--worktree` offers, in place of the run branch offer, to create the run worktree of
+    the run target, then restarts the run in it, leaving the person's checkout untouched."""
 
     def test_create_adds_the_run_worktree_from_the_remote_base_and_restarts_in_it(self):
         remote_head = self.push_to_origin_main("upstream.txt")
@@ -5856,13 +5870,9 @@ class RunWorktreeTests(BaseBranchTestCase):
         self.persons_checkout()
         restarted = self.start_with("--worktree", PARENT, confirm=ScriptedConfirm(CREATE))
         [restart] = restarted.persistent_terminal.restarts
-        in_run_worktree = copy.copy(self.repository)
-        in_run_worktree.path = restart.directory
         self.confirm = ScriptedConfirm(CREATE)
-        self.sessions = ScriptedSessions(in_run_worktree, *results)
-        return start_run(
-            in_run_worktree, self.github, self.sessions, *shlex.split(restart.command)[2:],
-            confirm=self.confirm, terminal=True, cwd=restart.directory,
+        return self.start_inside(
+            restart.directory, *shlex.split(restart.command)[2:], confirm=self.confirm, results=results
         )
 
     def test_the_restarted_command_runs_in_the_run_worktree(self):
@@ -5880,6 +5890,156 @@ class RunWorktreeTests(BaseBranchTestCase):
 
         self.assertEqual(result.exit_code, 1)
         self.assertIn(f"run `ralph-kit run --worktree {PARENT}` again", result.stderr)
+
+
+class ExistingRunWorktreeTests(RunWorktreeTestCase):
+    """A `--worktree` run whose run worktree already exists offers to continue in it."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.repository.path, "worktree", "add", "-q", "-b", RUN_BRANCH, str(self.run_worktree), "main")
+        self.run_worktree_head = self.commit_in_run_worktree("progress.txt")
+        git(self.run_worktree, "push", "-q", "-u", "origin", RUN_BRANCH)
+        self.persons_checkout()
+
+    def commit_in_run_worktree(self, name):
+        (self.run_worktree / name).write_text(f"{name}\n", encoding="utf-8")
+        git(self.run_worktree, "add", name)
+        git(self.run_worktree, "commit", "-q", "-m", f"Add {name}")
+        return git(self.run_worktree, "rev-parse", "HEAD")
+
+    def push_to_origin_run_branch(self, name):
+        """Another clone pushes a commit to `origin`'s run branch; returns its sha."""
+        clone = self.repository.path.parent / "other-run-clone"
+        git(self.repository.path.parent, "clone", "-q", "-b", RUN_BRANCH, str(self.repository.origin), str(clone))
+        git(clone, "config", "user.email", "other@example.com")
+        git(clone, "config", "user.name", "Other")
+        (clone / name).write_text(f"{name}\n", encoding="utf-8")
+        git(clone, "add", name)
+        git(clone, "commit", "-q", "-m", f"Add {name}")
+        git(clone, "push", "-q", "origin", RUN_BRANCH)
+        return git(clone, "rev-parse", "HEAD")
+
+    def assert_nothing_continued(self, result, reason):
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(reason, result.stderr)
+        self.assertEqual(result.persistent_terminal.restarts, [])
+        self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), self.run_worktree_head)
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
+        self.assert_checkout_untouched()
+
+    def test_continue_restarts_in_the_existing_run_worktree(self):
+        confirm = ScriptedConfirm(RESUME)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            confirm.questions, [f"Continue in the existing run worktree at {self.run_worktree}?"]
+        )
+        self.assertEqual(confirm.choices, [("Continue", True)])
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
+        )
+        self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), self.run_worktree_head)
+        self.assert_checkout_untouched()
+        self.assertEqual(self.sessions.requests, [])
+
+    def test_continue_fast_forwards_a_run_branch_behind_the_remote_one(self):
+        remote_head = self.push_to_origin_run_branch("remote.txt")
+
+        result = self.start_with("--worktree", PARENT, confirm=ScriptedConfirm(RESUME))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), remote_head)
+        self.assertEqual(git(self.run_worktree, "status", "--porcelain"), "")
+        self.assertEqual(len(result.persistent_terminal.restarts), 1)
+        self.assert_checkout_untouched()
+
+    def test_a_diverged_run_branch_stops_with_nothing_rewritten(self):
+        remote_head = self.push_to_origin_run_branch("remote.txt")
+        self.run_worktree_head = self.commit_in_run_worktree("local.txt")
+
+        result = self.start_with("--worktree", PARENT, confirm=ScriptedConfirm(RESUME))
+
+        self.assert_nothing_continued(
+            result,
+            f"{RUN_BRANCH} has diverged from origin/{RUN_BRANCH}; reconcile them, "
+            f"then run `ralph-kit run --worktree {PARENT}` again",
+        )
+        self.assertEqual(self.repository.pushed_head(RUN_BRANCH), remote_head)
+
+    def test_stop_and_ctrl_c_change_nothing(self):
+        self.push_to_origin_run_branch("remote.txt")
+        for answer in (STOP, KeyboardInterrupt()):
+            with self.subTest(answer=answer):
+                confirm = ScriptedConfirm(answer)
+
+                result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+                self.assert_nothing_continued(
+                    result, f"the run did not continue in the run worktree {self.run_worktree}"
+                )
+                self.assertEqual(len(confirm.questions), 1)
+
+    def test_a_configuration_missing_from_the_run_branch_stops_before_the_question(self):
+        self.push_to_origin_run_branch("remote.txt")
+        shutil.copy(self.repository.path / "ralph.toml", self.repository.path / "local.toml")
+        confirm = ScriptedConfirm(RESUME)
+
+        result = self.start_with("--worktree", "--config", "local.toml", PARENT, confirm=confirm)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn(
+            f"{self.repository.path.resolve() / 'local.toml'} is not on origin/{RUN_BRANCH}, "
+            "where the run worktree reads it: commit and push it, or run without --worktree",
+            result.stderr,
+        )
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(result.persistent_terminal.restarts, [])
+        self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), self.run_worktree_head)
+
+    def test_a_deleted_run_worktree_is_not_continued_in(self):
+        shutil.rmtree(self.run_worktree)
+        confirm = ScriptedConfirm(RESUME)
+
+        result = self.start_with("--worktree", PARENT, confirm=confirm)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("already exists", result.stderr)
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(result.persistent_terminal.restarts, [])
+
+    def test_without_a_terminal_the_run_stops_and_names_the_run_worktree_to_continue_in(self):
+        result = self.start_with("--worktree", PARENT)
+
+        self.assert_nothing_continued(
+            result,
+            f"{RUN_BRANCH} has a run worktree at {self.run_worktree}: run "
+            f"`ralph-kit run --worktree {PARENT}` in a terminal to continue in it",
+        )
+
+    def test_another_run_target_from_inside_a_run_worktree_gets_its_own_next_to_the_main_checkout(self):
+        self.github.add_issue(200)
+        other_run_worktree = self.run_worktree.parent / "issue-200"
+        confirm = ScriptedConfirm(CREATE)
+
+        result = self.start_inside(self.run_worktree, "--worktree", 200, confirm=confirm)
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            confirm.questions,
+            [f"Create a run worktree for ralph-kit/issue-200 at {other_run_worktree}?"],
+        )
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(None, "ralph-kit run --worktree 200", other_run_worktree, sleep_lock_held=False)],
+        )
+        self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
+        self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), self.run_worktree_head)
+        self.assert_checkout_untouched()
 
 
 if __name__ == "__main__":

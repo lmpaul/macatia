@@ -334,17 +334,32 @@ asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
   configuration and keeps its run diagnostics there, and pushes the run branch.
 - **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
 
+When the run worktree already exists at that path on the run branch, as after a
+stopped or interrupted run, Ralph asks "Continue in the existing run worktree at
+‹path›?" instead:
+
+- **Continue** (the default) has the run branch follow the remote one, as the
+  switch to an existing run branch does: a run branch behind the remote one is
+  fast-forwarded, and one that has diverged from it stops the run with nothing
+  rewritten. Ralph then restarts the run in the run worktree, as for Create.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
 A run started with `--worktree` from inside the run worktree of its run target,
 as the restarted run is, asks nothing and continues in place. A stopped run's
-rerun command keeps `--worktree`: run it from the run worktree to resume the run.
+rerun command keeps `--worktree`, so the same command resumes the run from your
+own checkout or from the run worktree. Started from inside the run worktree of
+another run target, `--worktree` works as from your own checkout: the path is
+always derived from the main checkout.
 
 The run stops with nothing changed:
 
-- without a terminal, naming the run worktree it would create and the command
-  to run in a terminal to create it;
-- when the selected configuration file is not on `<remote>/<base>`, where the
-  run worktree reads it: commit and push it, or run without `--worktree`;
-- when the run branch or the run worktree path already exists.
+- without a terminal, naming the run worktree it would create or continue in
+  and the command to run in a terminal to do so;
+- when the selected configuration file is not where the run worktree reads it,
+  `<remote>/<base>` for a new run worktree or the run branch for an existing
+  one: commit and push it, or run without `--worktree`;
+- when the run branch or the run worktree path already exists, but not as the
+  run worktree of the run target on its run branch.
 
 Without ISSUE, the run target is picked first, in your checkout. Without
 `--worktree`, nothing is asked and the run works in your checkout as above.
