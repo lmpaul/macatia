@@ -1403,6 +1403,14 @@ def require_persistent_terminal(state: RunState) -> None:
         raise RalphError("--tmux needs a terminal: run in a terminal, or without --tmux")
 
 
+def require_no_persistent_terminal(state: RunState, parent_issue: int) -> str:
+    """Stop when the persistent terminal of `parent_issue` already exists; return its name."""
+    name = persistent_terminal_name(state.config.repository, parent_issue)
+    if state.adapters.persistent_terminal.exists(name):
+        raise RalphError(already_exists(name))
+    return name
+
+
 def ask_where_to_continue(
     state: RunState, parent_issue: int, directory: pathlib.Path | None = None
 ) -> bool:
@@ -1412,9 +1420,7 @@ def ask_where_to_continue(
     persistent terminal, in `directory` or the repository root, which does everything from
     scratch, and returns False once the adapter returns, which only a fake does. Stop and
     Ctrl-C stop with nothing changed."""
-    name = persistent_terminal_name(state.config.repository, parent_issue)
-    if state.adapters.persistent_terminal.exists(name):
-        raise RalphError(already_exists(name))
+    name = require_no_persistent_terminal(state, parent_issue)
     choose = state.adapters.choose_continuation
     # Startup stopped a `--tmux` run outside a terminal.
     assert choose is not None
@@ -3612,6 +3618,9 @@ def run_children(
             state.standalone = True
             require_startable_standalone(state, issue)
     if state.offer_run_worktree:
+        if state.offer_persistent_terminal:
+            # Before the run worktree is created, which the persistent terminal would start in.
+            require_no_persistent_terminal(state, parent_issue)
         run_worktree = offer_run_worktree(state, parent_issue)
         if run_worktree is not None:
             if not state.offer_persistent_terminal or ask_where_to_continue(

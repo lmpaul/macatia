@@ -5859,23 +5859,6 @@ class RunWorktreeTests(RunWorktreeTestCase):
         )
         self.assert_checkout_untouched()
 
-    def test_with_tmux_the_run_restarts_once_in_the_run_worktree(self):
-        for answer, name in ((Continuation.RESTART, PERSISTENT_TERMINAL), (Continuation.CONTINUE_HERE, None)):
-            with self.subTest(answer=answer):
-                self.setUp()
-
-                result = self.start_with(
-                    "--worktree", "--tmux", PARENT, confirm=ScriptedConfirm(CREATE),
-                    continuation=ScriptedContinuation(answer),
-                )
-
-                self.assertEqual(result.exit_code, 0, result.stderr)
-                self.assertEqual(
-                    result.persistent_terminal.restarts,
-                    [Restart(name, f"ralph-kit run --worktree {PARENT}", self.run_worktree,
-                             sleep_lock_held=False)],
-                )
-
     def restart_and_run_there(self, *results):
         """Create the run worktree from the person's checkout, then start the restarted command
         where it was asked to run, as the restart would; returns that run's result."""
@@ -5902,6 +5885,133 @@ class RunWorktreeTests(RunWorktreeTestCase):
 
         self.assertEqual(result.exit_code, 1)
         self.assertIn(f"run `ralph-kit run --worktree {PARENT}` again", result.stderr)
+
+
+class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
+    """`--worktree --tmux` asks where the run continues after the run worktree offer, then
+    restarts the run once, in the run worktree."""
+
+    def setUp(self):
+        super().setUp()
+        self.persons_checkout()
+
+    def start_with(self, *arguments, continuation, unavailability=None, existing=()):
+        self.confirm = ScriptedConfirm(CREATE)
+        self.sessions = ScriptedSessions(self.repository)
+        # The run worktree question comes before the continuation choice.
+        continuation.before_answer = lambda: self.questions_before_choice.append(
+            list(self.confirm.questions)
+        )
+        self.questions_before_choice = []
+        return start_run(
+            self.repository, self.github, self.sessions, "--worktree", "--tmux", *arguments,
+            confirm=self.confirm, choose_run_target=None, choose_continuation=continuation,
+            terminal=True, persistent_terminal_unavailability=unavailability,
+            existing_persistent_terminals=existing,
+        )
+
+    def test_restart_starts_the_persistent_terminal_in_the_run_worktree_only(self):
+        continuation = ScriptedContinuation(Continuation.RESTART)
+
+        result = self.start_with("--review", PARENT, continuation=continuation)
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            self.questions_before_choice,
+            [[f"Create a run worktree for {RUN_BRANCH} at {self.run_worktree}?"]],
+        )
+        self.assertEqual(continuation.asked, [PERSISTENT_TERMINAL])
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(PERSISTENT_TERMINAL, f"ralph-kit run --review --worktree {PARENT}",
+                     self.run_worktree, sleep_lock_held=False)],
+        )
+        self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
+        self.assertEqual(self.sessions.requests, [])
+        self.assert_checkout_untouched()
+
+    def test_continue_here_restarts_in_the_run_worktree_in_this_terminal_once(self):
+        result = self.start_with(PARENT, continuation=ScriptedContinuation(Continuation.CONTINUE_HERE))
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(
+            result.persistent_terminal.restarts,
+            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree,
+                     sleep_lock_held=False)],
+        )
+        self.assertEqual(self.sessions.requests, [])
+        self.assert_checkout_untouched()
+
+    def test_stop_keeps_the_run_worktree_for_the_next_run(self):
+        for answer in (Continuation.STOP, KeyboardInterrupt()):
+            with self.subTest(answer=answer):
+                self.setUp()
+
+                result = self.start_with(PARENT, continuation=ScriptedContinuation(answer))
+
+                self.assertEqual(result.exit_code, 1)
+                self.assertIn(f"{PERSISTENT_TERMINAL} was not started", result.stderr)
+                self.assertEqual(result.persistent_terminal.restarts, [])
+                self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
+                self.assertEqual(self.sessions.requests, [])
+                self.assert_checkout_untouched()
+
+                continuation = ScriptedContinuation(Continuation.RESTART)
+                again = self.start_with(PARENT, continuation=continuation)
+
+                self.assertEqual(again.exit_code, 0, again.stderr)
+                self.assertEqual(
+                    self.questions_before_choice,
+                    [[f"Continue in the existing run worktree at {self.run_worktree}?"]],
+                )
+                self.assertEqual(
+                    again.persistent_terminal.restarts,
+                    [Restart(PERSISTENT_TERMINAL, f"ralph-kit run --worktree {PARENT}",
+                             self.run_worktree, sleep_lock_held=False)],
+                )
+
+    def test_an_existing_persistent_terminal_stops_the_run_before_the_run_worktree_offer(self):
+        continuation = ScriptedContinuation(Continuation.RESTART)
+
+        result = self.start_with(PARENT, continuation=continuation, existing=[PERSISTENT_TERMINAL])
+
+        self.assert_nothing_created(
+            result,
+            f"{PERSISTENT_TERMINAL} already exists: attach to it with "
+            f"tmux attach -t {PERSISTENT_TERMINAL}, or end it first",
+        )
+        self.assertEqual(self.confirm.questions, [])
+        self.assertEqual(continuation.asked, [])
+        self.assert_checkout_untouched()
+
+    def test_an_unavailable_persistent_terminal_stops_before_the_run_worktree_offer(self):
+        for unavailability, error in (
+            (Unavailability.TMUX_NOT_FOUND, "tmux not found: install tmux, or run without --tmux"),
+            (Unavailability.INSIDE_TMUX, "already inside tmux: run without --tmux"),
+        ):
+            with self.subTest(unavailability=unavailability):
+                self.setUp()
+
+                result = self.start_with(
+                    PARENT, continuation=ScriptedContinuation(Continuation.RESTART),
+                    unavailability=unavailability,
+                )
+
+                self.assert_nothing_created(result, error)
+                self.assertEqual(self.github.opened_for, [])
+                self.assertEqual(self.confirm.questions, [])
+
+    def test_without_a_terminal_the_run_stops_before_the_run_worktree_offer(self):
+        self.sessions = ScriptedSessions(self.repository)
+
+        result = start_run(
+            self.repository, self.github, self.sessions, "--worktree", "--tmux", PARENT,
+        )
+
+        self.assert_nothing_created(
+            result, "--tmux needs a terminal: run in a terminal, or without --tmux"
+        )
+        self.assertEqual(self.github.opened_for, [])
 
 
 class ExistingRunWorktreeTests(RunWorktreeTestCase):

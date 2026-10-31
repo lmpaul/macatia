@@ -281,7 +281,8 @@ by `_`. Once the run target passes its startup checks, and before the run branch
 offer, Ralph asks "Where should this run continue?":
 
 - **Restart in ralph-kit-…** (the default) releases the sleep lock, then
-  restarts the run in a new persistent terminal started in the repository root,
+  restarts the run in a new persistent terminal started in the repository root
+  (in the run worktree with `--worktree`),
   and attaches this terminal to it. The restarted run has the same `--review`,
   `--caffeinate` and `--config` flags, never `--tmux`, and the run target, the
   one picked when the run started without one. When the run ends, the
@@ -327,7 +328,8 @@ asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
 
 - **Create** (the default) adds the run worktree on a new run branch
   `ralph-kit/issue-N` from `<remote>/<base>`, releases the sleep lock, then
-  restarts the run in the run worktree, in this terminal. The restarted run has
+  restarts the run in the run worktree, in this terminal (with `--tmux`, see
+  below). The restarted run has
   the same `--review`, `--caffeinate`, `--config` and `--worktree` flags, never
   `--tmux`, and the run target, the one picked when the run started without
   one. It runs the usual startup checks in the run worktree, reads its
@@ -388,3 +390,21 @@ git branch -d ralph-kit/issue-123
 `git worktree remove` refuses a run worktree with uncommitted changes, and
 `git branch -d` a run branch that is not merged; check them before forcing
 either.
+
+### Combining `--worktree` with `--tmux`
+
+`ralph-kit run --worktree --tmux 123` restarts the run only once, both in a
+persistent terminal and in the run worktree. After Create or Continue, Ralph
+asks "Where should this run continue?" as for `--tmux`:
+
+- **Restart in ralph-kit-…** (the default) starts the persistent terminal in
+  the run worktree, running the restarted command, with `--worktree` and
+  without `--tmux`, which continues in place there.
+- **Continue here** restarts the run in the run worktree, in this terminal.
+- **Stop**, or Ctrl-C at the prompt, ends the run. A run worktree created just
+  before stays, and the next `--worktree` run offers to continue in it.
+
+The `--tmux` refusals apply as without `--worktree`: tmux not found, already
+inside tmux and no terminal stop the run at once, and an existing persistent
+terminal of the run target stops it before the run worktree offer, with
+nothing created.
