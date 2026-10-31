@@ -33,7 +33,8 @@ refuses, printing every reason:
   checkout;
 - a dirty worktree while `ralph-kit/issue-<N>` is checked out, since the reset
   deletes it;
-- a dirty run worktree, untracked files included, since the reset removes it;
+- a dirty run worktree, untracked files included, or a locked one, since the
+  reset removes it;
 - a reset started from inside the run worktree of the run target, which it
   would remove: run it from outside, for instance from your own checkout.
 
@@ -43,9 +44,9 @@ creates it; the reset finds it by that run branch, wherever it is. A run target
 without a run worktree resets as though run without `--worktree`.
 
 It then prints the plan: the open cumulative draft PRs to close (open pull
-requests into the base branch titled `Implement Ralph parent #N` or
-`Implement Ralph issue #N`), the run worktree to remove, `ralph-kit/issue-<N>`
-to delete with its head SHA
+requests into the base branch titled `Implement Ralph parent #N` or `Implement
+Ralph issue #N`), the run worktree to remove, `ralph-kit/issue-<N>` to delete
+with its head SHA
 on the remote and in the checkout, and every label change. A `⚠️` warning
 flags each child still `agent-working`, since a run may still be working on it;
 a pull request from another branch, which is closed but whose branch is kept;
@@ -100,8 +101,7 @@ comment.
 
 After a GitHub or Git error or an interruption partway, rerun the same command:
 pull requests already closed, a run worktree already removed, branches already
-deleted, and markers and labels
-already written are skipped, and the recap still lists the children the first
+deleted, and markers and labels already written are skipped, and the recap still lists the children the first
 attempt reset, and the pull request it closed from `ralph-kit/issue-<N>` with
 the branch it deleted, which a hidden marker in the closing comment records.
 Exit codes are those of `close`: 0 once reset or with no resettable run

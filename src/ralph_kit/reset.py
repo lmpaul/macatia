@@ -95,7 +95,7 @@ class RunTraces:
     pulls: dict[int, list[dict[str, Any]]]
     checked_out: str | None
     # The run worktrees by run branch, as `run_worktrees` lists them.
-    worktrees: dict[str, pathlib.Path]
+    worktrees: dict[str, RunWorktree]
 
     def run_branch(self, number: int) -> RunBranch | None:
         return RunBranch.found(
@@ -117,6 +117,15 @@ class ChildReset:
 
 
 @dataclass(frozen=True)
+class RunWorktree:
+    """The checkout of a run branch other than the main one, its directory deleted or not."""
+
+    path: pathlib.Path
+    # Whether Git keeps it locked: `git worktree remove` refuses it.
+    locked: bool
+
+
+@dataclass(frozen=True)
 class RunBranch:
     """The run target's run branch, where it still exists."""
 
@@ -127,7 +136,7 @@ class RunBranch:
     # Whether the checkout has it checked out: the reset switches to the base branch first.
     checked_out: bool
     # Its run worktree, which the reset removes first, or None without one.
-    worktree: pathlib.Path | None = None
+    worktree: RunWorktree | None
 
     @staticmethod
     def found(
@@ -135,7 +144,7 @@ class RunBranch:
         remote_head: str | None,
         local_head: str | None,
         checked_out: str | None,
-        worktrees: dict[str, pathlib.Path],
+        worktrees: dict[str, RunWorktree],
     ) -> RunBranch | None:
         """The run branch of run target `number` at these heads, None when it exists nowhere;
         `checked_out` is the checkout's current branch and `worktrees` the run worktrees."""
@@ -317,9 +326,9 @@ def git(root: pathlib.Path, *arguments: str) -> str:
     return command(root, ["git", *arguments]).stdout.strip()
 
 
-def run_worktrees(root: pathlib.Path) -> dict[str, pathlib.Path]:
+def run_worktrees(root: pathlib.Path) -> dict[str, RunWorktree]:
     """The run worktrees of the repository by run branch: each checkout other than the main
-    one with a run branch checked out, wherever it is, its directory deleted or not."""
+    one with a run branch checked out, wherever it is."""
     worktrees = {}
     # The main checkout comes first.
     for entry in git(root, "worktree", "list", "--porcelain").split("\n\n")[1:]:
@@ -327,7 +336,10 @@ def run_worktrees(root: pathlib.Path) -> dict[str, pathlib.Path]:
         branch = next((line.removeprefix("branch refs/heads/") for line in lines
                        if line.startswith("branch refs/heads/")), None)
         if lines and branch is not None and RUN_BRANCH_NAME.fullmatch(branch):
-            worktrees[branch] = pathlib.Path(lines[0].removeprefix("worktree ")).resolve()
+            worktrees[branch] = RunWorktree(
+                pathlib.Path(lines[0].removeprefix("worktree ")).resolve(),
+                any(line == "locked" or line.startswith("locked ") for line in lines),
+            )
     return worktrees
 
 
@@ -500,32 +512,42 @@ def inspect(
     ), failures
 
 
-def dirty_worktree(config: RalphConfig, plan: Plan, root: pathlib.Path) -> list[Failure]:
-    """A reset started from inside the run worktree, which it would remove; a dirty run
-    worktree; or a dirty worktree with the run branch checked out, which it would delete."""
+def checkout_failures(config: RalphConfig, plan: Plan, root: pathlib.Path) -> list[Failure]:
+    """What the checkouts of the run branch stop the reset for: a run worktree it was started
+    from inside, locked or dirty, which it would remove, and a dirty worktree with the run
+    branch checked out, which it would delete."""
     branch = plan.branch
     if branch is None:
         return []
+    failures = []
     worktree = branch.worktree
-    if worktree is not None and (root == worktree or worktree in root.parents):
-        return [Failure(
-            f"the reset was started from inside the run worktree of {branch.name} at {worktree}",
-            "run it from outside the run worktree, for instance from your own checkout: the "
-            "reset removes it",
-        )]
-    # Git still lists a run worktree whose directory was deleted.
-    if worktree is not None and worktree.is_dir() and git(worktree, "status", "--porcelain"):
-        return [Failure(
-            f"the run worktree of {branch.name} at {worktree} is dirty",
-            f"commit or discard your changes there: the reset removes it with {branch.name}",
-        )]
-    if not branch.checked_out or not git(root, "status", "--porcelain"):
-        return []
-    return [Failure(
-        f"the worktree is dirty while {branch.name} is checked out",
-        f"commit or stash your changes, or switch to {config.base_branch}: the reset deletes "
-        f"{branch.name}",
-    )]
+    if worktree is not None:
+        path = worktree.path
+        if root == path or path in root.parents:
+            failures.append(Failure(
+                f"the reset was started from inside the run worktree of {branch.name} at {path}",
+                "run it from outside the run worktree, for instance from your own checkout: the "
+                "reset removes it",
+            ))
+        if worktree.locked:
+            failures.append(Failure(
+                f"the run worktree of {branch.name} at {path} is locked",
+                f"unlock it with `git worktree unlock {path}`: the reset removes it",
+            ))
+        # Git still lists a run worktree whose directory was deleted.
+        if path.is_dir() and git(path, "status", "--porcelain"):
+            failures.append(Failure(
+                f"the run worktree of {branch.name} at {path} is dirty",
+                f"commit or discard your changes there: the reset removes it with {branch.name}",
+            ))
+    # With a run worktree, the run branch is checked out only there.
+    elif branch.checked_out and git(root, "status", "--porcelain"):
+        failures.append(Failure(
+            f"the worktree is dirty while {branch.name} is checked out",
+            f"commit or stash your changes, or switch to {config.base_branch}: the reset "
+            f"deletes {branch.name}",
+        ))
+    return failures
 
 
 def run_branch_heads(listing: str) -> dict[int, str]:
@@ -741,7 +763,10 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
         print(f"   → close PR #{pull['number']} {pull['title']} from {pull['head']}, with a comment")
     branch = plan.branch
     if branch is not None and branch.worktree is not None:
-        print(f"   → remove the run worktree of {branch.name} at {branch.worktree}, with its ignored files")
+        print(
+            f"   → remove the run worktree of {branch.name} at {branch.worktree.path}, with its "
+            "ignored files"
+        )
     if branch is not None:
         places = [
             *([f"on {config.remote} at {branch.remote_head}"] if branch.remote_head else []),
@@ -821,7 +846,7 @@ def reset_target(
             raise RalphError(f"GitHub returned the wrong issue for #{number}")
         try:
             plan, failures = inspect(github, config, target, root, purge=purge)
-            failures += dirty_worktree(config, plan, root)
+            failures += checkout_failures(config, plan, root)
         except KeyboardInterrupt:
             raise ResetCancelled from None
     if failures:
@@ -851,8 +876,8 @@ def reset_target(
         branch = plan.branch
         if branch is not None and branch.worktree is not None:
             # Before the run branch, which Git does not delete while it is checked out there.
-            git(root, "worktree", "remove", str(branch.worktree))
-            print(f"   ✓ removed the run worktree at {branch.worktree}")
+            git(root, "worktree", "remove", str(branch.worktree.path))
+            print(f"   ✓ removed the run worktree of {branch.name} at {branch.worktree.path}")
         if branch is not None:
             if branch.remote_head is not None:
                 git(root, "push", config.remote, "--delete", branch.name)
