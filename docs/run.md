@@ -329,11 +329,11 @@ asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
 
 - **Create** (the default) adds the run worktree on a new run branch
   `ralph-kit/issue-N` from `<remote>/<base>`, prepares it with
-  `worktree_setup` (see below), releases the sleep lock, then restarts the run in the run worktree, in this terminal, or in a persistent
-  terminal with `--tmux` (see below). The restarted run has
-  the same `--review`, `--caffeinate`, `--config` and `--worktree` flags, never
-  `--tmux`, and the run target, the one picked when the run started without
-  one. It runs the usual startup checks in the run worktree, reads its
+  `worktree_setup` (see below), releases the sleep lock, then restarts the run
+  in the run worktree, in this terminal, or in a persistent terminal with
+  `--tmux` (see below). The restarted run has the same `--review`,
+  `--caffeinate`, `--config` and `--worktree` flags, never `--tmux`, and the
+  run target, the one picked when the run started without one. It runs the usual startup checks in the run worktree, reads its
   configuration and keeps its run diagnostics there, and pushes the run branch.
 - **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
 
@@ -358,11 +358,10 @@ stopped or interrupted run, Ralph asks "Continue in the existing run worktree at
 
 A run started with `--worktree` from inside the run worktree of its run target,
 as the restarted run is, asks nothing, prepares the run worktree and continues
-in place. A stopped run's
-rerun command keeps `--worktree`, so the same command resumes the run from your
-own checkout or from the run worktree. Started from inside the run worktree of
-another run target, `--worktree` works as from your own checkout: the path is
-always derived from the main checkout.
+in place. A stopped run's rerun command keeps `--worktree`, so the same
+command resumes the run from your own checkout or from the run worktree.
+Started from inside the run worktree of another run target, `--worktree` works
+as from your own checkout: the path is always derived from the main checkout.
 
 The run stops with nothing changed:
 
@@ -411,8 +410,8 @@ or `worktree_setup = "uv sync"`. On every `--worktree` run, Ralph runs it
 through the shell in the run worktree, never in your checkout, with its output
 in the terminal: after Create or Continue, before the restart (and before the
 `--tmux` question), and again in the restarted run, which continues in place,
-before its startup checks and any agent session. Without `worktree_setup`,
-nothing runs.
+after its startup checks and before its clean worktree check and any agent
+session. Without `worktree_setup`, nothing runs.
 
 A non-zero exit stops the run before any agent session, with its exit code:
 fix the command, or run without `--worktree`. The command must leave the run
