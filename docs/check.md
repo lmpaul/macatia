@@ -3,16 +3,16 @@
 Before launching, from the target repository root on each machine (including a VPS):
 
 ```sh
-ralph-kit check
+macatia check
 # For a reviewed run:
-ralph-kit check --review
+macatia check --review
 ```
 
 Commit the prepared files first. The readiness check validates
 TOML and placeholders, Python and required CLI availability (and the minimum `gh` version), Git branch/remote
-and clean worktree, `.ralph/` ignored by Git (any ignore source counts; the check
+and clean worktree, `.macatia/` ignored by Git (any ignore source counts; the check
 never edits `.gitignore`), GitHub access/repository/trusted account/write permission/labels,
-the packaged result schema, the implement skill for each engine, the flags Ralph passes
+the packaged result schema, the implement skill for each engine, the flags Macatia passes
 to each configured engine (listed in the engine's own help, so an update that drops one
 blocks before a run), and the enabled quality policy. A configured backup's engine counts
 as a configured engine (CLI, implement skill, and flags), and its model name is checked
@@ -25,7 +25,7 @@ Results are grouped by section with what was found; each failure shows the fix
 as not verified instead of failing. Colors are dropped when the output is not a
 terminal (or with `NO_COLOR`).
 Settings the configuration leaves out and that take their default value are
-listed as information (`ℹ`), pointing to `ralph-kit update-config`; they never fail
+listed as information (`ℹ`), pointing to `macatia update-config`; they never fail
 the check. Defaulted label roles are a warning instead, since the label may be
 missing on GitHub.
 Labels whose colour differs from their label role's fixed colour are a warning,

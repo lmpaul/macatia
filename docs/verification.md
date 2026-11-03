@@ -14,7 +14,7 @@ Use TOML booleans without quotes. These settings replace the former `mode` and
 `local_gates` configuration keys; update custom configurations before running.
 
 The last combination is an explicit low-assurance mode for repositories with no
-CI and no local test commands. Ralph still pushes a draft pull request, verifies
+CI and no local test commands. Macatia still pushes a draft pull request, verifies
 that the completed commit is the published one, and leaves merge authority to a
 human.
 
@@ -22,7 +22,7 @@ The quality policy (quality module and manifest) is required whenever local
 gates or CI checks are enabled. It is not read when both are disabled.
 
 Both kinds of run retain redacted session outputs and local-gate or CI command
-evidence in the run diagnostics under `.ralph/diagnostics/<run-id>/`. Each new
+evidence in the run diagnostics under `.macatia/diagnostics/<run-id>/`. Each new
 agent session receives the issue and commit context plus paths to the previous
 result and full command outputs. Failed CI jobs are matched to the checked commit
 before their logs are passed to a correction session. A reviewed run also passes

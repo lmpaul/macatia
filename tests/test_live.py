@@ -1,6 +1,6 @@
 """Opt-in live suite: the only proof of compatibility with the real gh, codex and claude.
 
-Skipped unless RALPH_LIVE=1. It needs authenticated CLIs and spends tokens;
+Skipped unless MACATIA_LIVE=1. It needs authenticated CLIs and spends tokens;
 see "Live suite" in CONTRIBUTING.md for when and how to run it.
 """
 
@@ -24,8 +24,8 @@ from live_support import (
     run_live_session,
     scratch_repository,
 )
-from ralph_kit.github import GitHub
-from ralph_kit.loop_core import (
+from macatia.github import GitHub
+from macatia.loop_core import (
     actions_job_id,
     check_runs_for_head,
     classify_ci_failure,
@@ -34,22 +34,22 @@ from ralph_kit.loop_core import (
 )
 
 
-LIVE = os.environ.get("RALPH_LIVE") == "1"
-REFRESH = os.environ.get("RALPH_LIVE_REFRESH") == "1"
+LIVE = os.environ.get("MACATIA_LIVE") == "1"
+REFRESH = os.environ.get("MACATIA_LIVE_REFRESH") == "1"
 SKIP_REASON = (
-    "live suite against real gh, codex and claude; set RALPH_LIVE=1 to run it "
+    "live suite against real gh, codex and claude; set MACATIA_LIVE=1 to run it "
     "(spends tokens, see 'Live suite' in CONTRIBUTING.md)"
 )
 # A parent issue of this repository whose children and blockers stay in place after they close.
-PARENT = int(os.environ.get("RALPH_LIVE_PARENT", "5"))
-CLAUDE_MODEL = os.environ.get("RALPH_LIVE_CLAUDE_MODEL", "haiku")
-CODEX_MODEL = os.environ.get("RALPH_LIVE_CODEX_MODEL", "gpt-5.6-luna")
+PARENT = int(os.environ.get("MACATIA_LIVE_PARENT", "5"))
+CLAUDE_MODEL = os.environ.get("MACATIA_LIVE_CLAUDE_MODEL", "haiku")
+CODEX_MODEL = os.environ.get("MACATIA_LIVE_CODEX_MODEL", "gpt-5.6-luna")
 REASONING_EFFORT = "low"
 
 
 @unittest.skipUnless(LIVE, SKIP_REASON)
 class LiveGitHubTests(unittest.TestCase):
-    """Read-only `gh` calls of each shape a run parses, through Ralph's GitHub adapter."""
+    """Read-only `gh` calls of each shape a run parses, through Macatia's GitHub adapter."""
 
     @classmethod
     def setUpClass(cls):
@@ -108,7 +108,7 @@ class LiveGitHubTests(unittest.TestCase):
             self.assertIsInstance(comment["body"], str)
 
     def gh_json(self, *arguments):
-        """A read-only `gh` query outside Ralph's adapter, to find something for it to read."""
+        """A read-only `gh` query outside Macatia's adapter, to find something for it to read."""
         return json.loads(subprocess.run(
             ["gh", *arguments], cwd=KIT_ROOT, check=True, text=True, capture_output=True
         ).stdout)
@@ -176,7 +176,7 @@ class LiveGitHubTests(unittest.TestCase):
         self.assertEqual(check_run.returncode, 0, check_run.stderr)
         self.assertIsInstance(json.loads(check_run.stdout)["output"], dict)
 
-    def test_check_runs_for_the_default_branch_head_pass_ralph_ci_classification(self):
+    def test_check_runs_for_the_default_branch_head_pass_macatia_ci_classification(self):
         head = self.default_branch_head()
 
         runs = check_runs_for_head(self.state, head)
@@ -194,13 +194,13 @@ class LiveGitHubTests(unittest.TestCase):
 
 @unittest.skipUnless(LIVE, SKIP_REASON)
 class LiveEngineTests(unittest.TestCase):
-    """One real session per engine, with Ralph's command, output schema and result parsing.
+    """One real session per engine, with Macatia's command, output schema and result parsing.
 
-    With RALPH_LIVE_REFRESH=1, each session also replaces that engine's recorded fixture.
+    With MACATIA_LIVE_REFRESH=1, each session also replaces that engine's recorded fixture.
     """
 
     def run_engine_session(self, engine, model):
-        with tempfile.TemporaryDirectory(prefix="ralph-live-repository-") as directory:
+        with tempfile.TemporaryDirectory(prefix="macatia-live-repository-") as directory:
             repository = scratch_repository(directory)
             session = run_live_session(engine, model, REASONING_EFFORT, repository)
             status = subprocess.run(
@@ -213,10 +213,10 @@ class LiveEngineTests(unittest.TestCase):
                 engine, session, model=model, reasoning_effort=REASONING_EFFORT, version=cli_version(engine)
             )
 
-    def test_claude_code_session_returns_a_result_ralph_accepts(self):
+    def test_claude_code_session_returns_a_result_macatia_accepts(self):
         self.run_engine_session("claude", CLAUDE_MODEL)
 
-    def test_codex_session_returns_a_result_ralph_accepts(self):
+    def test_codex_session_returns_a_result_macatia_accepts(self):
         self.run_engine_session("codex", CODEX_MODEL)
 
 

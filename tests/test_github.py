@@ -10,11 +10,11 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from ralph_kit.commands import RalphError  # noqa: E402
-from ralph_kit.github import GitHub, parent_from_lookup  # noqa: E402
+from macatia.commands import MacatiaError  # noqa: E402
+from macatia.github import GitHub, parent_from_lookup  # noqa: E402
 
 
-ARGUMENTS = ["gh", "api", "repos/lmpaul/ralph-kit/issues/90/parent"]
+ARGUMENTS = ["gh", "api", "repos/lmpaul/macatia/issues/90/parent"]
 DOCUMENTATION = "https://docs.github.com/rest/issues/sub-issues#get-parent-issue"
 
 
@@ -51,13 +51,13 @@ class ParentLookupTests(unittest.TestCase):
                 1, {"message": "No parent issue found", "status": "500"}, "gh: (HTTP 500)\n"
             )),
         ):
-            with self.subTest(name), self.assertRaises(RalphError) as raised:
+            with self.subTest(name), self.assertRaises(MacatiaError) as raised:
                 parent_from_lookup(completed)
             self.assertIn(" ".join(ARGUMENTS), str(raised.exception))
 
     def test_a_success_without_a_parent_issue_is_an_error(self):
         for body in ("not json", {"message": "ok"}, [], None):
-            with self.subTest(body=body), self.assertRaises(RalphError):
+            with self.subTest(body=body), self.assertRaises(MacatiaError):
                 parent_from_lookup(answer(0, body))
 
 
@@ -76,14 +76,14 @@ def listed_issue(number, *, login="lmpaul", labels=("ready-for-agent",), **field
 
 class OpenIssuesTests(unittest.TestCase):
     def open_issues(self, pages):
-        github = GitHub(pathlib.Path("/repository"), "lmpaul/ralph-kit")
-        with mock.patch("ralph_kit.github.command") as command:
+        github = GitHub(pathlib.Path("/repository"), "lmpaul/macatia")
+        with mock.patch("macatia.github.command") as command:
             command.return_value = subprocess.CompletedProcess([], 0, json.dumps(pages), "")
             issues = github.open_issues()
         command.assert_called_once_with(
             pathlib.Path("/repository"),
             [
-                "gh", "api", "repos/lmpaul/ralph-kit/issues?state=open&per_page=100",
+                "gh", "api", "repos/lmpaul/macatia/issues?state=open&per_page=100",
                 "--paginate", "--slurp",
             ],
             check=True,
@@ -116,64 +116,64 @@ class OpenIssuesTests(unittest.TestCase):
 
     def test_an_issue_without_a_number_is_an_error(self):
         for issue in ({"title": "No number"}, listed_issue("12")):
-            with self.subTest(issue=issue), self.assertRaises(RalphError):
+            with self.subTest(issue=issue), self.assertRaises(MacatiaError):
                 self.open_issues([[issue]])
 
 
 
-def listed_pull(number, title, ref, owner="lmpaul/ralph-kit"):
+def listed_pull(number, title, ref, owner="lmpaul/macatia"):
     """A pull request as GitHub's REST pull request listing returns it."""
     return {
         "number": number,
         "title": title,
-        "html_url": f"https://github.com/lmpaul/ralph-kit/pull/{number}",
+        "html_url": f"https://github.com/lmpaul/macatia/pull/{number}",
         "head": {"ref": ref, "user": {"login": owner.split("/")[0]}, "repo": {"full_name": owner}},
     }
 
 
 class PullRequestsByTitleTests(unittest.TestCase):
     def test_only_open_pull_requests_into_the_base_with_a_listed_title_are_read(self):
-        github = GitHub(pathlib.Path("/repository"), "lmpaul/ralph-kit")
+        github = GitHub(pathlib.Path("/repository"), "lmpaul/macatia")
         pages = [
-            [listed_pull(12, "Implement Ralph parent #69", "ralph-kit/issue-69")],
+            [listed_pull(12, "Implement Macatia parent #69", "macatia/issue-69")],
             [
-                listed_pull(13, "Implement Ralph parent #690", "ralph-kit/issue-690"),
-                listed_pull(14, "Implement Ralph issue #69", "ralph-kit/issue-69", owner="fork/ralph-kit"),
+                listed_pull(13, "Implement Macatia parent #690", "macatia/issue-690"),
+                listed_pull(14, "Implement Macatia issue #69", "macatia/issue-69", owner="fork/macatia"),
             ],
         ]
-        with mock.patch("ralph_kit.github.command") as command:
+        with mock.patch("macatia.github.command") as command:
             command.return_value = subprocess.CompletedProcess([], 0, json.dumps(pages), "")
             pulls = github.open_pull_requests_by_title(
-                "main", {"Implement Ralph parent #69", "Implement Ralph issue #69"}
+                "main", {"Implement Macatia parent #69", "Implement Macatia issue #69"}
             )
 
         command.assert_called_once_with(
             pathlib.Path("/repository"),
             [
-                "gh", "api", "repos/lmpaul/ralph-kit/pulls?state=open&base=main&per_page=100",
+                "gh", "api", "repos/lmpaul/macatia/pulls?state=open&base=main&per_page=100",
                 "--paginate", "--slurp",
             ],
             check=True,
         )
         self.assertEqual(pulls, [
-            {"number": 12, "title": "Implement Ralph parent #69", "head": "ralph-kit/issue-69"},
+            {"number": 12, "title": "Implement Macatia parent #69", "head": "macatia/issue-69"},
             {
-                "number": 14, "title": "Implement Ralph issue #69",
-                "head": "fork/ralph-kit:ralph-kit/issue-69",
+                "number": 14, "title": "Implement Macatia issue #69",
+                "head": "fork/macatia:macatia/issue-69",
             },
         ])
 
 
 class DeleteIssueCommentTests(unittest.TestCase):
     def test_an_issue_comment_is_deleted_by_its_listed_identifier(self):
-        github = GitHub(pathlib.Path("/repository"), "lmpaul/ralph-kit")
-        with mock.patch("ralph_kit.github.command") as command:
+        github = GitHub(pathlib.Path("/repository"), "lmpaul/macatia")
+        with mock.patch("macatia.github.command") as command:
             command.return_value = subprocess.CompletedProcess([], 0, "", "")
             github.delete_issue_comment(6470121943)
 
         command.assert_called_once_with(
             pathlib.Path("/repository"),
-            ["gh", "api", "--method", "DELETE", "repos/lmpaul/ralph-kit/issues/comments/6470121943"],
+            ["gh", "api", "--method", "DELETE", "repos/lmpaul/macatia/issues/comments/6470121943"],
             check=True,
         )
 

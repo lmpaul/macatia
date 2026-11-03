@@ -15,9 +15,9 @@ ENGINE_FIXTURES = KIT_ROOT / "tests" / "fixtures" / "engines"
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
 from live_support import FORBIDDEN_FIXTURE_MARKERS
-from ralph_kit.agent import agent_command, session_prompt, write_agent_result
-from ralph_kit.config import AgentProfile
-from ralph_kit.loop_core import OUTCOME_SCHEMA_PATH, RalphError, parse_agent_result
+from macatia.agent import agent_command, session_prompt, write_agent_result
+from macatia.config import AgentProfile
+from macatia.loop_core import OUTCOME_SCHEMA_PATH, MacatiaError, parse_agent_result
 
 
 RECORDED = json.loads((ENGINE_FIXTURES / "recorded.json").read_text(encoding="utf-8"))
@@ -27,7 +27,7 @@ REPOSITORY = pathlib.Path("/work/repository")
 OUTPUT = pathlib.Path("/work/result.json")
 SYSTEM_PROMPT = (
     "Read and follow AGENTS.md in the repository and applicable directories. "
-    "Work in the current repository; leave pushing and GitHub mutations to Ralph."
+    "Work in the current repository; leave pushing and GitHub mutations to Macatia."
 )
 
 
@@ -155,7 +155,7 @@ class ResultParsingTests(NoSubprocessTestCase):
     def test_invalid_codex_result_file_is_rejected(self):
         self.output_path.write_text(CODEX_RESULT[:-10], encoding="utf-8")
 
-        with self.assertRaisesRegex(RalphError, "^agent did not return valid structured output$"):
+        with self.assertRaisesRegex(MacatiaError, "^agent did not return valid structured output$"):
             parse_agent_result(self.output_path)
 
 

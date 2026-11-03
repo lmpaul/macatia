@@ -1,7 +1,7 @@
-"""`ralph-kit reset`: a reset of a run target, so a run can start on it as though no run had
+"""`macatia reset`: a reset of a run target, so a run can start on it as though no run had
 happened: its open cumulative draft PR closed and its run branch deleted, then its children
 agent working, implemented, or in human review, then the run target itself, ready for an
-agent again, each with a reset marker, or, for a purge, without Ralph's comments. Without a
+agent again, each with a reset marker, or, for a purge, without Macatia's comments. Without a
 run target, it offers the resettable run targets to choose from."""
 
 from __future__ import annotations
@@ -17,8 +17,8 @@ from dataclasses import dataclass
 from typing import Any
 
 from .close import CLOSURE_MARKER, Failure, current_branch, is_open, issue_reference
-from .commands import RalphError, command
-from .config import RUN_BRANCH_PREFIX, RalphConfig, RalphConfigError, load_config
+from .commands import MacatiaError, command
+from .config import RUN_BRANCH_PREFIX, MacatiaConfig, MacatiaConfigError, load_config
 from .github import GitHub
 from .loop_core import (
     CHILD_BASE_MARKER_PREFIX,
@@ -45,10 +45,10 @@ RESET_STATES = ("human_review", "agent_working", "implemented")
 RUN_BRANCH_NAME = re.compile(re.escape(RUN_BRANCH_PREFIX) + r"([1-9][0-9]*)")
 # Persisted in the comment a reset closes a cumulative draft PR with, so its value must
 # never change: a rerun reads from it what an interrupted reset closed and deleted.
-CLOSING_MARKER_PREFIX = "<!-- ralph-reset-closing: "
-# Every marker Ralph puts in its issue comments; the legacy implementation evidence carries
+CLOSING_MARKER_PREFIX = "<!-- macatia-reset-closing: "
+# Every marker Macatia puts in its issue comments; the legacy implementation evidence carries
 # none and is recognised by its prose.
-RALPH_MARKERS = (
+MACATIA_MARKERS = (
     ORIGINAL_EVIDENCE_PREFIX,
     STANDARD_RUN.implementation_evidence_prefix,
     CHILD_BASE_MARKER_PREFIX,
@@ -60,7 +60,7 @@ RALPH_MARKERS = (
 )
 
 
-class ResetRefused(RalphError):
+class ResetRefused(MacatiaError):
     """A check failed, or no one confirmed: nothing was written."""
 
 
@@ -106,11 +106,11 @@ class RunTraces:
 
 @dataclass(frozen=True)
 class ChildReset:
-    """A child the reset makes ready for an agent again, or whose Ralph comments a purge deletes."""
+    """A child the reset makes ready for an agent again, or whose Macatia comments a purge deletes."""
 
     issue: dict[str, Any]
     # The label role of the lifecycle state the child leaves; None for a child a purge
-    # touches only for its Ralph comments.
+    # touches only for its Macatia comments.
     previous_state: str | None
     # Whether an interrupted reset already posted its reset marker.
     marked: bool
@@ -186,7 +186,7 @@ class Plan:
     already_reset: dict[int, str]
     # The run target's labels to remove; a parent issue then gains ready-for-agent.
     remove: list[str]
-    # For a purge, the identifiers of the Ralph comments to delete on the run target and on
+    # For a purge, the identifiers of the Macatia comments to delete on the run target and on
     # each child it touches, by issue number; None for a reset that leaves reset markers.
     purge: dict[int, list[Any]] | None = None
 
@@ -206,18 +206,18 @@ def parse_arguments(argv: list[str], prog: str, *, issue_required: bool = True) 
         "--config",
         type=pathlib.Path,
         default=DEFAULT_CONFIG_PATH,
-        help="repository-specific Ralph TOML configuration",
+        help="repository-specific Macatia TOML configuration",
     )
     parser.add_argument("--yes", action="store_true", help="reset without asking for confirmation")
     parser.add_argument(
         "--purge",
         action="store_true",
-        help="delete Ralph's comments on the run target and its children instead of leaving reset markers",
+        help="delete Macatia's comments on the run target and its children instead of leaving reset markers",
     )
     parser.add_argument("issue", type=positive_integer, nargs="?", metavar="ISSUE")
     arguments = parser.parse_args(argv)  # Exits with status 2 on usage errors.
     if arguments.issue is None and issue_required:
-        parser.error("pass the issue to reset: ralph-kit reset ISSUE")
+        parser.error("pass the issue to reset: macatia reset ISSUE")
     return arguments
 
 
@@ -234,7 +234,7 @@ def reset_marker_comment(body: str) -> dict[str, Any] | None:
     return marker if isinstance(marker, dict) else {}
 
 
-def trusted_reset_markers(config: RalphConfig, issue: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
+def trusted_reset_markers(config: MacatiaConfig, issue: dict[str, Any]) -> list[tuple[int, dict[str, Any]]]:
     """The issue's trusted reset markers, oldest first, each with its comment's index."""
     markers = []
     for index, comment in enumerate(issue.get("comments", [])):
@@ -246,32 +246,32 @@ def trusted_reset_markers(config: RalphConfig, issue: dict[str, Any]) -> list[tu
     return markers
 
 
-def is_ralph_comment(config: RalphConfig, comment: dict[str, Any]) -> bool:
-    """Whether a purge deletes the comment: trusted, and carrying a Ralph marker."""
+def is_macatia_comment(config: MacatiaConfig, comment: dict[str, Any]) -> bool:
+    """Whether a purge deletes the comment: trusted, and carrying a Macatia marker."""
     if author_login(comment) not in config.trusted_authors:
         return False
     body = str(comment.get("body", ""))
-    return any(marker in body for marker in RALPH_MARKERS) or (
+    return any(marker in body for marker in MACATIA_MARKERS) or (
         implementation_evidence_heads(body, STANDARD_RUN, allow_original=True) is not None
     )
 
 
-def has_ralph_comment(config: RalphConfig, issue: dict[str, Any]) -> bool:
-    return any(is_ralph_comment(config, comment) for comment in issue.get("comments", []))
+def has_macatia_comment(config: MacatiaConfig, issue: dict[str, Any]) -> bool:
+    return any(is_macatia_comment(config, comment) for comment in issue.get("comments", []))
 
 
-def ralph_comment_ids(github: Any, config: RalphConfig, issue: dict[str, Any]) -> list[Any]:
+def macatia_comment_ids(github: Any, config: MacatiaConfig, issue: dict[str, Any]) -> list[Any]:
     """The identifiers of the issue's comments a purge deletes, oldest first; listed only
     when its details carry one."""
-    if not has_ralph_comment(config, issue):
+    if not has_macatia_comment(config, issue):
         return []
     return [
         comment["id"] for comment in github.issue_comments(int(issue["number"]))
-        if is_ralph_comment(config, comment)
+        if is_macatia_comment(config, comment)
     ]
 
 
-def latest_recap_time(config: RalphConfig, target: dict[str, Any]) -> str | None:
+def latest_recap_time(config: MacatiaConfig, target: dict[str, Any]) -> str | None:
     """When the run target's previous recap, its latest trusted reset marker, was posted."""
     markers = trusted_reset_markers(config, target)
     if not markers:
@@ -280,7 +280,7 @@ def latest_recap_time(config: RalphConfig, target: dict[str, Any]) -> str | None
 
 
 def pending_reset_marker(
-    config: RalphConfig, child: dict[str, Any], since: str | None
+    config: MacatiaConfig, child: dict[str, Any], since: str | None
 ) -> tuple[str | None, bool]:
     """The label role of the state the child left, as recorded by its latest trusted reset
     marker posted since the run target's previous recap, if any, and whether that marker
@@ -301,13 +301,13 @@ def pending_reset_marker(
     return state, latest
 
 
-def previous_state(config: RalphConfig, issue: dict[str, Any]) -> str | None:
+def previous_state(config: MacatiaConfig, issue: dict[str, Any]) -> str | None:
     """The label role of the lifecycle state a reset makes the issue leave, or None."""
     current = labels(issue)
     return next((role for role in RESET_STATES if config.labels[role] in current), None)
 
 
-def is_merged(github: Any, config: RalphConfig, issue: dict[str, Any]) -> str | None:
+def is_merged(github: Any, config: MacatiaConfig, issue: dict[str, Any]) -> str | None:
     """The verified head of the issue's latest trusted implementation evidence when it is
     merged, as for a closure: on the base branch, or in a pull request merged into it."""
     heads = latest_implementation_heads(issue, config.trusted_authors, STANDARD_RUN)
@@ -343,21 +343,21 @@ def run_worktrees(root: pathlib.Path) -> dict[str, RunWorktree]:
     return worktrees
 
 
-def find_run_branch(root: pathlib.Path, config: RalphConfig, number: int) -> RunBranch | None:
+def find_run_branch(root: pathlib.Path, config: MacatiaConfig, number: int) -> RunBranch | None:
     """The run branch of run target `number` on the configured remote and in the checkout,
     with its run worktree."""
     name = f"{RUN_BRANCH_PREFIX}{number}"
     try:
         remote_head, local_head = branch_heads(root, config.remote, name)
-    except RalphError as error:
-        raise RalphError(f"Cannot look for {name}, nothing reset: {error}") from error
+    except MacatiaError as error:
+        raise MacatiaError(f"Cannot look for {name}, nothing reset: {error}") from error
     return RunBranch.found(number, remote_head, local_head, current_branch(root), run_worktrees(root))
 
 
 def open_cumulative_draft_pull_requests(
-    github: Any, config: RalphConfig, numbers: list[int]
+    github: Any, config: MacatiaConfig, numbers: list[int]
 ) -> dict[int, list[dict[str, Any]]]:
-    """The open pull requests into the base branch titled as Ralph titles the cumulative
+    """The open pull requests into the base branch titled as Macatia titles the cumulative
     draft PR of one of the run targets `numbers`, by run target, found with one lookup."""
     titles = {
         cumulative_draft_pull_request_title(number, standalone=standalone): number
@@ -366,7 +366,7 @@ def open_cumulative_draft_pull_requests(
     }
     pulls = github.open_pull_requests_by_title(config.base_branch, set(titles))
     if not isinstance(pulls, list):
-        raise RalphError("GitHub pull request lookup returned invalid data")
+        raise MacatiaError("GitHub pull request lookup returned invalid data")
     by_target: dict[int, list[dict[str, Any]]] = {}
     for pull in sorted(pulls, key=lambda pull: int(pull["number"])):
         by_target.setdefault(titles[pull["title"]], []).append(pull)
@@ -384,7 +384,7 @@ def closing_marker(body: str) -> dict[str, Any] | None:
 
 
 def closed_by_interrupted_reset(
-    github: Any, config: RalphConfig, number: int, since: str | None
+    github: Any, config: MacatiaConfig, number: int, since: str | None
 ) -> tuple[list[int], dict[str, Any] | None]:
     """The cumulative draft PRs from the run branch a reset closed since the run target's
     previous recap, and the run branch it recorded deleting, read from its closing comments."""
@@ -406,7 +406,7 @@ def closed_by_interrupted_reset(
 
 def inspect(
     github: Any,
-    config: RalphConfig,
+    config: MacatiaConfig,
     target: dict[str, Any],
     root: pathlib.Path,
     traces: RunTraces | None = None,
@@ -416,13 +416,13 @@ def inspect(
     """The plan for resetting `target`, or purging it, and every reason it cannot be but a
     dirty worktree; its run branch and cumulative draft PRs are looked up unless `traces`
     lists them. A purge touches each child still open that is agent working, implemented, or
-    in human review, or ready for an agent and carrying a Ralph comment, as a reset left it."""
+    in human review, or ready for an agent and carrying a Macatia comment, as a reset left it."""
     number = int(target["number"])
     failures: list[Failure] = []
     try:
         parent = github.parent(number)
-    except RalphError as error:
-        raise RalphError(f"Cannot read the parent of #{number}, nothing reset: {error}") from error
+    except MacatiaError as error:
+        raise MacatiaError(f"Cannot read the parent of #{number}, nothing reset: {error}") from error
     if parent is not None:
         failures.append(Failure(
             f"#{number} is a sub-issue of #{parent['number']}",
@@ -461,7 +461,7 @@ def inspect(
                 continue
             state = previous_state(config, child)
             ready = config.labels["ready_for_agent"] in labels(child)
-            if state is not None or (ready and has_ralph_comment(config, child)):
+            if state is not None or (ready and has_macatia_comment(config, child)):
                 resets.append(ChildReset(child, state, marked=False))
             continue
         marked_state, marked_last = pending_reset_marker(config, child, since)
@@ -489,10 +489,10 @@ def inspect(
     if purge:
         # A standalone issue is among its own children.
         purged = {
-            int(issue["number"]): ralph_comment_ids(github, config, issue)
+            int(issue["number"]): macatia_comment_ids(github, config, issue)
             for issue in [*(reset.issue for reset in resets), *([] if standalone else [target])]
         }
-    # A Ralph comment left on the run target is a trace of a run for a purge: a reset marker,
+    # A Macatia comment left on the run target is a trace of a run for a purge: a reset marker,
     # or what an interrupted purge did not delete yet.
     if not (resets or already_reset or remove or pulls or branch or already_closed
             or (purged and any(purged.values()))):
@@ -502,7 +502,7 @@ def inspect(
              else f"no child is agent working, implemented or in human review, and #{number} is "
              "marked neither work started nor human review")
             + "; it has no open cumulative draft PR"
-            + (f", no {RUN_BRANCH_PREFIX}{number} and no Ralph comment" if purge
+            + (f", no {RUN_BRANCH_PREFIX}{number} and no Macatia comment" if purge
                else f" and no {RUN_BRANCH_PREFIX}{number}"),
         ))
     return Plan(
@@ -512,7 +512,7 @@ def inspect(
     ), failures
 
 
-def checkout_failures(config: RalphConfig, plan: Plan, root: pathlib.Path) -> list[Failure]:
+def checkout_failures(config: MacatiaConfig, plan: Plan, root: pathlib.Path) -> list[Failure]:
     """What the checkouts of the run branch stop the reset for: a run worktree it was started
     from inside, locked or dirty, which it would remove, and a dirty worktree with the run
     branch checked out, which it would delete."""
@@ -565,7 +565,7 @@ def run_branch_heads(listing: str) -> dict[int, str]:
 
 
 def run_traces(
-    github: Any, config: RalphConfig, root: pathlib.Path, open_issues: list[int]
+    github: Any, config: MacatiaConfig, root: pathlib.Path, open_issues: list[int]
 ) -> RunTraces:
     """The run branches on the configured remote, found with one heads listing, and in the
     checkout, and the open cumulative draft PRs of the `open_issues`, found with one lookup."""
@@ -573,7 +573,7 @@ def run_traces(
     listing = command(root, ["git", "ls-remote", "--heads", config.remote, pattern], check=False)
     if listing.returncode != 0:
         detail = " ".join((listing.stderr or "").split())
-        raise RalphError(
+        raise MacatiaError(
             f"Cannot look for run branches on {config.remote}, nothing reset: {detail}"
         )
     local = git(root, "for-each-ref", "--format=%(objectname) %(refname)", pattern)
@@ -585,14 +585,14 @@ def run_traces(
 
 
 def resettable_run_targets(
-    github: Any, config: RalphConfig, root: pathlib.Path, *, purge: bool = False
+    github: Any, config: MacatiaConfig, root: pathlib.Path, *, purge: bool = False
 ) -> list[ResettableRunTarget]:
     """The resettable run targets of the repository, by ascending number.
 
     Open issues are first narrowed to those a trace of a run points to, through a run branch,
     a cumulative draft PR or their listing's labels: an issue marked work started or human
     review, the parent of an issue agent working, implemented, or in human review, else that
-    issue itself; for a purge, also a trusted issue whose details carry a Ralph comment,
+    issue itself; for a purge, also a trusted issue whose details carry a Macatia comment,
     such as a reset marker. Each is then inspected as a reset of it would be. A failed lookup raises.
     """
     issues = {int(issue["number"]): issue for issue in github.open_issues() if is_open(issue)}
@@ -611,7 +611,7 @@ def resettable_run_targets(
     if purge:
         for number in sorted(trusted - traced):
             details[number] = github.issue(number)
-            if has_ralph_comment(config, details[number]):
+            if has_macatia_comment(config, details[number]):
                 traced.add(number)
     targets = []
     for number in sorted(traced & trusted):
@@ -628,7 +628,7 @@ def resettable_run_targets(
 
 def choose_reset_target(
     github: Any,
-    config: RalphConfig,
+    config: MacatiaConfig,
     choose: Callable[[list[ResettableRunTarget], int | None], int],
     root: pathlib.Path,
     branch: str | None,
@@ -654,23 +654,23 @@ def choose_reset_target(
     except KeyboardInterrupt:
         raise ResetCancelled from None
     if chosen not in numbers:
-        raise RalphError(f"#{chosen} is not one of the resettable run targets")
+        raise MacatiaError(f"#{chosen} is not one of the resettable run targets")
     return chosen
 
 
-def stale_labels(config: RalphConfig, issue: dict[str, Any], *, run_target: bool) -> list[str]:
+def stale_labels(config: MacatiaConfig, issue: dict[str, Any], *, run_target: bool) -> list[str]:
     """The labels a reset removes from an issue: its lifecycle labels other than
     ready-for-agent, and work started on a run target."""
     stale = config.lifecycle_labels | ({config.labels["work_started"]} if run_target else set())
     return sorted(labels(issue) & stale - {config.labels["ready_for_agent"]})
 
 
-def child_marker(config: RalphConfig, run_target: int, state: str) -> str:
+def child_marker(config: MacatiaConfig, run_target: int, state: str) -> str:
     marker = json.dumps({"previous_state": state}, separators=(",", ":"))
     return (
         f"{RESET_MARKER_PREFIX}{marker} -->\n"
         f"A reset of #{run_target} made this child ready for an agent again; it was "
-        f"`{config.labels[state]}`. Ralph reads none of its records above this comment."
+        f"`{config.labels[state]}`. Macatia reads none of its records above this comment."
     )
 
 
@@ -698,18 +698,18 @@ def closed_and_deleted(plan: Plan) -> tuple[dict[str, Any], str]:
     return fields, (f"It {' and '.join(done)}. " if done else "")
 
 
-def standalone_recap(config: RalphConfig, plan: Plan, state: str) -> str:
+def standalone_recap(config: MacatiaConfig, plan: Plan, state: str) -> str:
     fields, sentence = closed_and_deleted(plan)
     marker = json.dumps({"previous_state": state, **fields}, separators=(",", ":"))
     return (
         f"{RESET_MARKER_PREFIX}{marker} -->\n"
-        f"Ralph reset this standalone issue so a run can start on it as though no run had "
+        f"Macatia reset this standalone issue so a run can start on it as though no run had "
         f"happened: it was `{config.labels[state]}` and is ready for an agent again. "
-        f"{sentence}Ralph reads none of its records above this comment."
+        f"{sentence}Macatia reads none of its records above this comment."
     )
 
 
-def parent_recap(config: RalphConfig, plan: Plan, reset: dict[int, str]) -> str:
+def parent_recap(config: MacatiaConfig, plan: Plan, reset: dict[int, str]) -> str:
     children = [{"number": number, "previous_state": state} for number, state in sorted(reset.items())]
     fields, sentence = closed_and_deleted(plan)
     marker = json.dumps({"children": children, **fields}, separators=(",", ":"))
@@ -721,8 +721,8 @@ def parent_recap(config: RalphConfig, plan: Plan, reset: dict[int, str]) -> str:
     )
     return (
         f"{RESET_MARKER_PREFIX}{marker} -->\n"
-        "Ralph reset this parent issue so a run can start on it as though no run had happened. "
-        f"{sentence}{listing}\n\nRalph reads none of its records above this comment."
+        "Macatia reset this parent issue so a run can start on it as though no run had happened. "
+        f"{sentence}{listing}\n\nMacatia reads none of its records above this comment."
     )
 
 
@@ -745,10 +745,10 @@ def closing_comment(plan: Plan, pull: dict[str, Any]) -> str:
 
 def deleting(plan: Plan, number: int) -> str:
     count = len((plan.purge or {}).get(number, []))
-    return f"deleting {count} Ralph {'comment' if count == 1 else 'comments'}"
+    return f"deleting {count} Macatia {'comment' if count == 1 else 'comments'}"
 
 
-def print_plan(config: RalphConfig, plan: Plan) -> None:
+def print_plan(config: MacatiaConfig, plan: Plan) -> None:
     ready = config.labels["ready_for_agent"]
     number = int(plan.target["number"])
     working = config.labels["agent_working"]
@@ -825,7 +825,7 @@ def print_plan(config: RalphConfig, plan: Plan) -> None:
 
 def reset_target(
     github: Any,
-    config: RalphConfig,
+    config: MacatiaConfig,
     number: int,
     *,
     yes: bool,
@@ -835,15 +835,15 @@ def reset_target(
     purge: bool = False,
 ) -> None:
     """Check everything, confirm, then close the cumulative draft PR, delete the run branch,
-    reset the children and, last, the run target; a purge deletes the Ralph comments of each
+    reset the children and, last, the run target; a purge deletes the Macatia comments of each
     issue where a reset posts its reset marker."""
     with spinner(f"Checking #{number} and any sub-issues before resetting…"):
         try:
             target = github.issue(number)
-        except RalphError as error:
-            raise RalphError(f"Cannot read #{number}, nothing reset: {error}") from error
+        except MacatiaError as error:
+            raise MacatiaError(f"Cannot read #{number}, nothing reset: {error}") from error
         if int(target.get("number", 0)) != number:
-            raise RalphError(f"GitHub returned the wrong issue for #{number}")
+            raise MacatiaError(f"GitHub returned the wrong issue for #{number}")
         try:
             plan, failures = inspect(github, config, target, root, purge=purge)
             failures += checkout_failures(config, plan, root)
@@ -917,14 +917,14 @@ def reset_target(
             if plan.remove or ready not in labels(plan.target):
                 github.edit_issue_labels(number, add=ready, remove=plan.remove)
             if plan.purge is not None:
-                # A rerun finds what is left: a Ralph comment on the run target is a trace.
+                # A rerun finds what is left: a Macatia comment on the run target is a trace.
                 for comment_id in plan.purge[number]:
                     github.delete_issue_comment(comment_id)
             else:
                 # The recap comes last: its presence means the reset finished.
                 github.comment_on_issue(number, parent_recap(config, plan, reset))
-    except RalphError as error:
-        raise RalphError(f"{error}\nRerun `{rerun}` to finish the reset.") from error
+    except MacatiaError as error:
+        raise MacatiaError(f"{error}\nRerun `{rerun}` to finish the reset.") from error
     print(f"   ✓ #{number}")
     count = len(plan.children) if not plan.standalone else 0
     print(
@@ -942,9 +942,9 @@ def run(
     choose_run_target: Callable[[list[ResettableRunTarget], int | None], int] | None = None,
     branch: Callable[[pathlib.Path], str | None] = current_branch,
     repository_root: pathlib.Path | None = None,
-    prog: str = "ralph-kit reset",
+    prog: str = "macatia reset",
 ) -> int:
-    """Run `ralph-kit reset`; `confirm` asks a Yes/No question and `choose_run_target` picks
+    """Run `macatia reset`; `confirm` asks a Yes/No question and `choose_run_target` picks
     among the resettable run targets (by ascending number, preselected number or None), both
     None without a terminal. Only the picker lets reset start without `ISSUE`; `branch` reads
     the checked-out branch it preselects from.
@@ -994,7 +994,7 @@ def run(
     except KeyboardInterrupt:
         print(f"\nInterrupted. Rerun `{rerun}` to finish the reset.", file=sys.stderr)
         return 130
-    except (RalphError, RalphConfigError) as error:
+    except (MacatiaError, MacatiaConfigError) as error:
         print(f"❌ {error}", file=sys.stderr)
         return 1
     return 0

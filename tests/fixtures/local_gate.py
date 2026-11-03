@@ -1,7 +1,7 @@
 """A scripted local gate: each call takes the next result from a JSON list; the last repeats.
 
 A failing call prints a long log and exits with secrets on stderr, so a test can
-check that Ralph keeps the complete streams and redacts them.
+check that Macatia keeps the complete streams and redacts them.
 """
 
 import json

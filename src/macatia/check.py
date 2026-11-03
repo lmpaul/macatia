@@ -24,9 +24,12 @@ from . import __version__, keep_awake
 from .agent import engine_help_command_and_flags
 from .config import (
     DIAGNOSTICS_DIRECTORY,
+    LEGACY_CONFIG_NAME,
+    LEGACY_CONFIG_RENAME,
     RUN_BRANCH_PREFIX,
+    MacatiaConfigError,
     MissingConfigError,
-    RalphConfigError,
+    legacy_config,
     load_config,
 )
 from .progress import spinner
@@ -48,7 +51,7 @@ REMINDERS = (
 )
 FINAL_REMINDERS = (
     "Spec, acceptance criteria, children, labels and GitHub dependencies reviewed",
-    "Autonomous agent access accepted: Ralph bypasses approvals and the sandbox",
+    "Autonomous agent access accepted: Macatia bypasses approvals and the sandbox",
 )
 LABEL_DESCRIPTIONS = {
     "needs_triage": "Maintainer needs to evaluate this issue",
@@ -56,11 +59,11 @@ LABEL_DESCRIPTIONS = {
     "ready_for_agent": "Fully specified, ready for an AFK agent",
     "ready_for_human": "Requires human implementation",
     "wontfix": "Will not be actioned",
-    "agent_working": "A Ralph agent is working on this child",
-    "human_review": "Ralph stopped; a human must review",
-    "implemented": "Implemented by Ralph",
-    "work_started": "Ralph has started work on this parent",
-    "standalone": "Ralph has started work on this standalone issue",
+    "agent_working": "A Macatia agent is working on this child",
+    "human_review": "Macatia stopped; a human must review",
+    "implemented": "Implemented by Macatia",
+    "work_started": "Macatia has started work on this parent",
+    "standalone": "Macatia has started work on this standalone issue",
 }
 # Fixed, by who must act next; gh takes hex without #.
 LABEL_COLOURS = {
@@ -156,12 +159,12 @@ def listed_flags(help_text):
 
 
 def check_engine_flags(command, engine):
-    """Confirm the installed engine's help lists every flag Ralph passes to it; no network or tokens."""
+    """Confirm the installed engine's help lists every flag Macatia passes to it; no network or tokens."""
     help_command, flags = engine_help_command_and_flags(engine, PACKAGE_DIRECTORY / "outcome-schema.json")
     listed = listed_flags(command(*help_command))
     missing = [flag for flag in flags if flag not in listed]
     name = AGENT_CLIS[engine]
-    require(not missing, f"{name} does not list {', '.join(missing)} in {' '.join(help_command)}", f"update {name}, or check that ralph-kit supports the installed version")
+    require(not missing, f"{name} does not list {', '.join(missing)} in {' '.join(help_command)}", f"update {name}, or check that macatia supports the installed version")
     return f"{len(flags)} flags listed"
 
 
@@ -303,7 +306,7 @@ ICONS = {"ok": ("✓", "green"), "info": ("ℹ", "blue"), "warn": ("!", "yellow"
 
 
 def render(console, report, repository=None, reminders=()):
-    title = Text("ralph-kit check", style="bold")
+    title = Text("macatia check", style="bold")
     if repository:
         title.append(f" · {repository}", style="dim")
     console.print(title)
@@ -338,10 +341,10 @@ def render(console, report, repository=None, reminders=()):
         summary.append(f" · {counts['skip']} not verified", style="dim")
     console.print(summary)
     if counts["fail"]:
-        console.print("Fix the items in red, then run ralph-kit check again.", style="dim")
+        console.print("Fix the items in red, then run macatia check again.", style="dim")
     if reminders:
         console.print()
-        console.print("Not checked by ralph-kit; verify before launching:", style="bold")
+        console.print("Not checked by macatia; verify before launching:", style="bold")
         grid = Table.grid(padding=(0, 1))
         grid.add_column(width=1)
         grid.add_column()
@@ -351,7 +354,7 @@ def render(console, report, repository=None, reminders=()):
 
 
 def check_policy(config, root):
-    spec = importlib.util.spec_from_file_location("ralph_readiness_quality", config.quality_module)
+    spec = importlib.util.spec_from_file_location("macatia_readiness_quality", config.quality_module)
     require(spec is not None and spec.loader is not None, "quality module not found")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
@@ -361,7 +364,7 @@ def check_policy(config, root):
     found = []
     if config.local_checks:
         gates = [gate for gate in manifest["local_gates"] if gate.get("before_agent_review")]
-        require(gates, "no local gate usable by Ralph", "add a check with before_agent_review to the manifest")
+        require(gates, "no local gate usable by Macatia", "add a check with before_agent_review to the manifest")
         for gate in gates:
             require(not placeholder(gate), "local check still has placeholders", "fill in the command in the manifest")
             command = gate.get("command")
@@ -390,7 +393,7 @@ def run(root, config_path, *, with_review=False, console=None, confirm=None, com
     """
     console = console or Console(highlight=False)
     with contextlib.ExitStack() as checking:
-        checking.enter_context(spinner("Checking that this repository is ready for Ralph…", console))
+        checking.enter_context(spinner("Checking that this repository is ready for Macatia…", console))
         return readiness(root, config_path, with_review=with_review, console=console, confirm=confirm, command=command, checked=checking.close)
 
 
@@ -409,12 +412,15 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
         profiles = [config.models[role] for role in roles] + ([config.backup] if config.backup else [])
         require(not placeholder([config.repository, config.trusted_authors, [profile.name for profile in profiles]]), "repository, authors or models still have placeholders")
     except MissingConfigError:
-        report.add("fail", config_path.name, "not found: this repository is not set up yet", "ralph-kit init")
+        if legacy_config(config_path):
+            report.add("fail", config_path.name, f"not found, but {LEGACY_CONFIG_NAME} is", LEGACY_CONFIG_RENAME)
+        else:
+            report.add("fail", config_path.name, "not found: this repository is not set up yet", "macatia init")
         checked()
         render(console, report)
         return 1
-    except (RalphConfigError, ValueError) as error:
-        report.add("fail", config_path.name, str(error), f"edit {config_path.name} by hand (ralph-kit init --force would start over and lose its settings)")
+    except (MacatiaConfigError, ValueError) as error:
+        report.add("fail", config_path.name, str(error), f"edit {config_path.name} by hand (macatia init --force would start over and lose its settings)")
         checked()
         render(console, report)
         return 1
@@ -426,7 +432,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             "warn",
             "Label roles",
             f"{config_path.name} leaves out {', '.join(roles)}, so {names} {'is' if len(roles) == 1 else 'are'} used",
-            "ralph-kit update-config writes it" if len(roles) == 1 else "ralph-kit update-config writes them",
+            "macatia update-config writes it" if len(roles) == 1 else "macatia update-config writes them",
         )
     # Label roles warn above, since a label may be missing on GitHub; the other settings only inform.
     if settings := sorted(setting for setting in config.defaulted_settings if not setting.startswith("labels.")):
@@ -434,7 +440,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             "info",
             "Defaulted settings",
             f"{config_path.name} leaves out {', '.join(settings)}, so {'its default value is' if len(settings) == 1 else 'their default values are'} used",
-            "ralph-kit update-config writes it" if len(settings) == 1 else "ralph-kit update-config writes them",
+            "macatia update-config writes it" if len(settings) == 1 else "macatia update-config writes them",
         )
 
     report.section("Tools")
@@ -454,7 +460,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
         schema = json.loads((PACKAGE_DIRECTORY / "outcome-schema.json").read_text())
         require(isinstance(schema, dict) and schema.get("type") == "object", "invalid result schema")
         return f"{__version__}, files complete"
-    report.check("ralph-kit", package_files, "reinstall ralph-kit")
+    report.check("macatia", package_files, "reinstall macatia")
     if config.caffeinate_by_default:
         # A run continues without a sleep lock, so its absence only warns.
         helper, problem = keep_awake.availability(sys.platform)
@@ -478,7 +484,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
         def remote():
             url = command("git", "remote", "get-url", config.remote)
             return f"{config.remote} → {re.sub(r'//[^/@]+@', '//', url)}"  # Hide credentials embedded in HTTPS URLs.
-        report.check("Remote", remote, f"git remote add {config.remote} <url>, or fix remote in ralph.toml")
+        report.check("Remote", remote, f"git remote add {config.remote} <url>, or fix remote in macatia.toml")
 
         def branch():
             command("git", "check-ref-format", "--branch", config.base_branch)
@@ -517,7 +523,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
         def repository():
             # Default repo must match, because a run uses gh repo view the same way.
             detected = json.loads(command("gh", "repo", "view", "--json", "nameWithOwner"))["nameWithOwner"]
-            require(detected == config.repository, f"gh detects {detected}, ralph.toml says {config.repository}", f"fix repository in ralph.toml, or gh repo set-default {config.repository}")
+            require(detected == config.repository, f"gh detects {detected}, macatia.toml says {config.repository}", f"fix repository in macatia.toml, or gh repo set-default {config.repository}")
             return config.repository
         report.check("Repository", repository)
 
@@ -528,7 +534,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             login = json.loads(command("gh", "api", "user"))["login"]
             return login
         if report.check("gh account", account, "gh auth login"):
-            report.check("Trusted account", lambda: require(login in config.trusted_authors, f"{login} is not in trusted_authors", f"add {login} to trusted_authors in ralph.toml") or "in trusted_authors")
+            report.check("Trusted account", lambda: require(login in config.trusted_authors, f"{login} is not in trusted_authors", f"add {login} to trusted_authors in macatia.toml") or "in trusted_authors")
 
             def write_access():
                 details = json.loads(command("gh", "api", f"repos/{config.repository}"))
@@ -568,7 +574,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
     if config.verification.needs_quality_policy:
         report.check("Module and manifest", lambda: check_policy(config.verification, root))
     else:
-        report.add("off", "Checks", "local and CI checks disabled in ralph.toml")
+        report.add("off", "Checks", "local and CI checks disabled in macatia.toml")
 
     reminders = list(REMINDERS)
     if config.verification.local_checks:
@@ -589,7 +595,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
                 console.print(Text(f"✗ {name} not created", style="red") if name in failed else Text(f"✓ {name} created", style="green"))
             errors -= not failed
         else:
-            console.print("Labels not created; ralph-kit check will offer again.", style="dim")
+            console.print("Labels not created; macatia check will offer again.", style="dim")
     # Labels just created already have their role's colour, so only labels that were present are listed.
     if miscoloured and confirm:
         console.print()
@@ -600,13 +606,13 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
             for name in miscoloured.values():
                 console.print(Text(f"✗ {name} not recoloured", style="red") if name in failed else Text(f"✓ {name} recoloured", style="green"))
         else:
-            console.print("Labels not recoloured; ralph-kit check will offer again.", style="dim")
+            console.print("Labels not recoloured; macatia check will offer again.", style="dim")
     return int(bool(errors))
 
 
 def main(argv=None, prog=None):
     parser = argparse.ArgumentParser(prog=prog, description=__doc__)
-    parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path("ralph.toml"))
+    parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path("macatia.toml"))
     parser.add_argument("--review", "--with-review", dest="with_review", action="store_true", help="also check the independent review role (implied by review_by_default = true)")
     args = parser.parse_args(argv)
     root = pathlib.Path.cwd().resolve()

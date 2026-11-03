@@ -13,7 +13,7 @@ from unittest import mock
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import cli, keep_awake, loop
+from macatia import cli, keep_awake, loop
 
 
 class HelperCommandTests(unittest.TestCase):
@@ -22,7 +22,7 @@ class HelperCommandTests(unittest.TestCase):
 
     def test_linux_uses_systemd_inhibit_bound_to_the_run(self):
         command = keep_awake.helper_command("linux", 42)
-        self.assertEqual(command[:3], ["systemd-inhibit", "--what=idle:sleep", "--who=ralph-kit"])
+        self.assertEqual(command[:3], ["systemd-inhibit", "--what=idle:sleep", "--who=macatia"])
         self.assertEqual(command[-4:], ["tail", "--pid=42", "-f", "/dev/null"])
 
     def test_other_platforms_have_no_helper(self):
@@ -73,7 +73,7 @@ class KeepAwakeTests(unittest.TestCase):
 
 
 class CaffeinateFlagTests(unittest.TestCase):
-    """`ralph-kit run` leaves `--caffeinate` and `--no-caffeinate` to the run, which decides on
+    """`macatia run` leaves `--caffeinate` and `--no-caffeinate` to the run, which decides on
     the sleep lock at startup."""
 
     def test_cli_passes_the_flags_through_to_the_run_unchanged(self):
@@ -96,7 +96,7 @@ class CaffeinateFlagTests(unittest.TestCase):
             self.assertEqual(cli.main(["run", *arguments]), 0)
         run.assert_called_once()
         self.assertEqual(run.call_args.args[0], arguments)
-        self.assertEqual(run.call_args.kwargs["prog"], "ralph-kit run")
+        self.assertEqual(run.call_args.kwargs["prog"], "macatia run")
 
 
 if __name__ == "__main__":

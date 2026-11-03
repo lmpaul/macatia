@@ -11,7 +11,7 @@ sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
 from rich.console import Console  # noqa: E402
 
-from ralph_kit import progress  # noqa: E402
+from macatia import progress  # noqa: E402
 
 
 class TerminalOutput(io.StringIO):

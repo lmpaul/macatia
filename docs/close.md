@@ -1,10 +1,10 @@
 # Closure: `close`
 
 ```sh
-ralph-kit close                # at a terminal, pick among the closable run targets
-ralph-kit close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
-ralph-kit close --yes 123      # same, without the confirmation
-ralph-kit close --force 123    # close despite failed checks, after typing 123
+macatia close                # at a terminal, pick among the closable run targets
+macatia close 123            # closure: close #123's children, then #123, or standalone #123 alone (asks first)
+macatia close --yes 123      # same, without the confirmation
+macatia close --force 123    # close despite failed checks, after typing 123
 ```
 
 Merging the cumulative draft PR closes nothing: its body carries no closing
@@ -13,9 +13,9 @@ keyword. Once the work is merged, a closure closes the run target as
 standalone issue alone:
 
 ```sh
-ralph-kit close 123
-ralph-kit close --yes --config review.toml 123
-ralph-kit close --force 123
+macatia close 123
+macatia close --yes --config review.toml 123
+macatia close --force 123
 ```
 
 `close` loads the configuration like the other commands (repository, label
@@ -53,7 +53,7 @@ Unlike a child, it fails a check without trusted implementation evidence
 (`#N has no implementation evidence`), so an unmerged, unimplemented or
 unevidenced standalone issue is refused and only `--force` closes it. Once every
 check passes, `close` lists it, asks `Close #N?` (`--yes` skips it) and closes
-it alone, with one comment saying Ralph closed the standalone issue (and the
+it alone, with one comment saying Macatia closed the standalone issue (and the
 pull request that merged it, if one proved it).
 
 A refusal lists every failed check at once and closes nothing. When every check
@@ -83,7 +83,7 @@ the open issues whose closure passes every check, behind a spinner, and closes
 the one picked exactly as if its number had been passed: same confirmation
 (`--yes` still skips it), same rerun command. Only trusted issues in
 `human-review`, or labelled `implemented` alone, are checked for the listing.
-On the run branch of a listed issue (`ralph-kit/issue-<N>`), the picker
+On the run branch of a listed issue (`macatia/issue-<N>`), the picker
 preselects it. With no closable run target, `close` says so and exits 0;
 Ctrl-C in the picker closes nothing and exits 130. Without a terminal, or with
 `--force`, the issue is required: a forced closure always names its issue.

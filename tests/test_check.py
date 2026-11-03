@@ -17,7 +17,7 @@ SOURCE_DIRECTORY = KIT_ROOT / "src"
 FIXTURES = KIT_ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(SOURCE_DIRECTORY))
 
-from ralph_kit import check, cli
+from macatia import check, cli
 
 
 # Excerpts in the layout of the real help pages, so the tests need no engine installed.
@@ -69,10 +69,10 @@ class ReadinessTests(unittest.TestCase):
         self.addCleanup(self.directory.cleanup)
         self.root = pathlib.Path(self.directory.name).resolve()
         (self.root / "policy").mkdir()
-        shutil.copy2(FIXTURES / "ralph.toml", self.root / "ralph.toml")
+        shutil.copy2(FIXTURES / "macatia.toml", self.root / "macatia.toml")
         shutil.copy2(FIXTURES / "quality.py", self.root / "policy/quality.py")
         self.checker = check
-        self.config = self.root / "ralph.toml"
+        self.config = self.root / "macatia.toml"
         text = self.config.read_text().replace("lmpaul/buyr", "example/project")
         text = text.replace('["lmpaul"]', '["reader"]')
         text = text.replace("gpt-5.6-terra", "chosen-model")
@@ -122,9 +122,9 @@ class ReadinessTests(unittest.TestCase):
             if isinstance(self.help[args], Exception):
                 raise self.help[args]
             return self.help[args]
-        if args == ("git", "check-ignore", "--quiet", ".ralph/"):
+        if args == ("git", "check-ignore", "--quiet", ".macatia/"):
             if not self.diagnostics_ignored:
-                raise RuntimeError("git check-ignore --quiet .ralph/ failed; check access and authentication")
+                raise RuntimeError("git check-ignore --quiet .macatia/ failed; check access and authentication")
             return ""
         if args == ("git", "symbolic-ref", "--quiet", "--short", "HEAD"):
             if self.branch is None:
@@ -156,7 +156,7 @@ class ReadinessTests(unittest.TestCase):
     def test_a_terminal_sees_the_checks_in_progress(self):
         code, output = self.run_check(terminal=True)
         self.assertEqual(code, 0, output)
-        self.assertIn("Checking that this repository is ready for Ralph", output)
+        self.assertIn("Checking that this repository is ready for Macatia", output)
         # The spinner is gone before the report.
         self.assertIn("No blockers", output.rsplit("Checking that this repository", 1)[1])
 
@@ -212,7 +212,7 @@ class ReadinessTests(unittest.TestCase):
         self.branch = "main"
         code, output = self.run_check()
         self.assertEqual(code, 0, output)
-        self.assertIn("main (run will offer a ralph-kit/issue-<parent> branch)", " ".join(output.split()))
+        self.assertIn("main (run will offer a macatia/issue-<parent> branch)", " ".join(output.split()))
 
     def test_other_branch_names_the_base(self):
         code, output = self.run_check()
@@ -232,15 +232,15 @@ class ReadinessTests(unittest.TestCase):
     def test_ignored_diagnostics_directory_passes(self):
         code, output = self.run_check()
         self.assertEqual(code, 0, output)
-        self.assertIn(".ralph/ ignored by Git", output)
+        self.assertIn(".macatia/ ignored by Git", output)
 
     def test_diagnostics_directory_not_ignored_blocks_with_the_fix(self):
         self.diagnostics_ignored = False
         code, output = self.run_check()
         self.assertEqual(code, 1)
         output = " ".join(output.split())
-        self.assertIn("Run diagnostics .ralph/ is not ignored by Git", output)
-        self.assertIn('→ echo ".ralph/" >> .gitignore, then commit .gitignore', output)
+        self.assertIn("Run diagnostics .macatia/ is not ignored by Git", output)
+        self.assertIn('→ echo ".macatia/" >> .gitignore, then commit .gitignore', output)
         self.assertIn("1 blocker", output)
 
     def test_untrusted_account_blocks(self):
@@ -262,7 +262,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 0)
         self.assertEqual(questions, ["Create the 1 missing label on example/project?"])
         self.assertIn("✓ implemented created", output)
-        self.assertIn(("gh", "label", "create", "implemented", "--repo", "example/project", "--description", "Implemented by Ralph", "--color", "C2E0C6"), self.commands)
+        self.assertIn(("gh", "label", "create", "implemented", "--repo", "example/project", "--description", "Implemented by Macatia", "--color", "C2E0C6"), self.commands)
 
     def test_missing_agent_working_label_is_reported_and_created_once_confirmed(self):
         self.labels.remove("agent-working")
@@ -272,7 +272,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ agent-working created", output)
         self.assertIn(
             ("gh", "label", "create", "agent-working", "--repo", "example/project",
-             "--description", "A Ralph agent is working on this child", "--color", "5319E7"),
+             "--description", "A Macatia agent is working on this child", "--color", "5319E7"),
             self.commands,
         )
 
@@ -284,7 +284,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ work-started created", output)
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "example/project",
-             "--description", "Ralph has started work on this parent", "--color", "E4E9F2"),
+             "--description", "Macatia has started work on this parent", "--color", "E4E9F2"),
             self.commands,
         )
 
@@ -296,8 +296,8 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         self.assertIn("✓ work-started created", output)
         output = " ".join(output.split())  # The report wraps long details.
-        self.assertIn("! Label roles ralph.toml leaves out work_started, so work-started is used", output)
-        self.assertIn("→ ralph-kit update-config writes it", output)
+        self.assertIn("! Label roles macatia.toml leaves out work_started, so work-started is used", output)
+        self.assertIn("→ macatia update-config writes it", output)
 
     def test_missing_standalone_marker_is_reported_and_created_once_confirmed(self):
         self.labels.remove("standalone")
@@ -307,7 +307,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn("✓ standalone created", output)
         self.assertIn(
             ("gh", "label", "create", "standalone", "--repo", "example/project",
-             "--description", "Ralph has started work on this standalone issue", "--color", "E4E9F2"),
+             "--description", "Macatia has started work on this standalone issue", "--color", "E4E9F2"),
             self.commands,
         )
 
@@ -316,7 +316,7 @@ class ReadinessTests(unittest.TestCase):
         self.config.write_text(text.replace('standalone = "standalone"\n', ""))
         code, output = self.run_check()
         output = " ".join(output.split())  # The report wraps long details.
-        self.assertIn("! Label roles ralph.toml leaves out standalone, so standalone is used", output)
+        self.assertIn("! Label roles macatia.toml leaves out standalone, so standalone is used", output)
 
     def test_complete_labels_get_no_label_roles_warning(self):
         code, output = self.run_check()
@@ -334,12 +334,12 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         output = " ".join(output.split())  # The report wraps long details.
         self.assertIn(
-            "ℹ Defaulted settings ralph.toml leaves out caffeinate_by_default,"
+            "ℹ Defaulted settings macatia.toml leaves out caffeinate_by_default,"
             " child_session_limit.reviewed, child_session_limit.standard, review_by_default,"
             " so their default values are used",
             output,
         )
-        self.assertIn("→ ralph-kit update-config writes them", output)
+        self.assertIn("→ macatia update-config writes them", output)
         self.assertEqual(output.count("Defaulted settings"), 1)
         self.assertIn("No blockers", output)
 
@@ -350,11 +350,11 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 0, output)
         output = " ".join(output.split())
         self.assertIn(
-            "ℹ Defaulted settings ralph.toml leaves out child_session_limit.reviewed,"
+            "ℹ Defaulted settings macatia.toml leaves out child_session_limit.reviewed,"
             " so its default value is used",
             output,
         )
-        self.assertIn("→ ralph-kit update-config writes it", output)
+        self.assertIn("→ macatia update-config writes it", output)
 
     def test_a_file_declaring_every_defaulted_setting_gets_no_entry(self):
         self.declare_every_defaulted_setting()
@@ -368,7 +368,7 @@ class ReadinessTests(unittest.TestCase):
         self.config.write_text(self.config.read_text().replace('work_started = "work-started"\n', ""))
         code, output = self.run_check(confirm=lambda question: True)
         output = " ".join(output.split())
-        self.assertIn("! Label roles ralph.toml leaves out work_started", output)
+        self.assertIn("! Label roles macatia.toml leaves out work_started", output)
         self.assertNotIn("Defaulted settings", output)
 
     def test_optional_profiles_left_out_are_not_defaulted_settings(self):
@@ -386,8 +386,8 @@ class ReadinessTests(unittest.TestCase):
         code, output = self.run_check()
         output = " ".join(output.split())  # The report wraps long details.
         self.assertEqual(code, 1)
-        self.assertIn('add agent_working = "agent-working" under [labels], or run ralph-kit update-config', output)
-        self.assertIn("edit ralph.toml by hand", output)
+        self.assertIn('add agent_working = "agent-working" under [labels], or run macatia update-config', output)
+        self.assertIn("edit macatia.toml by hand", output)
         self.assertNotIn("regenerate", output)
         self.assertEqual(self.config.read_text(), text)
 
@@ -489,7 +489,7 @@ class ReadinessTests(unittest.TestCase):
         code, output = self.run_check(confirm=lambda question: False)
         self.assertEqual(code, 0, output)
         self.assertEqual(self.label_edits(), [])
-        self.assertIn("Labels not recoloured; ralph-kit check will offer again.", output)
+        self.assertIn("Labels not recoloured; macatia check will offer again.", output)
 
     def test_broken_claude_skill_link_blocks(self):
         self.config.write_text(self.config.read_text().replace('engine = "codex"', 'engine = "claude"'))
@@ -728,7 +728,7 @@ class ReadinessTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 output = " ".join(output.split())
                 self.assertIn(expected, output)
-                self.assertIn(f"→ update {check.AGENT_CLIS[engine]}, or check that ralph-kit supports the installed version", output)
+                self.assertIn(f"→ update {check.AGENT_CLIS[engine]}, or check that macatia supports the installed version", output)
 
     def test_variadic_option_is_listed(self):
         self.help[("codex", "exec", "--help")] = CODEX_HELP.replace("  -C, --cd <DIR>", "  -C, --cd <DIR>...")
@@ -755,7 +755,7 @@ class ReadinessTests(unittest.TestCase):
         self.config.unlink()
         code, output = self.run_check()
         self.assertEqual(code, 1)
-        self.assertIn("→ ralph-kit init", output)
+        self.assertIn("→ macatia init", output)
         self.assertEqual(self.commands, [])
 
     def test_run_without_config_points_to_init(self):
@@ -775,7 +775,30 @@ class ReadinessTests(unittest.TestCase):
                 ):
                     code = cli.main(["run", *review, "1"])
                 self.assertEqual(code, 1)
-                self.assertIn("ralph.toml not found: run `ralph-kit init` first", stderr.getvalue())
+                self.assertIn("macatia.toml not found: run `macatia init` first", stderr.getvalue())
+
+    def test_leftover_ralph_toml_asks_for_rename(self):
+        self.config.rename(self.root / "ralph.toml")
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("→ git mv ralph.toml macatia.toml", output)
+        self.assertEqual(self.commands, [])
+
+    def test_run_with_leftover_ralph_toml_asks_for_rename(self):
+        import subprocess
+
+        self.config.rename(self.root / "ralph.toml")
+        subprocess.run(["git", "init", "-q"], cwd=self.root, check=True)
+        stderr = io.StringIO()
+        with (
+            contextlib.chdir(self.root),
+            contextlib.redirect_stdout(io.StringIO()),
+            contextlib.redirect_stderr(stderr),
+            mock.patch.object(sys, "dont_write_bytecode", sys.dont_write_bytecode),
+        ):
+            code = cli.main(["run", "1"])
+        self.assertEqual(code, 1)
+        self.assertIn("macatia.toml not found, but ralph.toml is: rename it with `git mv ralph.toml macatia.toml`", stderr.getvalue())
 
     def test_missing_git_skips_git_checks(self):
         code, output = self.run_check(missing="git")

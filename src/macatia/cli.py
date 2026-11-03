@@ -1,4 +1,4 @@
-"""`ralph-kit` command line: dispatch to the run, the readiness check, init, configure, update-config, close and reset."""
+"""`macatia` command line: dispatch to the run, the readiness check, init, configure, update-config, close and reset."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ if TYPE_CHECKING:
     from .reset import ResettableRunTarget
 
 
-USAGE = """usage: ralph-kit <command> [options]
+USAGE = """usage: macatia <command> [options]
 
 commands:
   run [--review | --no-review] [--caffeinate | --no-caffeinate] [--tmux] [--worktree] [--config PATH] [ISSUE]
@@ -27,11 +27,11 @@ commands:
       --caffeinate keeps the machine from idle-sleeping until the run ends.
       --no-caffeinate lets the machine sleep, even when caffeinate_by_default = true in the configuration.
       --tmux asks, once the run target passes its startup checks, where the run continues:
-      Restart in ralph-kit-<repository name>-<run target> (the default) restarts the run in that
+      Restart in macatia-<repository name>-<run target> (the default) restarts the run in that
       persistent terminal (tmux) and attaches to it; Continue here runs in this terminal;
       Stop changes nothing.
       --worktree offers, once the run target passes its startup checks, to create a run worktree on
-      ralph-kit/issue-<run target> from the remote base branch, next to the repository in
+      macatia/issue-<run target> from the remote base branch, next to the repository in
       <repository>.worktrees/issue-<run target>, or to continue in that run worktree when it exists,
       prepares it with worktree_setup when configured, then restarts the run there; your checkout
       is left as it is, dirty or on any branch.
@@ -39,10 +39,10 @@ commands:
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
       --review also checks the review role, as review_by_default = true does.
   init [--force] [--config PATH]
-      Write a configuration (default ./ralph.toml): detect repo, branch, remote, account and checks; ask for the rest.
+      Write a configuration (default ./macatia.toml): detect repo, branch, remote, account and checks; ask for the rest.
       --force overwrites an existing configuration at PATH, and only that file.
   configure [--config PATH]
-      Change sections of an existing configuration (default ./ralph.toml) from a menu; saves only what changed.
+      Change sections of an existing configuration (default ./macatia.toml) from a menu; saves only what changed.
   update-config [--config PATH]
       Add each defaulted setting the configuration leaves out (review_by_default, caffeinate_by_default,
       label roles), with its default value and init's comment, keeping the rest of the file;
@@ -57,16 +57,16 @@ commands:
       it needs ISSUE.
   reset [--yes] [--purge] [--config PATH] [ISSUE]
       Reset, after one confirmation: close the open cumulative draft PR of ISSUE, remove its run
-      worktree, delete ralph-kit/issue-ISSUE on the remote and in this checkout, then label
+      worktree, delete macatia/issue-ISSUE on the remote and in this checkout, then label
       ready-for-agent again each child of ISSUE that is agent-working, implemented or in
-      human-review, then ISSUE itself, each with a reset marker Ralph reads none of its earlier
+      human-review, then ISSUE itself, each with a reset marker Macatia reads none of its earlier
       records past; ISSUE must be open with no merged child.
       Without ISSUE, at a terminal, offers the resettable run targets to choose from.
       --yes resets without asking; without a terminal, reset needs --yes.
-      --purge deletes Ralph's comments on ISSUE and those children instead of leaving reset
+      --purge deletes Macatia's comments on ISSUE and those children instead of leaving reset
       markers; a reset marker on ISSUE then counts as the trace of a run too.
 
-Run every command from the target repository root. Configuration defaults to ./ralph.toml.
+Run every command from the target repository root. Configuration defaults to ./macatia.toml.
 """
 
 def init(argv: list[str]) -> int:
@@ -74,7 +74,7 @@ def init(argv: list[str]) -> int:
     from .check import arrow_select
     from .progress import spinner
 
-    parser = argparse.ArgumentParser(prog="ralph-kit init", description="Write a configuration; ask for what cannot be detected.")
+    parser = argparse.ArgumentParser(prog="macatia init", description="Write a configuration; ask for what cannot be detected.")
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path(setup.CONFIG_NAME), metavar="PATH")
     parser.add_argument("--force", action="store_true", help="overwrite an existing configuration at --config, and only that file")
     args = parser.parse_args(argv)  # Exits with status 2 on unknown arguments.
@@ -97,7 +97,7 @@ def configure(argv: list[str]) -> int:
     from .check import arrow_select
     from .progress import spinner
 
-    parser = argparse.ArgumentParser(prog="ralph-kit configure", description="Change sections of an existing configuration.")
+    parser = argparse.ArgumentParser(prog="macatia configure", description="Change sections of an existing configuration.")
     parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path(setup.CONFIG_NAME), metavar="PATH")
     args = parser.parse_args(argv)  # Exits with status 2 on unknown arguments.
     interactive = sys.stdin.isatty()
@@ -146,19 +146,19 @@ def pick_run_target_with_arrows(
 def run_target_with_arrows(targets: list[StartableRunTarget], preselected: int | None) -> int:
     """The number of the startable run target picked, `preselected` or the first one listed
     by default; Ctrl-C raises KeyboardInterrupt, which the run counts as Stop."""
-    return pick_run_target_with_arrows("Which run target should Ralph run?", targets, preselected)
+    return pick_run_target_with_arrows("Which run target should Macatia run?", targets, preselected)
 
 
 def close_target_with_arrows(targets: list[ClosableRunTarget], preselected: int | None) -> int:
     """The number of the closable run target picked, `preselected` or the first one listed
     by default; Ctrl-C raises KeyboardInterrupt, which close counts as a cancellation."""
-    return pick_run_target_with_arrows("Which run target should Ralph close?", targets, preselected)
+    return pick_run_target_with_arrows("Which run target should Macatia close?", targets, preselected)
 
 
 def reset_target_with_arrows(targets: list[ResettableRunTarget], preselected: int | None) -> int:
     """The number of the resettable run target picked, `preselected` or the first one listed
     by default; Ctrl-C raises KeyboardInterrupt, which reset counts as a cancellation."""
-    return pick_run_target_with_arrows("Which run target should Ralph reset?", targets, preselected)
+    return pick_run_target_with_arrows("Which run target should Macatia reset?", targets, preselected)
 
 
 def continuation_with_arrows(name: str) -> Continuation:
@@ -185,7 +185,7 @@ def yes_no_with_arrows(question: str) -> bool:
 def main(argv: list[str] | None = None) -> int:
     # Kept for source checkouts run with an older interpreter; pip enforces it otherwise.
     if sys.version_info < (3, 11):  # noqa: UP036
-        print("❌ ralph-kit requires Python 3.11 or newer.", file=sys.stderr)
+        print("❌ macatia requires Python 3.11 or newer.", file=sys.stderr)
         return 1
     argv = list(sys.argv[1:] if argv is None else argv)
     if not argv or argv[0] in {"-h", "--help", "help"}:
@@ -194,7 +194,7 @@ def main(argv: list[str] | None = None) -> int:
     if argv[0] in {"-V", "--version"}:
         from . import __version__
 
-        print(f"ralph-kit {__version__}")
+        print(f"macatia {__version__}")
         return 0
 
     sys.dont_write_bytecode = True
@@ -205,7 +205,7 @@ def main(argv: list[str] | None = None) -> int:
         terminal = sys.stdin.isatty() and sys.stdout.isatty()
         return loop.run(
             arguments,
-            prog="ralph-kit run",
+            prog="macatia run",
             confirm=startup_choice_with_arrows if terminal else None,
             choose_run_target=run_target_with_arrows if terminal else None,
             choose_continuation=continuation_with_arrows if terminal else None,
@@ -213,7 +213,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "check":
         from . import check
 
-        return check.main(arguments, prog="ralph-kit check")
+        return check.main(arguments, prog="macatia check")
     if command == "init":
         return init(arguments)
     if command == "configure":
@@ -221,7 +221,7 @@ def main(argv: list[str] | None = None) -> int:
     if command == "update-config":
         from . import update_config
 
-        return update_config.main(arguments, prog="ralph-kit update-config")
+        return update_config.main(arguments, prog="macatia update-config")
     if command == "close":
         from . import close
 
@@ -241,5 +241,5 @@ def main(argv: list[str] | None = None) -> int:
             confirm=yes_no_with_arrows if terminal else None,
             choose_run_target=reset_target_with_arrows if terminal else None,
         )
-    print(f"ralph-kit: unknown command {command!r}\n\n{USAGE}", end="", file=sys.stderr)
+    print(f"macatia: unknown command {command!r}\n\n{USAGE}", end="", file=sys.stderr)
     return 2

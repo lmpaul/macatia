@@ -1,7 +1,7 @@
 {
   "recorded_at": "2026-10-18",
   "prompt": "Do not read or change any file and do not run any command. Reply only with the structured result: outcome \"no_changes\", summary \"Fixture session: nothing to do.\", findings [].",
-  "schema": "src/ralph_kit/outcome-schema.json",
+  "schema": "src/macatia/outcome-schema.json",
   "claude": {
     "version": "2.1.302 (Claude Code)",
     "model": "haiku",

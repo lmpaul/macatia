@@ -8,7 +8,7 @@ import unittest
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit.child_cycle import (
+from macatia.child_cycle import (
     HANDOFF_PREFIX,
     ChildCycleAdapters,
     ChildSessionLimit,
@@ -362,7 +362,7 @@ class HumanReviewTests(unittest.TestCase):
         self.assert_handed_off(
             tools, result,
             "child session limit exhausted before review",
-            "Ralph stopped before review because the child session limit of 1 (reviewed run) "
+            "Macatia stopped before review because the child session limit of 1 (reviewed run) "
             "was exhausted. This child remains open for human review.",
             cause=HandoffCause.CHILD_SESSION_LIMIT,
         )
@@ -450,7 +450,7 @@ class NewCommitRuleTests(unittest.TestCase):
         )
         self.assertEqual(len(tools.handoffs), 1)
         self.assertIn(
-            f"Ralph stopped because the {role} did not create a new commit",
+            f"Macatia stopped because the {role} did not create a new commit",
             tools.handoffs[0][1],
         )
 
@@ -518,7 +518,7 @@ class ChildWorkStopTests(unittest.TestCase):
             HandedToHumanReview("implementation rewrote the verified commit base"),
         )
         self.assertIn(
-            "Ralph stopped because implementation rewrote the verified commit base",
+            "Macatia stopped because implementation rewrote the verified commit base",
             tools.handoffs[0][1],
         )
 

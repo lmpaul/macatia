@@ -1,4 +1,4 @@
-"""Redaction of agent and command output before Ralph stores or republishes it."""
+"""Redaction of agent and command output before Macatia stores or republishes it."""
 
 from __future__ import annotations
 

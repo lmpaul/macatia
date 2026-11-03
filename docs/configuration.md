@@ -1,10 +1,10 @@
 # Configuration
 
 ```sh
-ralph-kit init                 # writes ./ralph.toml (detects what it can, asks the rest)
-ralph-kit init --config b.toml  # writes ./b.toml instead, for a second configuration
-ralph-kit configure            # change sections of ./ralph.toml from a menu
-ralph-kit update-config        # add the defaulted settings ./ralph.toml leaves out, then their GitHub labels
+macatia init                 # writes ./macatia.toml (detects what it can, asks the rest)
+macatia init --config b.toml  # writes ./b.toml instead, for a second configuration
+macatia configure            # change sections of ./macatia.toml from a menu
+macatia update-config        # add the defaulted settings ./macatia.toml leaves out, then their GitHub labels
 ```
 
 ## Create a configuration: `init`
@@ -12,7 +12,7 @@ ralph-kit update-config        # add the defaulted settings ./ralph.toml leaves 
 `init` first requires `git`, an authenticated `gh` 2.70.0 or newer and at least one agent CLI
 (`claude` or `codex`), and stops before any question otherwise. `check` repeats
 these requirements, requiring the CLI of each configured engine, so it is the command
-to run when reusing a committed `ralph.toml` on another machine.
+to run when reusing a committed `macatia.toml` on another machine.
 `init` then reads the GitHub repository, default branch, remote and current `gh`
 account, and enables local gates and CI checks when `.github/scripts/quality.py` and
 `.github/quality-gates.json` exist. It asks only for what it could not detect,
@@ -21,7 +21,7 @@ the arrow keys. Only installed agent CLIs are offered. Codex models and their su
 catalog (`codex debug models`, with a free-text fallback); Claude Code has no
 model listing, so `init` offers its documented aliases (`fable`, `opus`,
 `sonnet`, `haiku`), which always follow the latest version. Without a terminal
-(agents, CI) it asks nothing and leaves placeholders that `ralph-kit check` reports.
+(agents, CI) it asks nothing and leaves placeholders that `macatia check` reports.
 After the model profiles, `init` asks for a backup (see
 [Engine failures and the backup](engines.md#engine-failures-and-the-backup)) among the installed
 agent CLIs, plus "No backup". It recommends and preselects the other installed CLI,
@@ -32,19 +32,19 @@ would make it identical to a session role's model profile is shown greyed out wi
 the reason, a model only when all its efforts would, and a model name typed by hand
 is checked right after you enter it.
 `--config path/to/other.toml` selects another configuration, relative to the
-repository root: `init` writes it (its directory must exist, and `./ralph.toml` is left
+repository root: `init` writes it (its directory must exist, and `./macatia.toml` is left
 untouched), and `run` and `check` read it. `init` refuses an existing file unless
 `--force` is given, which overwrites only that file; its final message suggests
-`ralph-kit check --config path/to/other.toml`. Ralph writes run
-diagnostics to `.ralph/`. Unless Git already ignores it, `init` appends `.ralph/` to the
-repository's `.gitignore` (creating the file if needed) and says so. Commit it with `ralph.toml`;
-`check` reports `.ralph/` when Git does not ignore it.
+`macatia check --config path/to/other.toml`. Macatia writes run
+diagnostics to `.macatia/`. Unless Git already ignores it, `init` appends `.macatia/` to the
+repository's `.gitignore` (creating the file if needed) and says so. Commit it with `macatia.toml`;
+`check` reports `.macatia/` when Git does not ignore it.
 
-Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean worktree.
+Commit `macatia.toml` (and `.gitignore` when `init` changed it) and run on a clean worktree.
 
 ## Change a configuration: `configure`
 
-`init` on an existing file points to `configure`: `ralph-kit configure [--config PATH]`
+`init` on an existing file points to `configure`: `macatia configure [--config PATH]`
 opens an existing, valid configuration and shows a menu of its sections (model
 profiles, backup, trusted authors, verification, Git, reviewed runs by default, keep the
 machine awake by default, child session limits, run worktree setup), each with its current value
@@ -68,7 +68,7 @@ profile, and models whose every effort would, are shown unavailable with the rea
 ("same as review"); a free model name clashing with one is explained and asked again.
 Trusted authors lists the configured accounts, adds one
 (a duplicate is not added twice) or removes one, but never the last, and warns when
-the current `gh` account is not trusted, since Ralph would then ignore its own
+the current `gh` account is not trusted, since Macatia would then ignore its own
 implementation evidence. Git changes the repository (owner/name), base branch and
 remote, each asked with its current value as the default and the detected one (gh
 repository, default branch, Git remotes) shown when it differs; without `gh` or `git`
@@ -76,7 +76,7 @@ output, editing still works. After a repository change, the labels missing there
 offered for creation (Yes / Later), as `init` does, and created once the file is
 written. Verification turns local gates and
 CI checks on or off independently; enabling one without the quality module and
-manifest is accepted with a warning that `ralph-kit check` fails until they exist.
+manifest is accepted with a warning that `macatia check` fails until they exist.
 Reviewed runs by default turns `review_by_default` on or off. Turning it on without a
 review profile first asks for one, as Model profiles does for review; turning it off keeps
 the review profile.
@@ -89,25 +89,25 @@ Run worktree setup sets `worktree_setup` when there is none (an empty answer goe
 otherwise changes it, with the current command as the default, or removes it, which drops
 the key from the file.
 Save lists each changed key as `key: old → new`, writes the file, validates it and
-suggests committing it, then `ralph-kit check`; Save without changes, Quit without
+suggests committing it, then `macatia check`; Save without changes, Quit without
 saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
 comments added by hand are dropped (`configure` says so when it opens the file). When it
 opens a file with defaulted settings (settings the file leaves out, which take their
-default value), it lists them and points to `ralph-kit update-config`, which writes them;
+default value), it lists them and points to `macatia update-config`, which writes them;
 Save does not write them unless a value changes. It needs a terminal; without one, edit
 the TOML directly. An invalid configuration is refused with the error: fix the file by
-hand (a missing label key names the line to add); `ralph-kit init --force` would start
+hand (a missing label key names the line to add); `macatia init --force` would start
 over and lose its settings.
-Unknown keys usually mean the file was written by a newer ralph-kit (for example
-committed from another machine): the error suggests `uv tool upgrade ralph-kit --reinstall`.
+Unknown keys usually mean the file was written by a newer macatia (for example
+committed from another machine): the error suggests `uv tool upgrade macatia --reinstall`.
 
 ## Add new settings: `update-config`
 
-A newer ralph-kit can add a setting. `ralph-kit check` lists the defaulted
+A newer macatia can add a setting. `macatia check` lists the defaulted
 settings the file leaves out other than label roles (`review_by_default`,
 `caffeinate_by_default`, each `child_session_limit` key) as information that
 does not fail the check, and warns about defaulted label roles.
-`ralph-kit update-config [--config PATH]` writes each defaulted setting the file
+`macatia update-config [--config PATH]` writes each defaulted setting the file
 leaves out, with its default value and the comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
 after the last top-level setting, before the first table, each label role at
 the end of `[labels]` with its default name, and a `[child_session_limit]` table
@@ -128,29 +128,29 @@ clean working tree.
 For a variant of an existing configuration, copy the file, then change the copy:
 
 ```sh
-cp ralph.toml review.toml
-ralph-kit configure --config review.toml
-ralph-kit check --config review.toml
+cp macatia.toml review.toml
+macatia configure --config review.toml
+macatia check --config review.toml
 ```
 
 ## Repository settings
 
 - `repository` is the exact GitHub `owner/name` returned by `gh repo view`.
-- `base_branch` is the protected branch Ralph never commits to; it only fast-forwards it
+- `base_branch` is the protected branch Macatia never commits to; it only fast-forwards it
   from the remote before creating a run branch, never when switching to an existing one.
-- `remote` is the Git remote Ralph pushes to.
+- `remote` is the Git remote Macatia pushes to.
 - `trusted_authors` is the non-empty allowlist of trusted authors for parent
-  issues and children. Include the GitHub account Ralph runs as so a restarted
+  issues and children. Include the GitHub account Macatia runs as so a restarted
   run can trust its own implementation evidence.
 - `review_by_default` is optional (`false` when missing). `true` makes every
-  run a reviewed run, which requires `models.review`; `ralph-kit run
+  run a reviewed run, which requires `models.review`; `macatia run
   --no-review` overrides it for one run.
 - `caffeinate_by_default` is optional (`false` when missing). `true` makes every
-  run hold a sleep lock until it ends; `ralph-kit run --no-caffeinate` overrides
+  run hold a sleep lock until it ends; `macatia run --no-caffeinate` overrides
   it for one run.
 - `worktree_setup` is optional, with no default: a non-empty string without
   surrounding whitespace, the shell command that prepares a run worktree for
-  `ralph-kit run --worktree`, such as `pnpm install --frozen-lockfile` or
+  `macatia run --worktree`, such as `pnpm install --frozen-lockfile` or
   `uv sync`, run in the run worktree on every `--worktree` run (see
   [Run worktree](run.md#preparing-the-run-worktree-worktree_setup)). Leaving it
   out prepares nothing.
@@ -170,7 +170,7 @@ ralph-kit check --config review.toml
   at 4 sessions in a standard run and 8 in a reviewed run, so a value above
   that has no effect beyond room for a backup replay (see
   [the loop](run.md)); a lower value stops a child
-  earlier. `ralph-kit update-config` writes the table, or the limit it leaves out:
+  earlier. `macatia update-config` writes the table, or the limit it leaves out:
 
   ```toml
   [child_session_limit]
@@ -178,24 +178,24 @@ ralph-kit check --config review.toml
   reviewed = 9
   ```
 
-- `labels` maps Ralph's ten label roles to labels in the target
+- `labels` maps Macatia's ten label roles to labels in the target
   repository: the triage labels `needs_triage`, `needs_info`, `ready_for_agent`,
   `ready_for_human`, and `wontfix`, the lifecycle labels `ready_for_agent`,
   `agent_working`, `human_review`, and `implemented`, the parent-only
   `work_started`, and the standalone marker `standalone`. `agent_working`
-  (`agent-working` by default) marks the child a run is working on; only Ralph
+  (`agent-working` by default) marks the child a run is working on; only Macatia
   sets it. `work_started` (`work-started` by default) marks a parent on which
-  Ralph has started work; it is informational
-  only, and Ralph never reads it to decide anything: the first child cycle of a
+  Macatia has started work; it is informational
+  only, and Macatia never reads it to decide anything: the first child cycle of a
   run adds it in place of `ready-for-agent`, parent completion removes it, and
   nothing else cleans it up (see [the loop](run.md)).
   `standalone` (`standalone` by default) is the standalone marker: it marks a
   standalone issue, one with no parent and no sub-issues, on which a run has
   started. Like `work_started`, it is neither a triage label nor a lifecycle
-  label, Ralph never reads it to decide anything, and nothing removes it.
-  A `ralph.toml` written before `work_started` or `standalone` existed may leave
+  label, Macatia never reads it to decide anything, and nothing removes it.
+  A `macatia.toml` written before `work_started` or `standalone` existed may leave
   them out and gets their default names; `check` warns about it, and
-  `ralph-kit update-config` writes them. `init` and `check` offer to
+  `macatia update-config` writes them. `init` and `check` offer to
   create missing ones (Yes / Later).
 - `models` holds one model profile (engine, model, display name, and reasoning
   effort) each for implementation, independent review, and correction sessions.

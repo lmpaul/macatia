@@ -6,7 +6,7 @@ import pathlib
 import subprocess
 
 
-class RalphError(RuntimeError):
+class MacatiaError(RuntimeError):
     """A safe terminal stop that must not advance issue state."""
 
 
@@ -26,5 +26,5 @@ def command(
     )
     if check and completed.returncode != 0:
         detail = (completed.stderr or "").strip() or (completed.stdout or "").strip()
-        raise RalphError(f"command failed ({' '.join(arguments)}): {detail}")
+        raise MacatiaError(f"command failed ({' '.join(arguments)}): {detail}")
     return completed

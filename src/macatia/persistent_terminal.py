@@ -65,7 +65,7 @@ def continuation_choices(name: str) -> list[ContinuationChoice]:
 def persistent_terminal_name(repository: str, run_target: int) -> str:
     """The name of the persistent terminal of `run_target` in the GitHub `repository`
     (owner/name); tmux reads `.` and `:` in a session name as separators."""
-    name = f"ralph-kit-{repository.split('/', 1)[-1]}-{run_target}"
+    name = f"macatia-{repository.split('/', 1)[-1]}-{run_target}"
     return name.replace(".", "_").replace(":", "_")
 
 

@@ -10,20 +10,20 @@ from unittest import mock
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import persistent_terminal
+from macatia import persistent_terminal
 
 
 class PersistentTerminalNameTests(unittest.TestCase):
     def test_names_the_repository_and_the_run_target(self):
         self.assertEqual(
-            persistent_terminal.persistent_terminal_name("lmpaul/ralph-kit", 129),
-            "ralph-kit-ralph-kit-129",
+            persistent_terminal.persistent_terminal_name("lmpaul/macatia", 129),
+            "macatia-macatia-129",
         )
 
     def test_dots_and_colons_become_underscores(self):
         self.assertEqual(
             persistent_terminal.persistent_terminal_name("someone/my.app:v2", 7),
-            "ralph-kit-my_app_v2-7",
+            "macatia-my_app_v2-7",
         )
 
 
@@ -31,22 +31,22 @@ class TmuxCommandTests(unittest.TestCase):
     def test_starts_the_named_session_in_the_directory_running_the_command_then_the_shell(self):
         self.assertEqual(
             persistent_terminal.tmux_command(
-                "ralph-kit-buyr-191",
+                "macatia-buyr-191",
                 pathlib.Path("/work/buyr"),
-                "ralph-kit run --review 191",
+                "macatia run --review 191",
                 "/bin/zsh",
             ),
             [
-                "tmux", "new-session", "-s", "ralph-kit-buyr-191", "-c", "/work/buyr",
-                "ralph-kit run --review 191; exec /bin/zsh",
+                "tmux", "new-session", "-s", "macatia-buyr-191", "-c", "/work/buyr",
+                "macatia run --review 191; exec /bin/zsh",
             ],
         )
 
     def test_quotes_a_shell_path_with_spaces(self):
         command = persistent_terminal.tmux_command(
-            "ralph-kit-buyr-191", pathlib.Path("/work/buyr"), "ralph-kit run 191", "/opt/my shell"
+            "macatia-buyr-191", pathlib.Path("/work/buyr"), "macatia run 191", "/opt/my shell"
         )
-        self.assertEqual(command[-1], "ralph-kit run 191; exec '/opt/my shell'")
+        self.assertEqual(command[-1], "macatia run 191; exec '/opt/my shell'")
 
 
 class UnavailableTests(unittest.TestCase):
@@ -90,9 +90,9 @@ class ExistsTests(unittest.TestCase):
         with mock.patch.object(
             persistent_terminal.subprocess, "run", return_value=completed
         ) as run:
-            exists = persistent_terminal.PersistentTerminal().exists("ralph-kit-buyr-191")
+            exists = persistent_terminal.PersistentTerminal().exists("macatia-buyr-191")
         run.assert_called_once_with(
-            ["tmux", "has-session", "-t", "=ralph-kit-buyr-191"],
+            ["tmux", "has-session", "-t", "=macatia-buyr-191"],
             stdout=persistent_terminal.subprocess.DEVNULL,
             stderr=persistent_terminal.subprocess.DEVNULL,
             check=False,
@@ -114,11 +114,11 @@ class RestartHereTests(unittest.TestCase):
             mock.patch.object(persistent_terminal.os, "execvp") as execvp,
         ):
             persistent_terminal.restart_here(
-                "ralph-kit run --worktree 191", pathlib.Path("/work/buyr.worktrees/issue-191")
+                "macatia run --worktree 191", pathlib.Path("/work/buyr.worktrees/issue-191")
             )
         chdir.assert_called_once_with(pathlib.Path("/work/buyr.worktrees/issue-191"))
         execvp.assert_called_once_with(
-            "/bin/zsh", ["/bin/zsh", "-c", "ralph-kit run --worktree 191"]
+            "/bin/zsh", ["/bin/zsh", "-c", "macatia run --worktree 191"]
         )
 
 

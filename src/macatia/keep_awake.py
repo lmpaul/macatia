@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 
-WHY = "ralph-kit run in progress"
+WHY = "macatia run in progress"
 # Windows SetThreadExecutionState flags.
 ES_CONTINUOUS = 0x80000000
 ES_SYSTEM_REQUIRED = 0x00000001
@@ -21,11 +21,11 @@ def helper_command(platform: str, pid: int) -> list[str] | None:
     if platform == "darwin":
         return ["caffeinate", "-i", "-w", str(pid)]
     if platform.startswith("linux"):
-        # tail --pid ends the inhibitor even when ralph-kit is killed without cleanup.
+        # tail --pid ends the inhibitor even when macatia is killed without cleanup.
         return [
             "systemd-inhibit",
             "--what=idle:sleep",
-            "--who=ralph-kit",
+            "--who=macatia",
             f"--why={WHY}",
             "--mode=block",
             "tail",

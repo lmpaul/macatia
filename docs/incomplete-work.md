@@ -17,11 +17,11 @@ this distinction. A local-gate correction reports completeness of that gate;
 the independent issue review separately checks the entire issue.
 
 Findings are retained separately from the summary, so shortening a long summary
-does not discard correction instructions. Ralph redacts credentials from findings
+does not discard correction instructions. Macatia redacts credentials from findings
 before passing them to correction sessions or publishing them on GitHub.
 
 When implementation, independent review, or a CI correction returns
-`needs_correction`, Ralph starts a fresh issue correction, preserves the existing commits, and requires
+`needs_correction`, Macatia starts a fresh issue correction, preserves the existing commits, and requires
 a new commit. It then runs the configured local gates and an independent review
 against every issue acceptance criterion, including pre-existing partial work.
 CI corrections also receive an independent review before the new commit is
@@ -39,9 +39,9 @@ Every handoff comment for a child whose child cycle started also says that the
 child's commits stay on the branch and will count as its work if it is
 relabelled `ready-for-agent`. Every handoff comment starts with a hidden
 machine-readable marker, in both run modes; handoff comments posted before
-Ralph wrote that marker carry none.
+Macatia wrote that marker carry none.
 
-Ralph publishes implementation evidence and adds `implemented` only after the
+Macatia publishes implementation evidence and adds `implemented` only after the
 issue review and configured verification succeed for the final commit. A child
 already marked `human-review` is not resumed automatically; remove that label
 and restore `ready-for-agent` when it is ready for another run.
@@ -50,7 +50,7 @@ A run that ends without releasing its child (a crash, an error stop, or a killed
 process) leaves it `agent-working`. At startup, before any agent session, a run
 first marks `implemented` every child whose implementation evidence was already
 published, without asking. If children of the parent are still `agent-working`
-after that, Ralph shows one warning naming them all: it cannot tell an
+after that, Macatia shows one warning naming them all: it cannot tell an
 interrupted run from a run still active elsewhere, and resuming while another run
 is active makes two agents do the same work on two branches. A resumed child keeps
 its recorded child base, as described above, so commits already made for it
@@ -65,7 +65,7 @@ count as its work. One choice applies to all of them:
   gets a fresh child session limit.
 
 The choice uses the arrow keys and needs a terminal on both stdin and stdout.
-Without one (`nohup`, a scheduler, redirected output), Ralph takes the Stop path
+Without one (`nohup`, a scheduler, redirected output), Macatia takes the Stop path
 and puts the warning in the terminal summary. Ctrl-C at the prompt counts as
 Stop.
 
@@ -83,7 +83,7 @@ started on the same parent is only noticed at startup or at its next child
 selection.
 
 Ctrl-C (SIGINT), `kill` (SIGTERM), and closing the terminal (SIGHUP) all
-interrupt a run the same way. Ralph ends the agent session in flight,
+interrupt a run the same way. Macatia ends the agent session in flight,
 terminating its engine process, and releases the child it was working on. If the
 branch head still equals the commit its child cycle started from, nothing was
 committed for it in that child cycle:
@@ -91,7 +91,7 @@ the child goes back to `ready-for-agent` and the next run starts it again.
 Otherwise the child goes to `human-review` with a handoff comment naming the
 unverified commit range `<base>..<head>`; inspect those commits, then close the
 child or relabel it `ready-for-agent` and rerun. A child whose implementation
-evidence was already published is marked `implemented` instead. Ralph then
+evidence was already published is marked `implemented` instead. Macatia then
 publishes the terminal summary with the outcome `interrupted` on the parent (and
 the draft PR, if one exists), listing that child with its reason and next
 action, prints it, and exits with the shell's code for that signal: 130, 143,
