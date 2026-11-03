@@ -1,4 +1,4 @@
-"""Live sessions through Ralph's real engine command and result parsing, and fixture recording.
+"""Live sessions through Macatia's real engine command and result parsing, and fixture recording.
 
 Used by the opt-in live suite (`test_live.py`) to start real engine sessions
 and, when asked, to refresh the recorded outputs in `fixtures/engines/`.
@@ -17,12 +17,12 @@ KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 ENGINE_FIXTURES = KIT_ROOT / "tests" / "fixtures" / "engines"
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit.agent import agent_command, session_prompt, write_agent_result  # noqa: E402
-from ralph_kit.check import AGENT_CLIS  # noqa: E402
-from ralph_kit.commands import RalphError  # noqa: E402
-from ralph_kit.config import AgentProfile  # noqa: E402
-from ralph_kit.loop_core import OUTCOME_SCHEMA_PATH, RunAdapters, parse_agent_result  # noqa: E402
-from ralph_kit.sanitize import sanitized_text  # noqa: E402
+from macatia.agent import agent_command, session_prompt, write_agent_result  # noqa: E402
+from macatia.check import AGENT_CLIS  # noqa: E402
+from macatia.commands import MacatiaError  # noqa: E402
+from macatia.config import AgentProfile  # noqa: E402
+from macatia.loop_core import OUTCOME_SCHEMA_PATH, RunAdapters, parse_agent_result  # noqa: E402
+from macatia.sanitize import sanitized_text  # noqa: E402
 
 
 FIXTURE_PROMPT = (
@@ -38,20 +38,20 @@ MAX_REPORTED_STDOUT = 2000
 
 
 class LiveSessionFailed(AssertionError):
-    """A real engine session did not produce a result Ralph accepts."""
+    """A real engine session did not produce a result Macatia accepts."""
 
 
 @dataclass(frozen=True)
 class LiveSession:
     result: dict
-    # What Ralph reads: Claude's stdout envelope, or the file Codex wrote.
+    # What Macatia reads: Claude's stdout envelope, or the file Codex wrote.
     raw_output: str
 
 
 def run_live_session(engine, model, reasoning_effort, repository_root, *, runner=RunAdapters.run_engine):
-    """Run one session exactly as a run does: `agent_command`, then Ralph's result parsing."""
+    """Run one session exactly as a run does: `agent_command`, then Macatia's result parsing."""
     profile = AgentProfile(name=model, display_name=model, reasoning_effort=reasoning_effort, engine=engine)
-    with tempfile.TemporaryDirectory(prefix="ralph-live-") as directory:
+    with tempfile.TemporaryDirectory(prefix="macatia-live-") as directory:
         output_path = pathlib.Path(directory) / "result.json"
         arguments = agent_command(
             profile, session_prompt(engine, FIXTURE_PROMPT), repository_root, OUTCOME_SCHEMA_PATH, output_path
@@ -62,7 +62,7 @@ def run_live_session(engine, model, reasoning_effort, repository_root, *, runner
         try:
             write_agent_result(engine, completed.stdout, output_path)
             result = parse_agent_result(output_path)
-        except (ValueError, RalphError) as error:
+        except (ValueError, MacatiaError) as error:
             raise LiveSessionFailed(failure_report(engine, completed, error)) from error
         raw_output = completed.stdout if engine == "claude" else output_path.read_text(encoding="utf-8")
     return LiveSession(result, raw_output)
@@ -82,7 +82,7 @@ def scratch_repository(directory):
     root = pathlib.Path(directory)
     for arguments in (
         ["init", "-b", "main"],
-        ["-c", "user.name=Ralph Live", "-c", "user.email=ralph-live@example.invalid",
+        ["-c", "user.name=Macatia Live", "-c", "user.email=macatia-live@example.invalid",
          "commit", "--allow-empty", "-m", "Live session scratch repository"],
     ):
         subprocess.run(["git", *arguments], cwd=root, check=True, capture_output=True)

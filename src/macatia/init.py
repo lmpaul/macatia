@@ -1,4 +1,4 @@
-"""`ralph-kit init`: detect what can be read locally, ask for the rest, write the configuration."""
+"""`macatia init`: detect what can be read locally, ask for the rest, write the configuration."""
 
 from __future__ import annotations
 
@@ -23,14 +23,14 @@ from .config import (
     MODEL_ROLES,
     AgentProfile,
     ChildSessionLimits,
-    RalphConfig,
-    RalphConfigError,
+    MacatiaConfig,
+    MacatiaConfigError,
     VerificationConfig,
     load_config,
 )
 
 
-CONFIG_NAME = "ralph.toml"
+CONFIG_NAME = "macatia.toml"
 GITIGNORE = ".gitignore"
 QUALITY_MODULE = ".github/scripts/quality.py"
 QUALITY_MANIFEST = ".github/quality-gates.json"
@@ -381,7 +381,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
     if base_branch:
         say(f"  ✓ Base branch: {base_branch}")
     else:
-        base_branch = prompter.text("Base branch (Ralph never commits to it)", default="main", validate=git_name_error)
+        base_branch = prompter.text("Base branch (Macatia never commits to it)", default="main", validate=git_name_error)
 
     remotes = git_remotes(command)
     if len(remotes) == 1:
@@ -389,12 +389,12 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         say(f"  ✓ Remote: {remote}")
     elif remotes:
         remote = prompter.choice(
-            "Remote Ralph pushes to",
+            "Remote Macatia pushes to",
             [(name, command("git", "remote", "get-url", name) or "") for name in remotes],
             "origin" if "origin" in remotes else remotes[0],
         )
     else:
-        remote = prompter.text("Remote Ralph pushes to (no Git remote found)", default="origin", validate=git_name_error)
+        remote = prompter.text("Remote Macatia pushes to (no Git remote found)", default="origin", validate=git_name_error)
 
     with prompter.working("Reading the current gh account…"):
         login = current_login(command)
@@ -403,7 +403,7 @@ def collect(root: pathlib.Path, prompter: Prompter, command: CommandRunner, whic
         say(f"  ✓ Trusted author: {login} (current gh account)")
     else:
         authors = _authors(prompter.text(
-            "Trusted GitHub accounts, comma-separated (include the one Ralph runs as)",
+            "Trusted GitHub accounts, comma-separated (include the one Macatia runs as)",
             placeholder=PLACEHOLDERS["author"],
             validate=lambda value: None if _authors(value) else "at least one account",
         ))
@@ -461,7 +461,7 @@ def offer_labels(
     try:
         with prompter.working(f"Reading the labels of {repository}…"):
             missing = missing_labels(command, repository, labels.values())
-    except (TypeError, KeyError, ValueError):  # gh unavailable or unexpected output: ralph-kit check reports it.
+    except (TypeError, KeyError, ValueError):  # gh unavailable or unexpected output: macatia check reports it.
         return {}
     if not missing:
         prompter.say(f"  ✓ Labels: all {len(labels)} present")
@@ -471,7 +471,7 @@ def offer_labels(
         return {}
     answer = prompter.choice(
         f"Create the {len(missing)} missing label{'s' if len(missing) > 1 else ''}?",
-        [("Yes", "create them now with gh"), ("Later", "ralph-kit check will offer again")],
+        [("Yes", "create them now with gh"), ("Later", "macatia check will offer again")],
         "Yes",
     )
     # In the file's order: a loaded configuration's labels come in no particular order.
@@ -492,8 +492,8 @@ def _string(value: str) -> str:
 
 # The comment init writes above each top-level setting a configuration may leave out, in the file's order.
 TOP_LEVEL_COMMENTS = {
-    "review_by_default": "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.",
-    "caffeinate_by_default": "# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.",
+    "review_by_default": "# true makes every run a reviewed run; macatia run --no-review overrides it.",
+    "caffeinate_by_default": "# true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.",
 }
 
 
@@ -515,10 +515,10 @@ def child_session_limit_table(limits: ChildSessionLimits) -> list[str]:
     ]
 
 
-def configuration(values: dict, root: pathlib.Path) -> RalphConfig:
+def configuration(values: dict, root: pathlib.Path) -> MacatiaConfig:
     """The configuration init collected, in the shape load_config returns."""
     models = {role: AgentProfile(**profile) for role, profile in values["models"].items()}
-    return RalphConfig(
+    return MacatiaConfig(
         repository=values["repository"],
         base_branch=values["base_branch"],
         remote=values["remote"],
@@ -535,10 +535,10 @@ def configuration(values: dict, root: pathlib.Path) -> RalphConfig:
     )
 
 
-def render(config: RalphConfig, root: pathlib.Path) -> str:
+def render(config: MacatiaConfig, root: pathlib.Path) -> str:
     """The TOML file for a configuration; loading it with load_config gives the same configuration back."""
     lines = [
-        "# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit",
+        "# Macatia configuration for this repository. See https://github.com/lmpaul/macatia",
         "version = 1",
         f"repository = {_string(config.repository)}",
         f"base_branch = {_string(config.base_branch)}",
@@ -548,7 +548,7 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
         *(line for key in TOP_LEVEL_COMMENTS for line in top_level_setting(key, getattr(config, key))),
         *(
             [
-                "# Prepares a run worktree: ralph-kit run --worktree runs it through the shell inside the run worktree.",
+                "# Prepares a run worktree: macatia run --worktree runs it through the shell inside the run worktree.",
                 f"worktree_setup = {_string(config.worktree_setup)}",
             ]
             if config.worktree_setup is not None
@@ -565,7 +565,7 @@ def render(config: RalphConfig, root: pathlib.Path) -> str:
             continue
         lines.append("")
         if role == "review":
-            lines.append("# Used by reviewed runs: ralph-kit run --review, or every run when review_by_default = true.")
+            lines.append("# Used by reviewed runs: macatia run --review, or every run when review_by_default = true.")
         if role == BACKUP_MODEL_KEY:
             lines.append("# Takes over every session for the rest of a run after an engine failure.")
         lines.append(f"[models.{role}]")
@@ -601,7 +601,7 @@ def ignore_diagnostics(root: pathlib.Path, command: CommandRunner) -> bool:
 
 
 def check_prerequisites(command: CommandRunner, which: Callable[[str], str | None]) -> None:
-    """Stop before any question when detection could not work; ralph-kit check repeats these on other machines."""
+    """Stop before any question when detection could not work; macatia check repeats these on other machines."""
     problems = [
         f"{item.problem} → {item.fix}"
         for item in prerequisites(which, lambda executable: command(executable, "--version"))
@@ -627,12 +627,12 @@ def run(
         check_prerequisites(command, which)
         toplevel = command("git", "rev-parse", "--show-toplevel")
     if toplevel is None or pathlib.Path(toplevel).resolve() != root:
-        raise InitError("run ralph-kit init from the root of a Git repository")
+        raise InitError("run macatia init from the root of a Git repository")
     target = root / config  # An absolute config replaces root.
     display_path = target.relative_to(root) if target.is_relative_to(root) else target
     option_text = "" if target == root / CONFIG_NAME else f" --config {shlex.quote(str(display_path))}"
     if target.exists() and not force:
-        raise InitError(f"{target} already exists: change it with `ralph-kit configure{option_text}`, or use --force to start over")
+        raise InitError(f"{target} already exists: change it with `macatia configure{option_text}`, or use --force to start over")
     if not target.parent.is_dir():
         raise InitError(f"{target.parent}/ does not exist")
 
@@ -641,18 +641,18 @@ def run(
     target.write_text(contents, encoding="utf-8")
     try:
         load_config(target, root)
-    except RalphConfigError as error:  # The renderer must always produce a loadable file.
+    except MacatiaConfigError as error:  # The renderer must always produce a loadable file.
         raise InitError(f"generated configuration is invalid, please report this bug: {error}") from error
     ignored = ignore_diagnostics(root, command)
 
     prompter.say(f"\n✅ Wrote {target}.")
     if ignored:
-        prompter.say(f"   Added {DIAGNOSTICS_DIRECTORY}/ to {GITIGNORE}: Ralph writes run diagnostics there.")
+        prompter.say(f"   Added {DIAGNOSTICS_DIRECTORY}/ to {GITIGNORE}: Macatia writes run diagnostics there.")
     if values["create_labels"]:
         create_offered_labels(prompter, command, values["repository"], values["create_labels"])
     remaining = [value for value in PLACEHOLDERS.values() if value in contents]
     if remaining:
         prompter.say("   Values to fill in: " + ", ".join(remaining))
     committed = f"{display_path} and {GITIGNORE}" if ignored else str(display_path)
-    prompter.say(f"   Next step: commit {committed}, then run `ralph-kit check{option_text}`.")
+    prompter.say(f"   Next step: commit {committed}, then run `macatia check{option_text}`.")
     return target

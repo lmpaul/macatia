@@ -1,4 +1,4 @@
-"""`ralph-kit close`: the closure of a run target once its work is merged: a parent issue's
+"""`macatia close`: the closure of a run target once its work is merged: a parent issue's
 implemented children, then the parent, or a standalone issue alone."""
 
 from __future__ import annotations
@@ -11,8 +11,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Any, NamedTuple
 
-from .commands import RalphError, command
-from .config import RUN_BRANCH_PREFIX, RalphConfig, RalphConfigError, load_config
+from .commands import MacatiaError, command
+from .config import RUN_BRANCH_PREFIX, MacatiaConfig, MacatiaConfigError, load_config
 from .github import GitHub
 from .loop_core import (
     DEFAULT_CONFIG_PATH,
@@ -20,8 +20,8 @@ from .loop_core import (
     author_login,
     labels,
     latest_implementation_heads,
+    macatia_records,
     positive_integer,
-    ralph_records,
 )
 from .progress import spinner
 
@@ -30,7 +30,7 @@ COMPLETED = "completed"
 NO_EVIDENCE = "implemented without evidence: merge not verified"
 # Marks the closure comment, so a rerun after the issue failed to close does not repeat it;
 # the marker predates standalone issues and stays as it is for those already posted.
-CLOSURE_MARKER = "<!-- ralph-parent-closure -->"
+CLOSURE_MARKER = "<!-- macatia-parent-closure -->"
 
 
 class Failure(NamedTuple):
@@ -46,7 +46,7 @@ class Failure(NamedTuple):
         return f"- {self.summary}" + (f": {self.detail}" if self.detail else "")
 
 
-class CloseRefused(RalphError):
+class CloseRefused(MacatiaError):
     """A check failed, or no one confirmed: nothing was written."""
 
 
@@ -100,7 +100,7 @@ def parse_arguments(argv: list[str], prog: str, *, issue_required: bool = True) 
         "--config",
         type=pathlib.Path,
         default=DEFAULT_CONFIG_PATH,
-        help="repository-specific Ralph TOML configuration",
+        help="repository-specific Macatia TOML configuration",
     )
     confirmation = parser.add_mutually_exclusive_group()
     confirmation.add_argument("--yes", action="store_true", help="close without asking for confirmation")
@@ -112,9 +112,9 @@ def parse_arguments(argv: list[str], prog: str, *, issue_required: bool = True) 
     parser.add_argument("issue", type=positive_integer, nargs="?", metavar="ISSUE")
     arguments = parser.parse_args(argv)  # Exits with status 2 on usage errors.
     if arguments.issue is None and arguments.force:
-        parser.error("--force needs the issue to close: ralph-kit close --force ISSUE")
+        parser.error("--force needs the issue to close: macatia close --force ISSUE")
     if arguments.issue is None and issue_required:
-        parser.error("pass the issue to close: ralph-kit close ISSUE")
+        parser.error("pass the issue to close: macatia close ISSUE")
     return arguments
 
 
@@ -128,7 +128,7 @@ def issue_reference(issue: dict[str, Any]) -> str:
 
 def failed_checks(
     github: Any,
-    config: RalphConfig,
+    config: MacatiaConfig,
     target: dict[str, Any],
     children: list[dict[str, Any]],
     *,
@@ -216,11 +216,11 @@ def closure_comment(
     if standalone is not None:
         pull = merged_by.get(int(standalone["number"]))
         merged = "" if pull is None else f", merged by PR #{pull}"
-        return f"{CLOSURE_MARKER}\nRalph closed this standalone issue as completed{merged}.{forced}"
+        return f"{CLOSURE_MARKER}\nMacatia closed this standalone issue as completed{merged}.{forced}"
     if not has_children:
-        return f"{CLOSURE_MARKER}\nRalph closed this sub-issue alone: it has no sub-issues of its own.{forced}"
+        return f"{CLOSURE_MARKER}\nMacatia closed this sub-issue alone: it has no sub-issues of its own.{forced}"
     if not closed:
-        return f"{CLOSURE_MARKER}\nRalph closed this parent issue: every child was already closed.{forced}"
+        return f"{CLOSURE_MARKER}\nMacatia closed this parent issue: every child was already closed.{forced}"
     sections = [
         heading + "\n".join(f"- {merged_child_reference(child, merged_by)}" for child in group)
         for heading, group in (
@@ -233,14 +233,14 @@ def closure_comment(
         if group
     ]
     return (
-        f"{CLOSURE_MARKER}\nRalph closed this parent issue after closing its children "
+        f"{CLOSURE_MARKER}\nMacatia closed this parent issue after closing its children "
         f"as completed:\n\n" + "\n\n".join(sections) + forced
     )
 
 
-def has_closure_comment(config: RalphConfig, issue: dict[str, Any]) -> bool:
+def has_closure_comment(config: MacatiaConfig, issue: dict[str, Any]) -> bool:
     """Whether the issue's latest trusted comment is a closure comment."""
-    records = ralph_records(issue, config.trusted_authors)
+    records = macatia_records(issue, config.trusted_authors)
     return bool(records) and CLOSURE_MARKER in str(records[-1].get("body", ""))
 
 
@@ -258,7 +258,7 @@ def confirm_typed(number: int, type_answer: Callable[[str], str] | None) -> None
         raise CloseRefused(f"Did not type {number}. Nothing closed.")
 
 
-def inspect(github: Any, config: RalphConfig, target: dict[str, Any]) -> Inspection:
+def inspect(github: Any, config: MacatiaConfig, target: dict[str, Any]) -> Inspection:
     """Check the open issue `target` for its closure.
 
     An issue without a parent or sub-issues is a standalone issue, checked as a child.
@@ -267,8 +267,8 @@ def inspect(github: Any, config: RalphConfig, target: dict[str, Any]) -> Inspect
     number = int(target["number"])
     try:
         parent = github.parent(number)
-    except RalphError as error:
-        raise RalphError(f"Cannot read the parent of #{number}, nothing closed: {error}") from error
+    except MacatiaError as error:
+        raise MacatiaError(f"Cannot read the parent of #{number}, nothing closed: {error}") from error
     children = github.sub_issues(number)
     standalone = target if parent is None and not children else None
     # Sub-issue listings carry no comments: each open child's evidence is in its details.
@@ -290,7 +290,7 @@ def inspect(github: Any, config: RalphConfig, target: dict[str, Any]) -> Inspect
     )
 
 
-def closable_run_targets(github: Any, config: RalphConfig) -> list[ClosableRunTarget]:
+def closable_run_targets(github: Any, config: MacatiaConfig) -> list[ClosableRunTarget]:
     """The closable run targets of the repository, by ascending number: the open issues
     whose closure passes every check.
 
@@ -324,7 +324,7 @@ def closable_run_targets(github: Any, config: RalphConfig) -> list[ClosableRunTa
 
 def choose_close_target(
     github: Any,
-    config: RalphConfig,
+    config: MacatiaConfig,
     choose: Callable[[list[ClosableRunTarget], int | None], int],
     branch: str | None,
 ) -> int | None:
@@ -344,7 +344,7 @@ def choose_close_target(
     except KeyboardInterrupt:
         raise CloseCancelled from None
     if chosen not in numbers:
-        raise RalphError(f"#{chosen} is not one of the closable run targets")
+        raise MacatiaError(f"#{chosen} is not one of the closable run targets")
     return chosen
 
 
@@ -361,7 +361,7 @@ def current_branch(repository_root: pathlib.Path) -> str | None:
 
 def close_target(
     github: Any,
-    config: RalphConfig,
+    config: MacatiaConfig,
     number: int,
     *,
     yes: bool,
@@ -378,10 +378,10 @@ def close_target(
     with spinner(f"Checking #{number} and any sub-issues before closing…"):
         try:
             target = github.issue(number)
-        except RalphError as error:
-            raise RalphError(f"Cannot read #{number}, nothing closed: {error}") from error
+        except MacatiaError as error:
+            raise MacatiaError(f"Cannot read #{number}, nothing closed: {error}") from error
         if int(target.get("number", 0)) != number:
-            raise RalphError(f"GitHub returned the wrong issue for #{number}")
+            raise MacatiaError(f"GitHub returned the wrong issue for #{number}")
         if is_open(target):
             _, children, open_children, standalone, failures, without_evidence, merged_by = (
                 inspect(github, config, target)
@@ -454,9 +454,9 @@ def close_target(
                 ),
             )
         github.close_issue(number, COMPLETED)
-    except RalphError as error:
+    except MacatiaError as error:
         done = child_numbers(closed) or "none"
-        raise RalphError(f"{error}\nClosed so far: {done}. Rerun `{rerun}` to finish.") from error
+        raise MacatiaError(f"{error}\nClosed so far: {done}. Rerun `{rerun}` to finish.") from error
     print(f"   ✓ #{number}")
     count = len(closed)
     print(
@@ -476,9 +476,9 @@ def run(
     choose_run_target: Callable[[list[ClosableRunTarget], int | None], int] | None = None,
     branch: Callable[[pathlib.Path], str | None] = current_branch,
     repository_root: pathlib.Path | None = None,
-    prog: str = "ralph-kit close",
+    prog: str = "macatia close",
 ) -> int:
-    """Run `ralph-kit close`; `confirm` asks a Yes/No question, `type_answer` reads a typed
+    """Run `macatia close`; `confirm` asks a Yes/No question, `type_answer` reads a typed
     answer and `choose_run_target` picks among the closable run targets
     (by ascending number, preselected number or None), all None without a terminal.
     Only the picker lets close start without `ISSUE`; `branch` reads the checked-out
@@ -527,7 +527,7 @@ def run(
     except KeyboardInterrupt:
         print(f"\nInterrupted. Rerun `{rerun}` to finish.", file=sys.stderr)
         return 130
-    except (RalphError, RalphConfigError) as error:
+    except (MacatiaError, MacatiaConfigError) as error:
         print(f"❌ {error}", file=sys.stderr)
         return 1
     return 0

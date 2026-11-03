@@ -1,4 +1,4 @@
-"""ralph-kit update-config: write the defaulted settings into the configuration, then the labels on GitHub."""
+"""macatia update-config: write the defaulted settings into the configuration, then the labels on GitHub."""
 
 import contextlib
 import io
@@ -14,7 +14,7 @@ KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXTURES = KIT_ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import cli, config, init, update_config
+from macatia import cli, config, init, update_config
 
 
 ALL_LABELS = [
@@ -24,11 +24,11 @@ ALL_LABELS = [
 
 
 REVIEW = """\
-# true makes every run a reviewed run; ralph-kit run --no-review overrides it.
+# true makes every run a reviewed run; macatia run --no-review overrides it.
 review_by_default = false
 """
 CAFFEINATE = """\
-# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.
+# true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.
 caffeinate_by_default = false
 """
 TOP_LEVEL = REVIEW + CAFFEINATE
@@ -44,8 +44,8 @@ class UpdateConfigTests(unittest.TestCase):
         directory = tempfile.TemporaryDirectory()
         self.addCleanup(directory.cleanup)
         self.root = pathlib.Path(directory.name).resolve()
-        self.config = self.root / "ralph.toml"
-        shutil.copy2(FIXTURES / "ralph.toml", self.config)
+        self.config = self.root / "macatia.toml"
+        shutil.copy2(FIXTURES / "macatia.toml", self.config)
         self.labels = list(ALL_LABELS)
         self.commands = []
         self.declare_top_level_settings()
@@ -90,9 +90,9 @@ class UpdateConfigTests(unittest.TestCase):
             self.config.read_text(),
             text.replace('standalone = "standalone"\n', 'standalone = "standalone"\nwork_started = "work-started"\n'),
         )
-        self.assertIn('✓ ralph.toml: added work_started = "work-started"', output)
+        self.assertIn('✓ macatia.toml: added work_started = "work-started"', output)
         self.assertIn("✓ all 10 labels present on lmpaul/buyr", output)
-        self.assertIn("Commit ralph.toml", output)
+        self.assertIn("Commit macatia.toml", output)
 
     def test_a_configuration_without_standalone_gets_it_and_its_github_label(self):
         self.remove_line('standalone = "standalone"\n')
@@ -102,10 +102,10 @@ class UpdateConfigTests(unittest.TestCase):
 
         self.assertEqual(code, 0, output)
         self.assertIn('work_started = "work-started"\nstandalone = "standalone"\n', self.config.read_text())
-        self.assertIn('✓ ralph.toml: added standalone = "standalone"', output)
+        self.assertIn('✓ macatia.toml: added standalone = "standalone"', output)
         self.assertIn(
             ("gh", "label", "create", "standalone", "--repo", "lmpaul/buyr",
-             "--description", "Ralph has started work on this standalone issue", "--color", "E4E9F2"),
+             "--description", "Macatia has started work on this standalone issue", "--color", "E4E9F2"),
             self.commands,
         )
         self.assertIn("✓ standalone created", output)
@@ -129,11 +129,11 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertEqual(questions, ["Create the 1 missing label on lmpaul/buyr?"])
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "lmpaul/buyr",
-             "--description", "Ralph has started work on this parent", "--color", "E4E9F2"),
+             "--description", "Macatia has started work on this parent", "--color", "E4E9F2"),
             self.commands,
         )
         self.assertIn("✓ work-started created", output)
-        self.assertNotIn("Commit ralph.toml", output)
+        self.assertNotIn("Commit macatia.toml", output)
 
     def test_labels_missing_on_github_are_left_without_a_terminal_or_for_later(self):
         self.labels.remove("work-started")
@@ -153,10 +153,10 @@ class UpdateConfigTests(unittest.TestCase):
 
         self.assertEqual(code, 0, output)
         self.assertEqual(self.config.read_text(), original)
-        self.assertIn("✓ ralph.toml: nothing to add, every defaulted setting is declared", output)
+        self.assertIn("✓ macatia.toml: nothing to add, every defaulted setting is declared", output)
         self.assertNotIn("added", output)
         self.assertIn("✓ all 10 labels present on lmpaul/buyr", output)
-        self.assertNotIn("Commit ralph.toml", output)
+        self.assertNotIn("Commit macatia.toml", output)
 
     def test_missing_top_level_settings_are_added_before_the_first_table_with_their_comments(self):
         declared = self.config.read_text()
@@ -174,10 +174,10 @@ class UpdateConfigTests(unittest.TestCase):
                 self.assertEqual(self.config.read_text(), declared.replace(TOP_LEVEL, completed))
                 self.assertEqual(
                     [line for line in output.splitlines() if "added" in line],
-                    [f"✓ ralph.toml: added {key} = false" for key in added],
+                    [f"✓ macatia.toml: added {key} = false" for key in added],
                 )
                 self.assertIn("✓ all 10 labels present on lmpaul/buyr", output)
-                self.assertIn("Commit ralph.toml", output)
+                self.assertIn("Commit macatia.toml", output)
 
     def test_a_file_init_wrote_gets_back_the_lines_init_writes(self):
         rendered = init.render(config.load_config(self.config, self.root, require_review=False), self.root)
@@ -190,7 +190,7 @@ class UpdateConfigTests(unittest.TestCase):
 
     def test_top_level_settings_go_after_the_last_setting_and_keep_hand_written_comments(self):
         text = self.config.read_text().replace(TOP_LEVEL, "")
-        text = text.replace('version = 1\n', '# Our Ralph setup.\nversion = 1  # format\n')
+        text = text.replace('version = 1\n', '# Our Macatia setup.\nversion = 1  # format\n')
         text = text.replace('trusted_authors = ["lmpaul"]\n', 'trusted_authors = [\n  "lmpaul",  # owner\n]\n# Labels follow.\n\n')
         text = text.replace("[labels]\n", "# Our names.\n[labels]\n")
         self.config.write_text(text)
@@ -242,9 +242,9 @@ class UpdateConfigTests(unittest.TestCase):
             .replace('work_started = "work-started"\n', 'work_started = "work-started"\nstandalone = "standalone"\n'),
         )
         self.assertIn(
-            "✓ ralph.toml: added review_by_default = false\n"
-            "✓ ralph.toml: added caffeinate_by_default = false\n"
-            '✓ ralph.toml: added standalone = "standalone"\n',
+            "✓ macatia.toml: added review_by_default = false\n"
+            "✓ macatia.toml: added caffeinate_by_default = false\n"
+            '✓ macatia.toml: added standalone = "standalone"\n',
             output,
         )
 
@@ -276,9 +276,9 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertEqual(self.config.read_text(), text + LIMITS)
         self.assertEqual(
             [line for line in output.splitlines() if "added" in line],
-            ["✓ ralph.toml: added child_session_limit.standard = 5", "✓ ralph.toml: added child_session_limit.reviewed = 9"],
+            ["✓ macatia.toml: added child_session_limit.standard = 5", "✓ macatia.toml: added child_session_limit.reviewed = 9"],
         )
-        self.assertIn("Commit ralph.toml", output)
+        self.assertIn("Commit macatia.toml", output)
         self.assertEqual(config.load_config(self.config, self.root, require_review=False).child_session_limits, limits)
 
     def test_a_partial_child_session_limit_table_gets_the_other_limit_at_its_end(self):
@@ -296,7 +296,7 @@ class UpdateConfigTests(unittest.TestCase):
                 key, value = added.strip().split(" = ")
                 self.assertEqual(
                     [line for line in output.splitlines() if "added" in line],
-                    [f"✓ ralph.toml: added child_session_limit.{key} = {value}"],
+                    [f"✓ macatia.toml: added child_session_limit.{key} = {value}"],
                 )
                 self.assertEqual(config.load_config(self.config, self.root, require_review=False).child_session_limits, limits)
 
@@ -337,7 +337,7 @@ class UpdateConfigTests(unittest.TestCase):
                 self.assertEqual(code, 1)
                 self.assertIn("as an inline table or with dotted keys: write it as a [child_session_limit] table by hand", output)
                 self.assertEqual(self.config.read_text(), text)
-                self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
+                self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["macatia.toml"])
 
     def test_a_default_name_another_role_uses_is_refused(self):
         self.remove_line('work_started = "work-started"\n')
@@ -370,7 +370,7 @@ class UpdateConfigTests(unittest.TestCase):
         code, output = self.run_update()
 
         self.assertEqual(code, 1)
-        self.assertIn("run `ralph-kit init` first", output)
+        self.assertIn("run `macatia init` first", output)
 
     def test_another_configuration_problem_is_reported_after_the_labels_are_added(self):
         self.remove_line('work_started = "work-started"\n')
@@ -384,7 +384,7 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertIn("configuration.remote is not a safe Git name", output)
         self.assertNotIn("added", output)
         self.assertEqual(self.commands, [])
-        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["macatia.toml"])
 
     def test_a_missing_setting_without_a_default_leaves_the_file_unchanged(self):
         self.remove_line('work_started = "work-started"\n')
@@ -396,7 +396,7 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertEqual(self.config.read_bytes(), text.encode())
         self.assertIn("missing keys: remote", output)
-        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["macatia.toml"])
 
     def test_no_staged_copy_is_left_once_the_completed_file_is_written(self):
         self.remove_line('work_started = "work-started"\n')
@@ -404,7 +404,7 @@ class UpdateConfigTests(unittest.TestCase):
         code, output = self.run_update()
 
         self.assertEqual(code, 0, output)
-        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["ralph.toml"])
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), ["macatia.toml"])
 
     def test_the_command_is_dispatched_with_its_own_arguments(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:

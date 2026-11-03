@@ -9,12 +9,12 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Any
 
-from .commands import RalphError, command
+from .commands import MacatiaError, command
 
 
 def flatten_pages(value: Any) -> list[dict[str, Any]]:
     if not isinstance(value, list):
-        raise RalphError("GitHub list endpoint returned a non-list response")
+        raise MacatiaError("GitHub list endpoint returned a non-list response")
     if value and isinstance(value[0], list):
         return [item for page in value for item in page]
     return value
@@ -38,7 +38,7 @@ def merged_pull_requests_into(base: str, pulls: list[dict[str, Any]]) -> list[Me
             continue
         number, merge_commit = pull.get("number"), pull.get("merge_commit_sha")
         if not isinstance(number, int) or not isinstance(merge_commit, str) or not merge_commit:
-            raise RalphError(f"GitHub listed a merged pull request without a number or merge commit: {pull!r}")
+            raise MacatiaError(f"GitHub listed a merged pull request without a number or merge commit: {pull!r}")
         merged.append(MergedPullRequest(number, merge_commit))
     return merged
 
@@ -52,7 +52,7 @@ def open_issues_from_listing(items: list[dict[str, Any]]) -> list[dict[str, Any]
             continue
         number = item.get("number")
         if not isinstance(number, int):
-            raise RalphError(f"GitHub listed an issue without a number: {item!r}")
+            raise MacatiaError(f"GitHub listed an issue without a number: {item!r}")
         issues.append({
             "number": number,
             "title": str(item.get("title", "")),
@@ -79,7 +79,7 @@ def parent_from_lookup(completed: subprocess.CompletedProcess[str]) -> dict[str,
         body = None
     if completed.returncode == 0:
         if not isinstance(body, dict) or not isinstance(body.get("number"), int):
-            raise RalphError(f"GitHub returned an invalid parent issue: {completed.stdout!r}")
+            raise MacatiaError(f"GitHub returned an invalid parent issue: {completed.stdout!r}")
         return body
     if (
         isinstance(body, dict)
@@ -88,7 +88,7 @@ def parent_from_lookup(completed: subprocess.CompletedProcess[str]) -> dict[str,
     ):
         return None
     detail = (completed.stderr or "").strip() or (completed.stdout or "").strip()
-    raise RalphError(f"command failed ({' '.join(completed.args)}): {detail}")
+    raise MacatiaError(f"command failed ({' '.join(completed.args)}): {detail}")
 
 
 # The CI diagnostic records these commands as evidence, so the in-memory GitHub
@@ -122,7 +122,7 @@ class GitHub:
         try:
             return json.loads(output)
         except json.JSONDecodeError as error:
-            raise RalphError(
+            raise MacatiaError(
                 f"GitHub returned invalid JSON for {' '.join(arguments)}"
             ) from error
 
@@ -166,7 +166,7 @@ class GitHub:
             "api", f"repos/{self.repository}/compare/{basehead}", "--jq", "{status}"
         ).get("status")
         if status not in COMPARE_STATUSES:
-            raise RalphError(f"GitHub compared {branch} with {sha} as {status!r}")
+            raise MacatiaError(f"GitHub compared {branch} with {sha} as {status!r}")
         # `behind` or `identical`: the branch already contains the commit.
         return status in {"behind", "identical"}
 
@@ -219,7 +219,7 @@ class GitHub:
                 continue
             number, head = pull.get("number"), pull.get("head") or {}
             if not isinstance(number, int) or not isinstance(head.get("ref"), str):
-                raise RalphError(f"GitHub listed a pull request without a number or head: {pull!r}")
+                raise MacatiaError(f"GitHub listed a pull request without a number or head: {pull!r}")
             repository = (head.get("repo") or {}).get("full_name")
             pulls.append({
                 "number": number,

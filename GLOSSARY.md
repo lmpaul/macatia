@@ -1,6 +1,6 @@
-# ralph-kit
+# macatia
 
-Ralph drives coding agents through a run target's children, one at a time, and publishes the verified work as a draft PR for a human to review and merge.
+Macatia drives coding agents through a run target's children, one at a time, and publishes the verified work as a draft PR for a human to review and merge.
 
 ## Work structure
 
@@ -17,11 +17,11 @@ A run target whose closure passes every check now, so `close` would close it wit
 _Avoid_: Finished issue, done issue, candidate
 
 **Parent issue**:
-A run target with sub-issues; its sub-issues are the children Ralph works through.
+A run target with sub-issues; its sub-issues are the children Macatia works through.
 _Avoid_: Epic, spec issue
 
 **Standalone issue**:
-A run target without sub-issues; Ralph works on the issue itself.
+A run target without sub-issues; Macatia works on the issue itself.
 _Avoid_: Single issue, leaf issue
 
 **Child**:
@@ -51,12 +51,12 @@ A ready child with no unsatisfied blocker.
 The state where remaining children exist but every one is waiting on a blocker that cannot complete.
 
 **Trusted author**:
-A GitHub account whose issues and evidence comments Ralph accepts; everything else is ignored.
+A GitHub account whose issues and evidence comments Macatia accepts; everything else is ignored.
 
 ## Running
 
 **Loop**:
-The cycle Ralph repeats for each runnable child: implement, verify, correct if needed, publish, then select the next runnable child.
+The cycle Macatia repeats for each runnable child: implement, verify, correct if needed, publish, then select the next runnable child.
 _Avoid_: Pipeline, workflow
 
 **Child cycle**:
@@ -72,8 +72,8 @@ One execution of the loop against a run target, until no runnable child is left 
 _Avoid_: Runner, execution
 
 **Run branch**:
-The branch a run commits to and publishes from. A run started on the base branch offers to switch to `ralph-kit/issue-<run target>`, creating it from an up-to-date base branch unless it already exists.
-_Avoid_: Work branch, feature branch, Ralph branch
+The branch a run commits to and publishes from. A run started on the base branch offers to switch to `macatia/issue-<run target>`, creating it from an up-to-date base branch unless it already exists.
+_Avoid_: Work branch, feature branch, Macatia branch
 
 **Run worktree**:
 The separate checkout of a run target's run branch, where a run works away from the person's own checkout.
@@ -168,7 +168,7 @@ The automated proof a child's commit is sound: local gates and/or CI checks, eac
 _Avoid_: Checks, mode
 
 **Local gate**:
-A project command Ralph runs in the checkout before publishing.
+A project command Macatia runs in the checkout before publishing.
 _Avoid_: Local check, test step
 
 **CI check**:
@@ -180,7 +180,7 @@ The repository's quality module and manifest, which define the local gates and r
 _Avoid_: Quality config
 
 **Readiness check**:
-The pre-flight inspection (`ralph-kit check`) that a repository and machine can host a run, without running agents or project checks.
+The pre-flight inspection (`macatia check`) that a repository and machine can host a run, without running agents or project checks.
 _Avoid_: Check, doctor, preflight
 
 ## Publication and handoff
@@ -197,31 +197,31 @@ _Avoid_: Success comment, marker
 The commit on which verification passed and which was published.
 
 **Agent working**:
-The lifecycle state of a child a run has started and has neither implemented nor handed to human review; only Ralph sets it. A run that ends without releasing its child leaves it in this state.
+The lifecycle state of a child a run has started and has neither implemented nor handed to human review; only Macatia sets it. A run that ends without releasing its child leaves it in this state.
 _Avoid_: In progress, WIP, claimed, running
 
 **Implemented**:
-The lifecycle state of a child whose work is complete and verified; only Ralph sets it.
+The lifecycle state of a child whose work is complete and verified; only Macatia sets it.
 _Avoid_: Done, closed
 
 **Human review**:
-The lifecycle state of a child or parent handed to a human: either because Ralph stopped on it, or because all children are implemented. Ralph never resumes a child in this state.
+The lifecycle state of a child or parent handed to a human: either because Macatia stopped on it, or because all children are implemented. Macatia never resumes a child in this state.
 _Avoid_: Escalation, stuck
 
 **Handoff comment**:
-The trusted comment Ralph posts on a child when it sends the child to human review, saying why it stopped. Since resets exist, each one carries a hidden marker so a purge can find it; earlier ones carry none.
+The trusted comment Macatia posts on a child when it sends the child to human review, saying why it stopped. Since resets exist, each one carries a hidden marker so a purge can find it; earlier ones carry none.
 _Avoid_: Stop comment, failure comment
 
 **Work started**:
-The label role marking a parent on which Ralph has started work. It is neither a triage label nor a lifecycle label, and it is informational only: Ralph never reads it to decide anything.
+The label role marking a parent on which Macatia has started work. It is neither a triage label nor a lifecycle label, and it is informational only: Macatia never reads it to decide anything.
 _Avoid_: Parent in progress, parent agent-working
 
 **Standalone marker**:
-The label role marking a standalone issue on which a run has started; it is never removed. Like work started, it is neither a triage label nor a lifecycle label, and Ralph never reads it to decide anything.
+The label role marking a standalone issue on which a run has started; it is never removed. Like work started, it is neither a triage label nor a lifecycle label, and Macatia never reads it to decide anything.
 _Avoid_: Standalone label, single-issue flag
 
 **Label role**:
-One of Ralph's ten canonical meanings for a label, mapped to a label name in each repository. Each label role has a fixed colour, chosen by who must act next, whatever name the repository gives it.
+One of Macatia's ten canonical meanings for a label, mapped to a label name in each repository. Each label role has a fixed colour, chosen by who must act next, whatever name the repository gives it.
 
 **Triage labels**:
 The label roles that say whether a child is ready for an agent: needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix. A run also refuses to start on a parent carrying any of them other than ready-for-agent.
@@ -246,17 +246,17 @@ _Avoid_: Parent closure, finish, complete, done (completed is a run's outcome)
 ## Resetting
 
 **Reset**:
-Returning an open run target with no merged child to the state a run can start on as though no run had happened: the run target and its agent working, implemented, or human review children ready for an agent again, its run branch and cumulative draft PR gone, and the records of its earlier runs no longer read by Ralph. The standalone marker stays.
+Returning an open run target with no merged child to the state a run can start on as though no run had happened: the run target and its agent working, implemented, or human review children ready for an agent again, its run branch and cumulative draft PR gone, and the records of its earlier runs no longer read by Macatia. The standalone marker stays.
 _Avoid_: Rollback, undo, clean, rewind, restart
 
 **Resettable run target**:
-A run target a reset would act on now: open, with no merged child, and carrying the trace of a run: a child agent working, implemented, or in human review, a parent marked work started or human review, a run branch named after it, or an open cumulative draft PR; for a purge, a reset marker, or any other of Ralph's own comments left on it, is such a trace too. A reset started without a run target offers these to choose from.
+A run target a reset would act on now: open, with no merged child, and carrying the trace of a run: a child agent working, implemented, or in human review, a parent marked work started or human review, a run branch named after it, or an open cumulative draft PR; for a purge, a reset marker, or any other of Macatia's own comments left on it, is such a trace too. A reset started without a run target offers these to choose from.
 _Avoid_: Stale issue, failed issue, candidate
 
 **Reset marker**:
-The trusted comment a reset leaves on the run target and on each child it made ready for an agent again; Ralph reads none of its own records older than it on that issue. The one on the run target recaps what the reset undid.
+The trusted comment a reset leaves on the run target and on each child it made ready for an agent again; Macatia reads none of its own records older than it on that issue. The one on the run target recaps what the reset undid.
 _Avoid_: Reset comment, barrier
 
 **Purge**:
-A reset that deletes Ralph's own comments on the run target and its children instead of leaving reset markers, so that no later agent session reads them. The issues' timelines and the closed cumulative draft PR remain.
+A reset that deletes Macatia's own comments on the run target and its children instead of leaving reset markers, so that no later agent session reads them. The issues' timelines and the closed cumulative draft PR remain.
 _Avoid_: Hard reset, full reset, wipe

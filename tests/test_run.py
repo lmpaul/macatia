@@ -20,9 +20,9 @@ from unittest import mock
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1] / "src"))
 
-from ralph_kit import check, cli, loop, loop_core
-from ralph_kit.commands import RalphError
-from ralph_kit.persistent_terminal import Continuation, Unavailability
+from macatia import check, cli, loop, loop_core
+from macatia.commands import MacatiaError
+from macatia.persistent_terminal import Continuation, Unavailability
 from run_support import (
     BRANCH,
     REPOSITORY,
@@ -54,7 +54,7 @@ CLOSED_BLOCKER = 192
 CHILD = 193
 UNTRUSTED_COMMENT = "Untrusted instructions must be excluded."
 # Pinned here: the handoff marker is persisted in GitHub comments, so its text never changes.
-HANDOFF_MARKER = "<!-- ralph-handoff -->"
+HANDOFF_MARKER = "<!-- macatia-handoff -->"
 COMMITS_STAY = (
     "This child's commits stay on the branch and will count as its work if it is "
     "relabelled `ready-for-agent`."
@@ -101,13 +101,13 @@ class SingleChildHappyPathTests(unittest.TestCase):
 
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
         evidence = self.github.comments(CHILD)[-1]
-        self.assertIn(f"Ralph verified implementation commits `{base_sha}..{commits[0]}`", evidence)
+        self.assertIn(f"Macatia verified implementation commits `{base_sha}..{commits[0]}`", evidence)
         self.assertIn(f"Applicable local gates and canonical CI are green for exact head `{head}`", evidence)
 
         pull = self.github.pull_request()
         self.assertEqual((pull.base, pull.head), ("main", BRANCH))
         self.assertFalse(pull.is_draft)
-        self.assertIn(f"🏁 Ralph summary for parent #{PARENT}:\n", pull.comments[-1])
+        self.assertIn(f"🏁 Macatia summary for parent #{PARENT}:\n", pull.comments[-1])
         self.assertIn("- implemented children this run: 1\n", pull.comments[-1])
 
         self.assertEqual(self.github.labels(PARENT), {"human-review"})
@@ -130,10 +130,10 @@ class SingleChildHappyPathTests(unittest.TestCase):
 
         commits, evidence = self.assert_child_published(result, sessions=1, commit_count=1)
         self.assert_implementation_prompt_names_only_the_issue(sessions)
-        self.assertIn("ralph-experimental-implementation-evidence", evidence)
-        self.assertIn("No separate Ralph review session was run.", evidence)
+        self.assertIn("macatia-experimental-implementation-evidence", evidence)
+        self.assertIn("No separate Macatia review session was run.", evidence)
         self.assertIn(f"verified head `{commits[0]}` with no corrections", evidence)
-        self.assertIn("<!-- ralph-experimental-parent-completion -->", self.github.comments(PARENT)[-2])
+        self.assertIn("<!-- macatia-experimental-parent-completion -->", self.github.comments(PARENT)[-2])
 
     def test_reviewed_run_publishes_the_review_session_fix(self):
         sessions = ScriptedSessions(
@@ -148,9 +148,9 @@ class SingleChildHappyPathTests(unittest.TestCase):
         commits, evidence = self.assert_child_published(result, sessions=2, commit_count=2)
         self.assert_implementation_prompt_names_only_the_issue(sessions)
         self.assertIn(f"Review the exact `{self.repository.base_sha}...{commits[0]}` diff", sessions.prompts[1])
-        self.assertIn("<!-- ralph-implementation-evidence: ", evidence)
+        self.assertIn("<!-- macatia-implementation-evidence: ", evidence)
         self.assertIn(f"corrective review commits `{commits[0]}..{commits[1]}`", evidence)
-        self.assertIn("<!-- ralph-parent-completion -->", self.github.comments(PARENT)[-2])
+        self.assertIn("<!-- macatia-parent-completion -->", self.github.comments(PARENT)[-2])
 
 
 BLOCKER = 193
@@ -177,7 +177,7 @@ def worst_case_child_results(mode):
 
 
 def set_child_session_limit(repository, **limits):
-    """Configure `[child_session_limit]` in `repository`'s ralph.toml with `limits`."""
+    """Configure `[child_session_limit]` in `repository`'s macatia.toml with `limits`."""
     table = "".join(f"{key} = {value}\n" for key, value in limits.items())
     repository.edit_configuration(
         "[verification]\n", f"[child_session_limit]\n{table}\n[verification]\n"
@@ -348,12 +348,12 @@ class BlockerTests(RunLevelTestCase):
 
     def test_github_error_during_the_pull_request_lookup_of_a_blocker_stops_after_the_infrastructure_retries(self):
         verified_head = self.commit_off_the_branch()
-        self.github.commit_pulls[verified_head] = RalphError("gh api failed: HTTP 503: Service Unavailable")
+        self.github.commit_pulls[verified_head] = MacatiaError("gh api failed: HTTP 503: Service Unavailable")
         self.add_implemented_blocker_and_dependent(
             implementation_evidence(loop_core.STANDARD_RUN, verified_head)
         )
 
-        with mock.patch.dict(os.environ, {"RALPH_INFRA_RETRY_SECONDS": "30"}):
+        with mock.patch.dict(os.environ, {"MACATIA_INFRA_RETRY_SECONDS": "30"}):
             result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_stopped_before_any_session(
@@ -603,7 +603,7 @@ class AgentWorkingTests(RunLevelTestCase):
 
     def test_failed_agent_working_label_write_stops_before_any_session(self):
         self.github.add_issue(CHILD, parent=PARENT)
-        self.github.label_edit_error = RalphError("gh issue edit failed: HTTP 502")
+        self.github.label_edit_error = MacatiaError("gh issue edit failed: HTTP 502")
 
         result = self.start(loop_core.STANDARD_RUN)
 
@@ -637,13 +637,13 @@ class HandoffMarkerTests(RunLevelTestCase):
 
                 self.assertEqual(result.exit_code, 1, result.stderr)
                 self.assert_handoffs_alone_carry_the_marker({
-                    CHILD: "Ralph stopped because implementation reported blocked: Needs a product "
+                    CHILD: "Macatia stopped because implementation reported blocked: Needs a product "
                     f"decision. This child remains open for human review.\n\n{COMMITS_STAY}",
                 })
 
     def test_handoff_without_commits_carries_the_marker_in_both_run_modes(self):
         deadlock = (
-            "Ralph stopped because the parent has a dependency deadlock. This child remains "
+            "Macatia stopped because the parent has a dependency deadlock. This child remains "
             "open for human review."
         )
         for mode in MODES:
@@ -699,7 +699,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
     def assert_warning(self, text, *children):
         names = ", ".join(f"#{child}" for child in children)
         self.assertIn(f"{names} labelled agent-working", text)
-        self.assertIn("Ralph cannot tell an interrupted run from a run still active elsewhere", text)
+        self.assertIn("Macatia cannot tell an interrupted run from a run still active elsewhere", text)
         self.assertIn("two agents do the same work on two branches", text)
         self.assertNotIn("not covered by their implementation evidence", text)
 
@@ -714,7 +714,7 @@ class LeftAgentWorkingTests(RunLevelTestCase):
             )
             self.assertIn(
                 f"- If no other run is working on this parent, inspect the branch, relabel "
-                f"#{child} ready-for-agent, then run `ralph-kit run {PARENT}` again.",
+                f"#{child} ready-for-agent, then run `macatia run {PARENT}` again.",
                 summary,
             )
         self.assertNotIn("Fix the stop reason", summary)
@@ -865,7 +865,7 @@ class ConcurrentRunTests(RunLevelTestCase):
             )
             self.assertIn(
                 f"- Another run is working on #{DEPENDENT}: find and stop the run that should "
-                f"not be running, then run `ralph-kit run {PARENT}` again if this one should "
+                f"not be running, then run `macatia run {PARENT}` again if this one should "
                 "continue.",
                 published,
             )
@@ -950,7 +950,7 @@ class ChildBaseTests(RunLevelTestCase):
 
     def assert_evidence_starts_from(self, child_base):
         evidence = self.github.comments(CHILD)[-1]
-        self.assertIn(f"Ralph verified implementation commits `{child_base}..", evidence)
+        self.assertIn(f"Macatia verified implementation commits `{child_base}..", evidence)
 
     def test_child_cycle_start_records_the_child_base_after_marking_the_child_agent_working(self):
         self.github.add_issue(CHILD, parent=PARENT)
@@ -1098,7 +1098,7 @@ class ChildBaseTests(RunLevelTestCase):
 
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.child_bases(CHILD)[-1], head)
-        self.assertNotIn("Ralph started from the current branch head", self.start_comment(CHILD))
+        self.assertNotIn("Macatia started from the current branch head", self.start_comment(CHILD))
         self.assert_evidence_starts_from(head)
 
     def test_child_base_after_the_reset_marker_or_before_an_untrusted_one_is_resumed(self):
@@ -1292,7 +1292,7 @@ class ChildBaseTests(RunLevelTestCase):
 
 
 class RunUsageCommandLineTests(unittest.TestCase):
-    """`ralph-kit run` usage errors name the program as invoked, with the review flags given."""
+    """`macatia run` usage errors name the program as invoked, with the review flags given."""
 
     def usage_error(self, *arguments):
         stderr = io.StringIO()
@@ -1305,23 +1305,23 @@ class RunUsageCommandLineTests(unittest.TestCase):
         self.assertEqual(exit.exception.code, 2)
         return stderr.getvalue()
 
-    def test_standard_run_usage_names_ralph_kit_run(self):
+    def test_standard_run_usage_names_macatia_run(self):
         for arguments in (("0",), ("--caffeinate", "abc")):
             with self.subTest(arguments=arguments):
                 error = self.usage_error(*arguments)
-                self.assertTrue(error.startswith("usage: ralph-kit run [-h]"), error)
+                self.assertTrue(error.startswith("usage: macatia run [-h]"), error)
                 self.assertIn("must be a positive integer", error)
 
-    def test_reviewed_run_usage_names_ralph_kit_run_review(self):
+    def test_reviewed_run_usage_names_macatia_run_review(self):
         for arguments in (("--review", "0"), ("0", "--review", "--caffeinate")):
             with self.subTest(arguments=arguments):
                 error = self.usage_error(*arguments)
-                self.assertTrue(error.startswith("usage: ralph-kit run --review [-h]"), error)
+                self.assertTrue(error.startswith("usage: macatia run --review [-h]"), error)
                 self.assertIn("must be a positive integer", error)
 
-    def test_standard_run_usage_names_ralph_kit_run_no_review(self):
+    def test_standard_run_usage_names_macatia_run_no_review(self):
         error = self.usage_error("0", "--no-review")
-        self.assertTrue(error.startswith("usage: ralph-kit run --no-review [-h]"), error)
+        self.assertTrue(error.startswith("usage: macatia run --no-review [-h]"), error)
         self.assertIn("must be a positive integer", error)
 
     def test_usage_shows_the_issue_as_optional(self):
@@ -1336,7 +1336,7 @@ class RunUsageCommandLineTests(unittest.TestCase):
         self.assertIn("--tmux asks", stdout.getvalue())
         self.assertIn("--worktree offers", stdout.getvalue())
         self.assertIn("<repository>.worktrees/issue-<run target>", stdout.getvalue())
-        self.assertIn("ralph-kit-<repository name>-<run target>", stdout.getvalue())
+        self.assertIn("macatia-<repository name>-<run target>", stdout.getvalue())
         self.assertNotIn("budget", stdout.getvalue().lower())
         self.assertIn(
             "Without ISSUE, at a terminal, offers the startable run targets to choose from.\n",
@@ -1345,12 +1345,12 @@ class RunUsageCommandLineTests(unittest.TestCase):
 
     def test_run_usage_names_the_issue(self):
         error = self.usage_error("abc")
-        self.assertIn("usage: ralph-kit run [-h] [--config CONFIG] [ISSUE]\n", error)
+        self.assertIn("usage: macatia run [-h] [--config CONFIG] [ISSUE]\n", error)
         self.assertIn("argument ISSUE: must be a positive integer", error)
 
     def test_a_second_number_is_an_unrecognized_argument(self):
         error = self.usage_error("123", "10")
-        self.assertIn("usage: ralph-kit run [-h] [--config CONFIG] [ISSUE]\n", error)
+        self.assertIn("usage: macatia run [-h] [--config CONFIG] [ISSUE]\n", error)
         self.assertIn("error: unrecognized arguments: 10", error)
 
     def test_review_and_no_review_together_are_a_usage_error(self):
@@ -1361,7 +1361,7 @@ class RunUsageCommandLineTests(unittest.TestCase):
 
 
 class BakeCommandLineTests(unittest.TestCase):
-    """`ralph-kit bake` is an undocumented alias of `ralph-kit run`."""
+    """`macatia bake` is an undocumented alias of `macatia run`."""
 
     def run_call(self, command):
         with (
@@ -1383,10 +1383,10 @@ class BakeCommandLineTests(unittest.TestCase):
 
 
 class StartupChoiceCommandLineTests(unittest.TestCase):
-    """`ralph-kit run` asks the startup question with the arrow keys only in a terminal."""
+    """`macatia run` asks the startup question with the arrow keys only in a terminal."""
 
     def adapters_passed(self, *, stdin_tty, stdout_tty, review=False):
-        """The startup choice and run target picker `ralph-kit run` passes to the run."""
+        """The startup choice and run target picker `macatia run` passes to the run."""
         with (
             mock.patch.object(sys.stdin, "isatty", return_value=stdin_tty),
             mock.patch.object(sys.stdout, "isatty", return_value=stdout_tty),
@@ -1431,7 +1431,7 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
             ):
                 self.assertEqual(cli.run_target_with_arrows(targets, preselected), 20)
                 select.assert_called_once_with(
-                    "Which run target should Ralph run?",
+                    "Which run target should Macatia run?",
                     [("#12  Add a cart  (parent · 3 ready children)", ""),
                      ("#20  Fix login  (standalone)", "")],
                     default,
@@ -1446,7 +1446,7 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
             cli.run_target_with_arrows(targets, None)
 
     def test_continuation_selector_offers_restart_by_default_with_descriptions(self):
-        name = "ralph-kit-buyr-5"
+        name = "macatia-buyr-5"
         for choice, continuation in (
             (f"Restart in {name}", Continuation.RESTART),
             ("Continue here", Continuation.CONTINUE_HERE),
@@ -1473,7 +1473,7 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
             mock.patch.object(check, "arrow_select", side_effect=KeyboardInterrupt),
             self.assertRaises(KeyboardInterrupt),
         ):
-            cli.continuation_with_arrows("ralph-kit-buyr-5")
+            cli.continuation_with_arrows("macatia-buyr-5")
 
     def test_selector_offers_stop_by_default_and_resumes_only_on_resume(self):
         for choice, resume in (("Stop", False), ("Resume", True)):
@@ -1490,7 +1490,7 @@ class StartupChoiceCommandLineTests(unittest.TestCase):
                 )
 
     def test_selector_can_offer_the_accepting_choice_by_default(self):
-        question = "Create ralph-kit/issue-5 from an up-to-date main?"
+        question = "Create macatia/issue-5 from an up-to-date main?"
         for choice, create in (("Create", True), ("Stop", False)):
             with (
                 self.subTest(choice=choice),
@@ -1541,7 +1541,7 @@ class ParentCompletionTests(ParentLabelTestCase):
         self.assertIn("implemented children this run: 0", result.stdout)
         self.assertEqual(self.github.labels(PARENT), {"human-review", "documentation"})
         parent_comments = self.github.comments(PARENT)
-        self.assertIn("<!-- ralph-experimental-parent-completion -->", parent_comments[-2])
+        self.assertIn("<!-- macatia-experimental-parent-completion -->", parent_comments[-2])
         self.assertIn("all 2 children complete", parent_comments[-2])
         self.assertIn("- final outcome: completed", parent_comments[-1])
 
@@ -1743,7 +1743,7 @@ class ParentWorkStartedTests(ParentLabelTestCase):
         # The parent write is the next label edit after the child is marked agent working.
         def fail_the_parent_write(number, add, remove):
             if number == CHILD and add == "agent-working":
-                self.github.label_edit_error = RalphError("gh issue edit failed: HTTP 502")
+                self.github.label_edit_error = MacatiaError("gh issue edit failed: HTTP 502")
 
         self.github.after_label_edit = fail_the_parent_write
 
@@ -1752,12 +1752,12 @@ class ParentWorkStartedTests(ParentLabelTestCase):
         self.assert_completed(result, sessions=1)
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
         warning = (
-            f"Ralph could not label parent #{PARENT} work-started: gh issue edit failed: HTTP 502."
+            f"Macatia could not label parent #{PARENT} work-started: gh issue edit failed: HTTP 502."
         )
         self.assertIn(f"⚠️  {warning}", result.stdout)
         summary = self.github.comments(PARENT)[-1]
         self.assertIn("- final outcome: completed", summary)
-        for printed in (summary, result.stdout.split("🏁 Ralph summary")[-1]):
+        for printed in (summary, result.stdout.split("🏁 Macatia summary")[-1]):
             self.assertIn(f"- warning: {warning}", printed)
 
     def test_parent_and_children_never_get_the_standalone_marker(self):
@@ -1792,23 +1792,23 @@ class RepeatedRunTests(RunLevelTestCase):
         self.assertIn("- agent sessions: 1\n", first_summary)
         self.assertIn("- implemented children this run: 0\n", second_summary)
         self.assertIn("- agent sessions: 0\n", second_summary)
-        runs = list((self.repository.path / ".ralph" / "diagnostics").glob("*/run.json"))
+        runs = list((self.repository.path / ".macatia" / "diagnostics").glob("*/run.json"))
         self.assertEqual(len(runs), 2)
 
 
 class RunDiagnosticsTests(RunLevelTestCase):
-    """The repository's own ignore rules say nothing about `.ralph/`."""
+    """The repository's own ignore rules say nothing about `.macatia/`."""
 
     def setUp(self):
         super().setUp()
         self.github.add_issue(CHILD, parent=PARENT)
         ignored = subprocess.run(
-            ["git", "check-ignore", "--quiet", ".ralph/"], cwd=self.repository.path, check=False
+            ["git", "check-ignore", "--quiet", ".macatia/"], cwd=self.repository.path, check=False
         )
-        self.assertEqual(ignored.returncode, 1, "the fixture must not ignore .ralph/")
+        self.assertEqual(ignored.returncode, 1, "the fixture must not ignore .macatia/")
 
     def test_run_diagnostics_never_make_the_worktree_dirty(self):
-        # Real session handling records each session in `.ralph/` and checks the worktree after it.
+        # Real session handling records each session in `.macatia/` and checks the worktree after it.
         engine = ScriptedEngine(self.repository, EngineResult(), EngineResult())
         result = start_mode_run(loop_core.REVIEWED_RUN, self.repository, self.github, engine, PARENT)
 
@@ -1820,7 +1820,7 @@ class RunDiagnosticsTests(RunLevelTestCase):
     def test_maintainer_files_in_the_diagnostics_directory_are_kept(self):
         own = {".gitignore": "# Kept by the maintainer\n*\n", "notes.txt": "Mine.\n"}
         for name, text in own.items():
-            path = self.repository.path / ".ralph" / name
+            path = self.repository.path / ".macatia" / name
             path.parent.mkdir(exist_ok=True)
             path.write_text(text, encoding="utf-8")
 
@@ -1828,7 +1828,7 @@ class RunDiagnosticsTests(RunLevelTestCase):
 
         self.assert_completed(result, sessions=1)
         for name, text in own.items():
-            self.assertEqual((self.repository.path / ".ralph" / name).read_text(encoding="utf-8"), text)
+            self.assertEqual((self.repository.path / ".macatia" / name).read_text(encoding="utf-8"), text)
         self.assertTrue(self.repository.is_clean())
 
 
@@ -1924,14 +1924,14 @@ class StartupTests(StartupRejectionTestCase):
                     )
 
                     self.assertEqual(result.exit_code, 2)
-                    self.assert_rejected_at_startup(result, "pass the issue to run: ralph-kit run ISSUE")
+                    self.assert_rejected_at_startup(result, "pass the issue to run: macatia run ISSUE")
                     self.assertEqual(self.github.opened_for, [])
                     self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
                     if confirm is not None:
                         self.assertEqual(confirm.questions, [])
 
 
-RUN_BRANCH = f"ralph-kit/issue-{PARENT}"
+RUN_BRANCH = f"macatia/issue-{PARENT}"
 
 
 class BaseBranchTestCase(StartupRejectionTestCase):
@@ -2233,7 +2233,7 @@ class RunBranchTests(BaseBranchTestCase):
         git(self.repository.path, "branch", "-D", RUN_BRANCH)
         # A ref where the fetch must create a directory makes it fail to update the tracking ref.
         git(self.repository.path, "update-ref", "-d", f"refs/remotes/origin/{RUN_BRANCH}")
-        git(self.repository.path, "update-ref", "refs/remotes/origin/ralph-kit", "HEAD")
+        git(self.repository.path, "update-ref", "refs/remotes/origin/macatia", "HEAD")
 
         result = self.start(loop_core.STANDARD_RUN, confirm=ScriptedConfirm(SWITCH))
 
@@ -2344,7 +2344,7 @@ class SubIssueRunTargetTests(BaseBranchTestCase):
         self.assertEqual(confirm.questions, [])
 
     def test_failed_parent_lookup_stops_the_run_as_an_error(self):
-        self.github.parent_error[PARENT] = RalphError(
+        self.github.parent_error[PARENT] = MacatiaError(
             f"command failed (gh api repos/lmpaul/buyr/issues/{PARENT}/parent): "
             "gh: Server Error (HTTP 502)"
         )
@@ -2429,7 +2429,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
         result = self.start(loop_core.STANDARD_RUN)
 
         self.assert_rejected_at_startup(result, "unknown keys: local_gates, mode")
-        self.assertIn("upgrade with `uv tool upgrade ralph-kit --reinstall`", result.stderr)
+        self.assertIn("upgrade with `uv tool upgrade macatia --reinstall`", result.stderr)
 
     def test_duplicate_toml_key_is_rejected_before_any_session(self):
         self.repository.edit_configuration("ci_checks = true\n", "ci_checks = true\nci_checks = true\n")
@@ -2485,7 +2485,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
         )
 
     def remove_review_profile(self):
-        configuration = (self.repository.path / "ralph.toml").read_text(encoding="utf-8")
+        configuration = (self.repository.path / "macatia.toml").read_text(encoding="utf-8")
         review_profile = re.search(r"\[models\.review\]\n.*?\n\n", configuration, flags=re.S).group(0)
         self.repository.edit_configuration(review_profile, "")
 
@@ -2586,7 +2586,7 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
 
 
 REVIEW_BY_DEFAULT_NOTICE = (
-    "ℹ️ review_by_default is on in ralph.toml: this is a reviewed run, with a review "
+    "ℹ️ review_by_default is on in macatia.toml: this is a reviewed run, with a review "
     "session per child. Use --no-review for a standard run."
 )
 
@@ -2607,16 +2607,16 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
 
     def assert_reviewed_run_completed(self, result):
         self.assert_completed(result, sessions=2)
-        self.assertIn("<!-- ralph-implementation-evidence: ", self.github.comments(CHILD)[-1])
-        self.assertIn("<!-- ralph-parent-completion -->", self.github.comments(PARENT)[-2])
+        self.assertIn("<!-- macatia-implementation-evidence: ", self.github.comments(CHILD)[-1])
+        self.assertIn("<!-- macatia-parent-completion -->", self.github.comments(PARENT)[-2])
 
     def assert_standard_run_completed(self, result):
         self.assert_completed(result, sessions=1)
-        self.assertIn("ralph-experimental-implementation-evidence", self.github.comments(CHILD)[-1])
-        self.assertIn("<!-- ralph-experimental-parent-completion -->", self.github.comments(PARENT)[-2])
+        self.assertIn("macatia-experimental-implementation-evidence", self.github.comments(CHILD)[-1])
+        self.assertIn("<!-- macatia-experimental-parent-completion -->", self.github.comments(PARENT)[-2])
 
     def remove_review_profile(self):
-        configuration = (self.repository.path / "ralph.toml").read_text(encoding="utf-8")
+        configuration = (self.repository.path / "macatia.toml").read_text(encoding="utf-8")
         review_profile = re.search(r"\[models\.review\]\n.*?\n\n", configuration, flags=re.S).group(0)
         self.repository.edit_configuration(review_profile, "")
 
@@ -2701,12 +2701,12 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
 
 
 CAFFEINATE_BY_DEFAULT_NOTICE = (
-    "ℹ️ caffeinate_by_default is on in ralph.toml: this run holds a sleep lock until it "
+    "ℹ️ caffeinate_by_default is on in macatia.toml: this run holds a sleep lock until it "
     "ends. Use --no-caffeinate to let the machine sleep."
 )
 
 
-def set_caffeinate_by_default(repository, value="true", path="ralph.toml"):
+def set_caffeinate_by_default(repository, value="true", path="macatia.toml"):
     repository.edit_configuration(
         'trusted_authors = ["lmpaul"]\n',
         f'trusted_authors = ["lmpaul"]\ncaffeinate_by_default = {value}\n',
@@ -2756,7 +2756,7 @@ class SleepLockTests(StartupRejectionTestCase):
 
     def test_missing_or_invalid_configuration_stops_without_taking_the_sleep_lock(self):
         for name, break_configuration, reason in (
-            ("missing", lambda: (self.repository.path / "ralph.toml").unlink(), "ralph.toml"),
+            ("missing", lambda: (self.repository.path / "macatia.toml").unlink(), "macatia.toml"),
             ("invalid", lambda: set_review_by_default(self.repository, '"yes"'),
              "configuration.review_by_default must be a boolean"),
         ):
@@ -2854,12 +2854,12 @@ class SleepLockTests(StartupRejectionTestCase):
 
     def test_setting_in_the_configuration_given_by_config_holds_the_sleep_lock(self):
         (self.repository.path / "config").mkdir()
-        git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
-        git(self.repository.path, "commit", "-m", "Move the Ralph configuration")
-        set_caffeinate_by_default(self.repository, path="config/ralph.toml")
+        git(self.repository.path, "mv", "macatia.toml", "config/macatia.toml")
+        git(self.repository.path, "commit", "-m", "Move the Macatia configuration")
+        set_caffeinate_by_default(self.repository, path="config/macatia.toml")
         results = passing_child_results(loop_core.STANDARD_RUN)
 
-        result = self.start_with("--config", "config/ralph.toml", PARENT, results=results)
+        result = self.start_with("--config", "config/macatia.toml", PARENT, results=results)
 
         self.assert_completed(result, sessions=len(results))
         self.assertEqual(result.sleep_lock.taken, 1)
@@ -2976,7 +2976,7 @@ CI_LOG = "\n".join([
     *(f"CI progress {index}" for index in range(100)),
     "last CI log line",
 ])
-# The secrets the scripted local gate prints when it fails; Ralph must never repeat them.
+# The secrets the scripted local gate prints when it fails; Macatia must never repeat them.
 GATE_SECRETS = ("super-secret", "hidden-token", "bearer-secret", "user:password", "```escaped fence")
 
 
@@ -3209,7 +3209,7 @@ class CIEvidenceTests(VerificationTestCase):
         self.new_child_run()
 
         with mock.patch.dict(os.environ):
-            os.environ.pop("RALPH_CI_POLL_SECONDS", None)
+            os.environ.pop("MACATIA_CI_POLL_SECONDS", None)
             result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
         self.assert_implemented(result)
@@ -3224,7 +3224,7 @@ class CIEvidenceTests(VerificationTestCase):
         )
 
         with mock.patch.dict(os.environ):
-            os.environ.pop("RALPH_CI_POLL_SECONDS", None)
+            os.environ.pop("MACATIA_CI_POLL_SECONDS", None)
             result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed", path=PERSISTENCE_PATH))
 
         self.assert_implemented(result)
@@ -3358,7 +3358,7 @@ class VerificationConfigurationTests(VerificationTestCase):
 
         evidence = self.assert_implemented(result)
         self.assertEqual(self.roles(), ["implementation", "CI correction"])
-        self.assertIn("Local quality gates are disabled by Ralph configuration.", result.stdout)
+        self.assertIn("Local quality gates are disabled by Macatia configuration.", result.stdout)
         self.assertEqual(self.repository.local_gate_heads(), [])
         commits = self.repository.commits_since(self.repository.base_sha)
         self.assertEqual(self.github.checked_heads, commits)
@@ -3427,7 +3427,7 @@ class InterruptedRunTests(VerificationTestCase):
         action replaces."""
         self.assertEqual(result.exit_code, exit_code, result.stderr)
         summary = self.github.comments(PARENT)[-1]
-        rerun = f"Ralph was interrupted: run `ralph-kit run {PARENT}` again to continue."
+        rerun = f"Macatia was interrupted: run `macatia run {PARENT}` again to continue."
         for published in (summary, result.stderr):
             self.assertIn("- final outcome: interrupted", published)
             self.assertIn(f"Stop reason: interrupted by {signal_name}", published)
@@ -3443,7 +3443,7 @@ class InterruptedRunTests(VerificationTestCase):
         self.assertEqual(len(self.github.reports(CHILD)), 1)
         handoff = self.github.reports(CHILD)[0]
         self.assertTrue(handoff.startswith(
-            f"{HANDOFF_MARKER}\nRalph stopped because the run was interrupted"
+            f"{HANDOFF_MARKER}\nMacatia stopped because the run was interrupted"
         ), handoff)
         self.assertIn(unverified, handoff)
         self.assertIn(COMMITS_STAY, handoff)
@@ -3457,7 +3457,7 @@ class InterruptedRunTests(VerificationTestCase):
             self.assertIn(
                 f"- #{CHILD} was interrupted: inspect the unverified commits {unverified}, "
                 f"then close it or relabel it ready-for-agent and run "
-                f"`ralph-kit run {PARENT}` again.",
+                f"`macatia run {PARENT}` again.",
                 published,
             )
 
@@ -3583,9 +3583,9 @@ class InterruptedRunTests(VerificationTestCase):
         self.assertEqual(result.exit_code, 130)
         self.assertIn("- final outcome: interrupted", self.github.comments(PARENT)[-1])
         self.assertIn(
-            "Ralph was interrupted again; exiting without finishing the cleanup.", result.stderr
+            "Macatia was interrupted again; exiting without finishing the cleanup.", result.stderr
         )
-        self.assertNotIn("Ralph summary", result.stderr)
+        self.assertNotIn("Macatia summary", result.stderr)
 
     def test_second_interruption_during_the_release_leaves_the_child_agent_working(self):
         def interrupt_again(number, body):
@@ -3601,7 +3601,7 @@ class InterruptedRunTests(VerificationTestCase):
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
         self.assertEqual(self.github.comments(PARENT), [])
         self.assertIn(
-            "Ralph was interrupted again; exiting without finishing the cleanup.", result.stderr
+            "Macatia was interrupted again; exiting without finishing the cleanup.", result.stderr
         )
 
     def test_simulated_process_death_is_neither_caught_nor_reported(self):
@@ -3634,7 +3634,7 @@ class InfrastructureRetryTests(VerificationTestCase):
             with self.subTest(conclusion):
                 self.new_child_run(ci=(conclusion,))
 
-                with mock.patch.dict(os.environ, {"RALPH_INFRA_RETRY_SECONDS": "30"}):
+                with mock.patch.dict(os.environ, {"MACATIA_INFRA_RETRY_SECONDS": "30"}):
                     result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
                 self.assert_stopped_after_infrastructure_retries(
@@ -3646,7 +3646,7 @@ class InfrastructureRetryTests(VerificationTestCase):
     def test_authentication_failures_and_service_outages_are_infrastructure_failures(self):
         for failure in ("HTTP 401: Bad credentials", "HTTP 503: Service Unavailable"):
             with self.subTest(failure):
-                self.new_child_run(ci=(RalphError(f"gh api failed: {failure}"),))
+                self.new_child_run(ci=(MacatiaError(f"gh api failed: {failure}"),))
 
                 result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
@@ -3709,7 +3709,7 @@ class ChildSessionLimitTests(VerificationTestCase):
         self.assertEqual(self.github.labels(child), {"human-review"})
         handoff = self.github.comments(child)[-1]
         self.assertTrue(handoff.startswith(
-            f"{HANDOFF_MARKER}\nRalph stopped before {role} because the child session limit of {limit} "
+            f"{HANDOFF_MARKER}\nMacatia stopped before {role} because the child session limit of {limit} "
             f"({mode} run) was exhausted. This child remains open for human review."
         ), handoff)
         self.assertIn(COMMITS_STAY, handoff)
@@ -3888,7 +3888,7 @@ class StopSummaryTests(VerificationTestCase):
             f"Stop reason: parent issue #{PARENT} has children remaining but none is runnable",
             f"Remaining children:\n- #{DEPENDENT}: labelled ready-for-human.",
             f"Next action:\n- #{DEPENDENT} is labelled ready-for-human: implement and close it, "
-            f"or relabel it ready-for-agent, then run `ralph-kit run --review {PARENT}` again.",
+            f"or relabel it ready-for-agent, then run `macatia run --review {PARENT}` again.",
         )
 
     def test_child_waiting_on_an_unimplemented_blocker_names_the_blocker(self):
@@ -3901,7 +3901,7 @@ class StopSummaryTests(VerificationTestCase):
         self.assert_stop_summary(
             result,
             f"- #{CHILD}: labelled needs-info.\n- #{DEPENDENT}: waiting on #{CHILD}, which is not implemented.",
-            f"- #{DEPENDENT} waits on #{CHILD}: implement or close it, then run `ralph-kit run {PARENT}` again.",
+            f"- #{DEPENDENT} waits on #{CHILD}: implement or close it, then run `macatia run {PARENT}` again.",
         )
 
     def test_dependency_deadlock_names_the_blocked_children_and_their_blockers(self):
@@ -3917,7 +3917,7 @@ class StopSummaryTests(VerificationTestCase):
             f"- #{BLOCKER}: part of a dependency deadlock, waiting on #{DEPENDENT}.",
             f"- #{DEPENDENT}: part of a dependency deadlock, waiting on #{BLOCKER}.",
             f"- #{BLOCKER} is part of a dependency deadlock with #{DEPENDENT}: remove a blocked-by "
-            f"link from the cycle, relabel it ready-for-agent, then run `ralph-kit run {PARENT}` again.",
+            f"link from the cycle, relabel it ready-for-agent, then run `macatia run {PARENT}` again.",
         )
 
     def test_child_handed_to_human_review_links_its_handoff_comment(self):
@@ -3938,7 +3938,7 @@ class StopSummaryTests(VerificationTestCase):
                 result = self.start(mode, *results)
 
                 handoff = self.github.latest_comment_url(CHILD)
-                command = f"ralph-kit run{' --review' if mode.review else ''} {PARENT}"
+                command = f"macatia run{' --review' if mode.review else ''} {PARENT}"
                 self.assert_stop_summary(
                     result,
                     f"Stop reason: {reason}",
@@ -3963,7 +3963,7 @@ class StopSummaryTests(VerificationTestCase):
             "Stop reason: child session limit exhausted before issue correction",
             f"- #{CHILD}: handed to human review ({self.github.latest_comment_url(CHILD)}).",
             f"Next action:\n- #{CHILD} was handed to human review because its child session "
-            f"limit was exhausted: relabel it ready-for-agent, then run `ralph-kit run --review "
+            f"limit was exhausted: relabel it ready-for-agent, then run `macatia run --review "
             f"{PARENT}` again; each run gives a child a fresh child session limit.",
         )
 
@@ -3979,7 +3979,7 @@ class StopSummaryTests(VerificationTestCase):
             f"{CANONICAL_CHECK} concluded cancelled",
             f"Next action:\n- #{CHILD} was handed to human review because CI evidence could not "
             "be obtained within the infrastructure retries: once GitHub Actions is healthy, "
-            f"relabel it ready-for-agent, then run `ralph-kit run {PARENT}` again.",
+            f"relabel it ready-for-agent, then run `macatia run {PARENT}` again.",
         )
 
     def test_crash_names_the_exception_and_points_to_the_run_diagnostics(self):
@@ -3990,34 +3990,34 @@ class StopSummaryTests(VerificationTestCase):
         summary = self.github.comments(PARENT)[-1]
         self.assertIn("- final outcome: crashed", summary)
         self.assertIn("Stop reason: ValueError: the adapter broke with token=[REDACTED]", summary)
-        self.assertIn(f"Ralph crashed: inspect the run diagnostics in `{directory}`", summary)
+        self.assertIn(f"Macatia crashed: inspect the run diagnostics in `{directory}`", summary)
         self.assertNotIn("hunter2", summary)
 
     def test_secrets_in_the_stop_reason_are_redacted(self):
-        result = self.start(loop_core.STANDARD_RUN, RalphError("gh failed: token=hunter2 Bearer abc.def"))
+        result = self.start(loop_core.STANDARD_RUN, MacatiaError("gh failed: token=hunter2 Bearer abc.def"))
 
         self.assert_stop_summary(
             result,
             "Stop reason: gh failed: token=[REDACTED] Bearer [REDACTED]",
-            f"Next action:\n- Fix the stop reason, then run `ralph-kit run {PARENT}` again.\n"
+            f"Next action:\n- Fix the stop reason, then run `macatia run {PARENT}` again.\n"
             f"- #{CHILD} is labelled agent-working: implement and close it, or relabel it "
-            f"ready-for-agent, then run `ralph-kit run {PARENT}` again.",
+            f"ready-for-agent, then run `macatia run {PARENT}` again.",
         )
         self.assertNotIn("hunter2", self.github.comments(PARENT)[-1])
 
     def test_rerun_command_keeps_the_configuration_path(self):
         (self.repository.path / "config").mkdir()
-        git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
-        git(self.repository.path, "commit", "-m", "Move the Ralph configuration")
+        git(self.repository.path, "mv", "macatia.toml", "config/macatia.toml")
+        git(self.repository.path, "commit", "-m", "Move the Macatia configuration")
         self.sessions = ScriptedSessions(self.repository, ScriptedResult("blocked", "Stuck."))
 
         result = start_mode_run(
             loop_core.REVIEWED_RUN, self.repository, self.github, self.sessions,
-            "--config", "config/ralph.toml", PARENT,
+            "--config", "config/macatia.toml", PARENT,
         )
 
         self.assert_stop_summary(
-            result, f"run `ralph-kit run --review --config config/ralph.toml {PARENT}` again."
+            result, f"run `macatia run --review --config config/macatia.toml {PARENT}` again."
         )
 
     def test_rerun_command_keeps_the_caffeinate_flag(self):
@@ -4028,7 +4028,7 @@ class StopSummaryTests(VerificationTestCase):
         )
 
         self.assert_stop_summary(
-            result, f"run `ralph-kit run --no-review --caffeinate {PARENT}` again."
+            result, f"run `macatia run --no-review --caffeinate {PARENT}` again."
         )
 
     def test_rerun_command_keeps_the_no_caffeinate_flag(self):
@@ -4037,7 +4037,7 @@ class StopSummaryTests(VerificationTestCase):
 
         result = start_run(self.repository, self.github, self.sessions, "--no-caffeinate", PARENT)
 
-        self.assert_stop_summary(result, f"run `ralph-kit run --no-caffeinate {PARENT}` again.")
+        self.assert_stop_summary(result, f"run `macatia run --no-caffeinate {PARENT}` again.")
 
     def test_rerun_command_omits_the_sleep_lock_flags_when_the_setting_decided(self):
         set_caffeinate_by_default(self.repository)
@@ -4045,7 +4045,7 @@ class StopSummaryTests(VerificationTestCase):
 
         result = start_run(self.repository, self.github, self.sessions, PARENT)
 
-        self.assert_stop_summary(result, f"run `ralph-kit run {PARENT}` again.")
+        self.assert_stop_summary(result, f"run `macatia run {PARENT}` again.")
 
     def test_completed_run_summary_has_no_stop_details(self):
         result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
@@ -4056,7 +4056,7 @@ class StopSummaryTests(VerificationTestCase):
 
 
 class AgentSessionTestCase(VerificationTestCase):
-    """Ralph's real session handling, with scripted engine processes in place of the CLIs."""
+    """Macatia's real session handling, with scripted engine processes in place of the CLIs."""
 
     def start_engine(self, mode, *results, confirm=None):
         self.engine = ScriptedEngine(self.repository, *results)
@@ -4124,7 +4124,7 @@ class OutcomeContractTests(AgentSessionTestCase):
                 "a Claude Code result without findings",
                 {"engines": {"implementation": "claude"}},
                 [EngineResult(structured={"outcome": "committed", "summary": "Done"})],
-                "agent structured output does not match the Ralph contract",
+                "agent structured output does not match the Macatia contract",
             ),
         ):
             with self.subTest(name):
@@ -4163,7 +4163,7 @@ class OutcomeContractTests(AgentSessionTestCase):
         self.assert_handed_to_human_review(
             result,
             "implementation claimed committed without creating a Git commit",
-            "Ralph stopped because implementation claimed committed without creating a Git commit.",
+            "Macatia stopped because implementation claimed committed without creating a Git commit.",
         )
         self.assertEqual(len(self.engine.calls), 1)
         self.assertIsNone(self.github.pull_request())
@@ -4269,7 +4269,7 @@ class HumanReviewEvidenceTests(AgentSessionTestCase):
                 self.assert_handed_to_human_review(
                     result,
                     f"{role} stopped with blocked: {decision}",
-                    f"Ralph stopped because {role} reported blocked: {decision}",
+                    f"Macatia stopped because {role} reported blocked: {decision}",
                 )
                 self.assertEqual(len(self.engine.calls), len(results))
 
@@ -4406,7 +4406,7 @@ ENGINE_FAILURES = (
     ("Claude Code without a structured result", {"implementation": "claude"},
      EngineResult(writes_result=False, commit=False)),
     ("Codex without a result file", {}, EngineResult(writes_result=False, commit=False)),
-    ("result breaking the Ralph contract", {},
+    ("result breaking the Macatia contract", {},
      EngineResult(structured={"outcome": "committed", "summary": "Done"})),
     ("non-zero exit without a committed outcome", {},
      EngineResult("blocked", "Usage limit.", returncode=1, stderr=FAILED_ENGINE_STDERR)),
@@ -4430,7 +4430,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
 
     def published_summaries(self, result, stream="stdout"):
         """The run summary on the parent, on the cumulative draft PR when there is one, and in the terminal."""
-        marker = "🏁 Ralph summary"
+        marker = "🏁 Macatia summary"
         summaries = [
             next(comment for comment in reversed(self.github.comments(PARENT)) if marker in comment),
             getattr(result, stream),
@@ -4542,7 +4542,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         )
 
         self.assert_implemented(result)
-        self.assertIn("🏁 Ralph summary", self.github.pull_request().comments[-1])
+        self.assertIn("🏁 Macatia summary", self.github.pull_request().comments[-1])
         self.assert_backup_line(
             result,
             f"- backup: Claude Code Opus - High took over after a Codex engine failure "
@@ -4692,7 +4692,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assert_handed_to_human_review(
             result,
             "child session limit exhausted before implementation",
-            "Ralph stopped before implementation because the child session limit of 1 "
+            "Macatia stopped before implementation because the child session limit of 1 "
             "(standard run) was exhausted.",
             "implementation exited non-zero without a committed outcome",
         )
@@ -4767,15 +4767,15 @@ class StandaloneRunTestCase(VerificationTestCase):
             result.stdout,
         )
         self.assertNotIn("children of", result.stdout)
-        self.assertIn(f"🏁 Ralph summary for standalone issue #{STANDALONE}:\n", result.stdout)
+        self.assertIn(f"🏁 Macatia summary for standalone issue #{STANDALONE}:\n", result.stdout)
         self.assertIn(f"- agent sessions: {sessions}\n", result.stdout)
         self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone"})
         comments = self.github.comments(STANDALONE)
-        self.assertTrue(any("Ralph verified implementation commits" in body for body in comments))
+        self.assertTrue(any("Macatia verified implementation commits" in body for body in comments))
         self.assertFalse(any("parent-completion" in body for body in comments))
         self.assertIn("- final outcome: completed", comments[-1])
         pull = self.github.pull_request()
-        self.assertEqual(pull.title, f"Implement Ralph issue #{STANDALONE}")
+        self.assertEqual(pull.title, f"Implement Macatia issue #{STANDALONE}")
         self.assertIn("Human merge required", pull.body)
         self.assertNotIn("Closes", pull.body)
         self.assertFalse(pull.is_draft)
@@ -4823,7 +4823,7 @@ class StandaloneRunTests(StandaloneRunTestCase):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone", "documentation"})
         self.assertFalse(
-            any("Ralph observed all" in body for body in self.github.comments(STANDALONE))
+            any("Macatia observed all" in body for body in self.github.comments(STANDALONE))
         )
 
 
@@ -4890,7 +4890,7 @@ class StandaloneStartTests(StandaloneRunTestCase):
             comments=[implementation_evidence(loop_core.STANDARD_RUN, verified_head)],
         )
         self.github.blocked_by[STANDALONE] = [BLOCKER]
-        self.github.commit_pulls[verified_head] = RalphError("gh: Server Error (HTTP 502)")
+        self.github.commit_pulls[verified_head] = MacatiaError("gh: Server Error (HTTP 502)")
 
         result = self.start(loop_core.STANDARD_RUN)
 
@@ -5041,7 +5041,7 @@ class StandaloneMarkerTests(StandaloneRunTestCase):
         # The marker write is the next label edit after the issue is marked agent working.
         def fail_the_marker_write(number, add, remove):
             if number == STANDALONE and add == "agent-working":
-                self.github.label_edit_error = RalphError("gh issue edit failed: HTTP 502")
+                self.github.label_edit_error = MacatiaError("gh issue edit failed: HTTP 502")
 
         self.github.after_label_edit = fail_the_marker_write
 
@@ -5050,13 +5050,13 @@ class StandaloneMarkerTests(StandaloneRunTestCase):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(self.github.labels(STANDALONE), {"implemented"})
         warning = (
-            f"Ralph could not label standalone issue #{STANDALONE} standalone: "
+            f"Macatia could not label standalone issue #{STANDALONE} standalone: "
             "gh issue edit failed: HTTP 502."
         )
         self.assertIn(f"⚠️  {warning}", result.stdout)
         summary = self.github.comments(STANDALONE)[-1]
         self.assertIn("- final outcome: completed", summary)
-        for printed in (summary, result.stdout.split("🏁 Ralph summary")[-1]):
+        for printed in (summary, result.stdout.split("🏁 Macatia summary")[-1]):
             self.assertIn(f"- warning: {warning}", printed)
 
 
@@ -5116,8 +5116,8 @@ class StandaloneRunBranchTests(BaseBranchTestCase):
         result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), confirm=confirm)
 
         self.assertEqual(result.exit_code, 0, result.stderr)
-        self.assertEqual(confirm.questions, [f"Create ralph-kit/issue-{STANDALONE} from an up-to-date main?"])
-        self.assertEqual(self.current_branch(), f"ralph-kit/issue-{STANDALONE}")
+        self.assertEqual(confirm.questions, [f"Create macatia/issue-{STANDALONE} from an up-to-date main?"])
+        self.assertEqual(self.current_branch(), f"macatia/issue-{STANDALONE}")
         self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone"})
 
     def test_refused_issue_is_refused_before_the_run_branch_is_offered(self):
@@ -5222,12 +5222,12 @@ class RunTargetPickerTests(RunLevelTestCase):
         self.github.add_issue(202, state="closed")
         self.github.add_issue(203, labels=("needs-info",))
         for branch, preselected in (
-            ("ralph-kit/issue-200", 200),
+            ("macatia/issue-200", 200),
             (RUN_BRANCH, PARENT),
-            ("ralph-kit/issue-202", None),
-            ("ralph-kit/issue-203", None),
-            ("ralph-kit/issue-999", None),
-            ("ralph-kit/issue-0200", None),
+            ("macatia/issue-202", None),
+            ("macatia/issue-203", None),
+            ("macatia/issue-999", None),
+            ("macatia/issue-0200", None),
             ("codex/issue-200", None),
         ):
             with self.subTest(branch=branch):
@@ -5243,7 +5243,7 @@ class RunTargetPickerTests(RunLevelTestCase):
                 self.assertEqual(choose.preselected, [preselected])
                 # The preselected issue still waits for the user's choice.
                 self.assertEqual(result.exit_code, 1)
-                self.assertIn("Ralph stopped: no run target was chosen", result.stderr)
+                self.assertIn("Macatia stopped: no run target was chosen", result.stderr)
                 self.assert_nothing_changed(result)
                 self.assertEqual(self.github.labels(200), {"ready-for-agent"})
 
@@ -5265,10 +5265,10 @@ class RunTargetPickerTests(RunLevelTestCase):
         self.assertEqual(confirm.questions, [f"Create {RUN_BRANCH} from an up-to-date main?"])
         self.assertEqual(git(self.repository.path, "branch", "--show-current"), RUN_BRANCH)
         self.assertEqual(result.exit_code, 1)
-        # Each child gets its own child session limit, as for `ralph-kit run 191`.
+        # Each child gets its own child session limit, as for `macatia run 191`.
         self.assertEqual(self.session_children(), [CHILD] * 4 + [READY_FOR_HUMAN_CHILD])
         self.assertIn(
-            f"and run `ralph-kit run --no-caffeinate {PARENT}` again.",
+            f"and run `macatia run --no-caffeinate {PARENT}` again.",
             self.github.comments(PARENT)[-1],
         )
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
@@ -5308,7 +5308,7 @@ class RunTargetPickerTests(RunLevelTestCase):
         result = self.start_without_run_target(choose)
 
         self.assertEqual(result.exit_code, 1)
-        self.assertIn("Ralph stopped: no run target was chosen", result.stderr)
+        self.assertIn("Macatia stopped: no run target was chosen", result.stderr)
         self.assertEqual(len(choose.offered), 1)
         self.assert_nothing_changed(result)
         self.assertEqual(self.github.labels(CHILD), {"ready-for-agent"})
@@ -5329,10 +5329,10 @@ class RunTargetPickerTests(RunLevelTestCase):
     def test_a_github_failure_during_the_listing_stops_the_run_with_its_reason(self):
         for name, fail, reason in (
             ("listing", lambda: setattr(
-                self.github, "open_issues_error", RalphError("command failed (gh api): HTTP 502")
+                self.github, "open_issues_error", MacatiaError("command failed (gh api): HTTP 502")
             ), "command failed (gh api): HTTP 502"),
             ("parent lookup", lambda: self.github.parent_error.update(
-                {PARENT: RalphError("command failed (gh api parent): HTTP 500")}
+                {PARENT: MacatiaError("command failed (gh api parent): HTTP 500")}
             ), "command failed (gh api parent): HTTP 500"),
         ):
             with self.subTest(name):
@@ -5344,7 +5344,7 @@ class RunTargetPickerTests(RunLevelTestCase):
                 result = self.start_without_run_target(choose)
 
                 self.assertEqual(result.exit_code, 1)
-                self.assertIn(f"Ralph stopped: {reason}", result.stderr)
+                self.assertIn(f"Macatia stopped: {reason}", result.stderr)
                 self.assertEqual(choose.offered, [])
                 self.assert_nothing_changed(result)
 
@@ -5370,10 +5370,10 @@ class RunTargetPickerTests(RunLevelTestCase):
                     self.assert_completed(result, sessions=1)
                 else:
                     self.assertEqual(result.exit_code, 1)
-                    self.assertIn(f"Ralph stopped: {reason}", result.stderr)
+                    self.assertIn(f"Macatia stopped: {reason}", result.stderr)
 
 
-PERSISTENT_TERMINAL = f"ralph-kit-buyr-{PARENT}"
+PERSISTENT_TERMINAL = f"macatia-buyr-{PARENT}"
 
 
 class PersistentTerminalTests(BaseBranchTestCase):
@@ -5424,12 +5424,12 @@ class PersistentTerminalTests(BaseBranchTestCase):
 
     def test_restart_restarts_the_run_with_its_flags_but_tmux_in_any_position(self):
         for arguments, command in (
-            (("--tmux", PARENT), f"ralph-kit run {PARENT}"),
-            ((PARENT, "--tmux"), f"ralph-kit run {PARENT}"),
+            (("--tmux", PARENT), f"macatia run {PARENT}"),
+            ((PARENT, "--tmux"), f"macatia run {PARENT}"),
             (("--review", "--tmux", "--caffeinate", PARENT),
-             f"ralph-kit run --review --caffeinate {PARENT}"),
+             f"macatia run --review --caffeinate {PARENT}"),
             ((PARENT, "--no-review", "--no-caffeinate", "--tmux"),
-             f"ralph-kit run --no-review --no-caffeinate {PARENT}"),
+             f"macatia run --no-review --no-caffeinate {PARENT}"),
         ):
             with self.subTest(arguments=arguments):
                 self.setUp()
@@ -5444,16 +5444,16 @@ class PersistentTerminalTests(BaseBranchTestCase):
 
     def test_restart_keeps_the_configuration_given_by_config(self):
         (self.repository.path / "config").mkdir()
-        git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
-        git(self.repository.path, "commit", "-m", "Move the Ralph configuration")
+        git(self.repository.path, "mv", "macatia.toml", "config/macatia.toml")
+        git(self.repository.path, "commit", "-m", "Move the Macatia configuration")
         self.base_head = self.repository.head()
 
         result = self.start_with(
-            "--config", "config/ralph.toml", "--tmux", PARENT,
+            "--config", "config/macatia.toml", "--tmux", PARENT,
             continuation=ScriptedContinuation(Continuation.RESTART),
         )
 
-        self.assert_restarted(result, f"ralph-kit run --config config/ralph.toml {PARENT}")
+        self.assert_restarted(result, f"macatia run --config config/macatia.toml {PARENT}")
 
     def test_restart_releases_the_sleep_lock_first(self):
         result = self.start_with(
@@ -5461,7 +5461,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
             continuation=ScriptedContinuation(Continuation.RESTART),
         )
 
-        self.assert_restarted(result, f"ralph-kit run --caffeinate {PARENT}")
+        self.assert_restarted(result, f"macatia run --caffeinate {PARENT}")
         self.assertEqual(result.sleep_lock.taken, 1)
 
     def test_the_question_comes_after_the_startup_checks_and_before_the_run_branch_offer(self):
@@ -5504,7 +5504,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
         )
 
         self.assertEqual(result.exit_code, 1)
-        self.assertIn(f"run `ralph-kit run --caffeinate {PARENT}` again", result.stderr)
+        self.assertIn(f"run `macatia run --caffeinate {PARENT}` again", result.stderr)
         self.assertNotIn("--tmux", result.stderr)
 
     def test_stop_and_ctrl_c_change_nothing(self):
@@ -5516,7 +5516,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
                     "--tmux", PARENT, continuation=ScriptedContinuation(answer), confirm=confirm,
                 )
 
-                self.assert_nothing_changed(result, f"Ralph stopped: {PERSISTENT_TERMINAL} was not started")
+                self.assert_nothing_changed(result, f"Macatia stopped: {PERSISTENT_TERMINAL} was not started")
                 self.assertEqual(result.exit_code, 1)
                 self.assertEqual(confirm.questions, [])
                 self.assertEqual(result.persistent_terminal.restarts, [])
@@ -5592,10 +5592,10 @@ class PersistentTerminalTests(BaseBranchTestCase):
     def test_a_persistent_terminal_of_another_name_does_not_stop_the_run(self):
         result = self.start_with(
             "--tmux", PARENT, continuation=ScriptedContinuation(Continuation.RESTART),
-            existing_persistent_terminals=[f"ralph-kit-other-{PARENT}", "ralph-kit-buyr-200", PERSISTENT_TERMINAL[:-1]],
+            existing_persistent_terminals=[f"macatia-other-{PARENT}", "macatia-buyr-200", PERSISTENT_TERMINAL[:-1]],
         )
 
-        self.assert_restarted(result, f"ralph-kit run {PARENT}")
+        self.assert_restarted(result, f"macatia run {PARENT}")
 
     def test_without_a_run_target_the_picked_one_names_the_persistent_terminal_and_restarts(self):
         self.github.add_issue(200)
@@ -5608,7 +5608,7 @@ class PersistentTerminalTests(BaseBranchTestCase):
             "--tmux", "--review", continuation=continuation, choose=choose,
         )
 
-        self.assert_restarted(result, f"ralph-kit run --review {PARENT}")
+        self.assert_restarted(result, f"macatia run --review {PARENT}")
         self.assertEqual(picked_before_question, [1])
 
     def test_an_unavailable_persistent_terminal_stops_before_the_configuration_and_github(self):
@@ -5742,7 +5742,7 @@ class RunWorktreeTests(RunWorktreeTestCase):
         self.assertEqual(confirm.choices, [("Create", True)])
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
+            [Restart(None, f"macatia run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
         )
         self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
         self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), remote_head)
@@ -5754,17 +5754,17 @@ class RunWorktreeTests(RunWorktreeTestCase):
 
     def test_restart_keeps_the_flags_but_tmux_in_any_position(self):
         (self.repository.path / "config").mkdir()
-        git(self.repository.path, "mv", "ralph.toml", "config/ralph.toml")
-        git(self.repository.path, "commit", "-q", "-m", "Move the Ralph configuration")
+        git(self.repository.path, "mv", "macatia.toml", "config/macatia.toml")
+        git(self.repository.path, "commit", "-q", "-m", "Move the Macatia configuration")
         git(self.repository.path, "push", "-q", "origin", "main")
         self.base_head = self.repository.head()
         for arguments, command in (
-            ((PARENT, "--worktree", "--config", "config/ralph.toml"),
-             f"ralph-kit run --worktree --config config/ralph.toml {PARENT}"),
-            (("--review", "--config", "config/ralph.toml", "--caffeinate", PARENT, "--worktree"),
-             f"ralph-kit run --review --caffeinate --worktree --config config/ralph.toml {PARENT}"),
-            (("--worktree", "--no-review", "--no-caffeinate", "--config", "config/ralph.toml", PARENT),
-             f"ralph-kit run --no-review --no-caffeinate --worktree --config config/ralph.toml {PARENT}"),
+            ((PARENT, "--worktree", "--config", "config/macatia.toml"),
+             f"macatia run --worktree --config config/macatia.toml {PARENT}"),
+            (("--review", "--config", "config/macatia.toml", "--caffeinate", PARENT, "--worktree"),
+             f"macatia run --review --caffeinate --worktree --config config/macatia.toml {PARENT}"),
+            (("--worktree", "--no-review", "--no-caffeinate", "--config", "config/macatia.toml", PARENT),
+             f"macatia run --no-review --no-caffeinate --worktree --config config/macatia.toml {PARENT}"),
         ):
             with self.subTest(arguments=arguments):
                 if self.run_worktree.exists():
@@ -5780,13 +5780,13 @@ class RunWorktreeTests(RunWorktreeTestCase):
                 )
 
     def test_restart_reads_an_absolute_configuration_in_the_run_worktree(self):
-        configuration = self.repository.path.resolve() / "ralph.toml"
+        configuration = self.repository.path.resolve() / "macatia.toml"
 
         result = self.start_with("--worktree", "--config", configuration, PARENT, confirm=ScriptedConfirm(CREATE))
 
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
+            [Restart(None, f"macatia run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
         )
 
     def test_restart_releases_the_sleep_lock_first(self):
@@ -5794,7 +5794,7 @@ class RunWorktreeTests(RunWorktreeTestCase):
 
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(None, f"ralph-kit run --caffeinate --worktree {PARENT}", self.run_worktree,
+            [Restart(None, f"macatia run --caffeinate --worktree {PARENT}", self.run_worktree,
                      sleep_lock_held=False)],
         )
         self.assertEqual(result.sleep_lock.taken, 1)
@@ -5820,14 +5820,14 @@ class RunWorktreeTests(RunWorktreeTestCase):
 
         self.assert_nothing_created(
             result,
-            f"{RUN_BRANCH} has no run worktree: run `ralph-kit run --worktree {PARENT}` "
+            f"{RUN_BRANCH} has no run worktree: run `macatia run --worktree {PARENT}` "
             f"in a terminal to create it at {self.run_worktree}",
         )
         self.assert_checkout_untouched()
 
     def test_a_configuration_missing_from_the_remote_base_stops_before_the_question(self):
         self.persons_checkout()
-        shutil.copy(self.repository.path / "ralph.toml", self.repository.path / "local.toml")
+        shutil.copy(self.repository.path / "macatia.toml", self.repository.path / "local.toml")
         confirm = ScriptedConfirm(CREATE)
 
         result = self.start_with("--worktree", "--config", "local.toml", PARENT, confirm=confirm)
@@ -5856,7 +5856,7 @@ class RunWorktreeTests(RunWorktreeTestCase):
         self.assertEqual(picked_before_question, [1])
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
+            [Restart(None, f"macatia run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
         )
         self.assert_checkout_untouched()
 
@@ -5878,14 +5878,14 @@ class RunWorktreeTests(RunWorktreeTestCase):
         self.assertEqual(self.confirm.questions, [])
         self.assertEqual(result.persistent_terminal.restarts, [])
         self.assertEqual(self.repository.pushed_head(RUN_BRANCH), git(self.run_worktree, "rev-parse", "HEAD"))
-        self.assertTrue(any((self.run_worktree / ".ralph" / "diagnostics").iterdir()))
+        self.assertTrue(any((self.run_worktree / ".macatia" / "diagnostics").iterdir()))
         self.assert_checkout_untouched()
 
     def test_a_stopped_runs_rerun_command_keeps_the_flag(self):
         result = self.restart_and_run_there(ScriptedResult("blocked", "Stuck."))
 
         self.assertEqual(result.exit_code, 1)
-        self.assertIn(f"run `ralph-kit run --worktree {PARENT}` again", result.stderr)
+        self.assertIn(f"run `macatia run --worktree {PARENT}` again", result.stderr)
 
 
 class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
@@ -5924,7 +5924,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
         self.assertEqual(continuation.asked, [PERSISTENT_TERMINAL])
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(PERSISTENT_TERMINAL, f"ralph-kit run --review --worktree {PARENT}",
+            [Restart(PERSISTENT_TERMINAL, f"macatia run --review --worktree {PARENT}",
                      self.run_worktree, sleep_lock_held=False)],
         )
         self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
@@ -5937,7 +5937,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree,
+            [Restart(None, f"macatia run --worktree {PARENT}", self.run_worktree,
                      sleep_lock_held=False)],
         )
         self.assertEqual(self.sessions.requests, [])
@@ -5967,7 +5967,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
                 )
                 self.assertEqual(
                     again.persistent_terminal.restarts,
-                    [Restart(PERSISTENT_TERMINAL, f"ralph-kit run --worktree {PARENT}",
+                    [Restart(PERSISTENT_TERMINAL, f"macatia run --worktree {PARENT}",
                              self.run_worktree, sleep_lock_held=False)],
                 )
 
@@ -5985,7 +5985,7 @@ class RunWorktreeWithPersistentTerminalTests(RunWorktreeTestCase):
         self.assertEqual(continuation.asked, [PERSISTENT_TERMINAL])
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(PERSISTENT_TERMINAL, f"ralph-kit run --worktree {PARENT}",
+            [Restart(PERSISTENT_TERMINAL, f"macatia run --worktree {PARENT}",
                      self.run_worktree, sleep_lock_held=False)],
         )
 
@@ -6070,7 +6070,7 @@ class ExistingRunWorktreeTests(RunWorktreeTestCase):
         self.assertEqual(confirm.choices, [("Continue", True)])
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
+            [Restart(None, f"macatia run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
         )
         self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), self.run_worktree_head)
         self.assert_checkout_untouched()
@@ -6096,7 +6096,7 @@ class ExistingRunWorktreeTests(RunWorktreeTestCase):
         self.assert_nothing_continued(
             result,
             f"{RUN_BRANCH} has diverged from origin/{RUN_BRANCH}; reconcile them, "
-            f"then run `ralph-kit run --worktree {PARENT}` again",
+            f"then run `macatia run --worktree {PARENT}` again",
         )
         self.assertEqual(self.repository.pushed_head(RUN_BRANCH), remote_head)
 
@@ -6115,7 +6115,7 @@ class ExistingRunWorktreeTests(RunWorktreeTestCase):
 
     def test_a_configuration_missing_from_the_run_branch_stops_before_the_question(self):
         self.push_to_origin_run_branch("remote.txt")
-        shutil.copy(self.repository.path / "ralph.toml", self.repository.path / "local.toml")
+        shutil.copy(self.repository.path / "macatia.toml", self.repository.path / "local.toml")
         confirm = ScriptedConfirm(RESUME)
 
         result = self.start_with("--worktree", "--config", "local.toml", PARENT, confirm=confirm)
@@ -6151,7 +6151,7 @@ class ExistingRunWorktreeTests(RunWorktreeTestCase):
         self.assert_nothing_continued(
             result,
             f"{RUN_BRANCH} has a run worktree at {self.run_worktree}: run "
-            f"`ralph-kit run --worktree {PARENT}` in a terminal to continue in it",
+            f"`macatia run --worktree {PARENT}` in a terminal to continue in it",
         )
 
     def test_another_run_target_from_inside_a_run_worktree_gets_its_own_next_to_the_main_checkout(self):
@@ -6164,11 +6164,11 @@ class ExistingRunWorktreeTests(RunWorktreeTestCase):
         self.assertEqual(result.exit_code, 0, result.stderr)
         self.assertEqual(
             confirm.questions,
-            [f"Create a run worktree for ralph-kit/issue-200 at {other_run_worktree}?"],
+            [f"Create a run worktree for macatia/issue-200 at {other_run_worktree}?"],
         )
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(None, "ralph-kit run --worktree 200", other_run_worktree, sleep_lock_held=False)],
+            [Restart(None, "macatia run --worktree 200", other_run_worktree, sleep_lock_held=False)],
         )
         self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
         self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), self.run_worktree_head)
@@ -6203,7 +6203,7 @@ class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
         )
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(None, f"ralph-kit run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
+            [Restart(None, f"macatia run --worktree {PARENT}", self.run_worktree, sleep_lock_held=False)],
         )
         self.assertEqual(git(self.run_worktree, "branch", "--show-current"), RUN_BRANCH)
         self.assertEqual(git(self.run_worktree, "rev-parse", "HEAD"), head)
@@ -6276,7 +6276,7 @@ class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
         self.assert_stopped(
             result,
             f"{RUN_BRANCH} has diverged from origin/{RUN_BRANCH}; reconcile them, "
-            f"then run `ralph-kit run --worktree {PARENT}` again",
+            f"then run `macatia run --worktree {PARENT}` again",
         )
         self.assertEqual(confirm.questions, [])
         self.assertFalse(self.run_worktree.exists())
@@ -6300,7 +6300,7 @@ class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
 
         self.assert_stopped(
             result,
-            f"{RUN_BRANCH} has no run worktree: run `ralph-kit run --worktree {PARENT}` "
+            f"{RUN_BRANCH} has no run worktree: run `macatia run --worktree {PARENT}` "
             f"in a terminal to create it at {self.run_worktree}",
         )
         self.assertFalse(self.run_worktree.exists())
@@ -6309,7 +6309,7 @@ class ExistingRunBranchRunWorktreeTests(RunWorktreeTestCase):
         # On origin/main but not on the run branch.
         git(self.repository.path, "stash", "-q", "--include-untracked")
         git(self.repository.path, "switch", "-q", "main")
-        shutil.copy(self.repository.path / "ralph.toml", self.repository.path / "local.toml")
+        shutil.copy(self.repository.path / "macatia.toml", self.repository.path / "local.toml")
         git(self.repository.path, "add", "local.toml")
         git(self.repository.path, "commit", "-q", "-m", "Add local.toml")
         git(self.repository.path, "push", "-q", "origin", "main")
@@ -6415,7 +6415,7 @@ class RunWorktreeSetupTests(RunWorktreeTestCase):
 
     def configure_setup(self, setup):
         """Commit and push `setup` as `worktree_setup`, with its marker file ignored."""
-        configuration = self.repository.path / "ralph.toml"
+        configuration = self.repository.path / "macatia.toml"
         configuration.write_text(
             f"worktree_setup = {json.dumps(setup)}\n" + configuration.read_text(encoding="utf-8"),
             encoding="utf-8",
@@ -6438,7 +6438,7 @@ class RunWorktreeSetupTests(RunWorktreeTestCase):
 
     def capturing_the_terminal(self, start, *arguments, **keywords):
         """Call `start`, returning its result and what was written to the process's standard
-        output, where a command not captured by Ralph writes."""
+        output, where a command not captured by Macatia writes."""
         with tempfile.TemporaryFile() as terminal:
             sys.stdout.flush()
             saved = os.dup(1)
@@ -6516,7 +6516,7 @@ class RunWorktreeSetupTests(RunWorktreeTestCase):
         self.assertEqual(self.prepared_in(), [self.run_worktree])
         self.assertEqual(
             result.persistent_terminal.restarts,
-            [Restart(PERSISTENT_TERMINAL, f"ralph-kit run --worktree {PARENT}",
+            [Restart(PERSISTENT_TERMINAL, f"macatia run --worktree {PARENT}",
                      self.run_worktree, sleep_lock_held=False)],
         )
         self.assert_checkout_untouched()

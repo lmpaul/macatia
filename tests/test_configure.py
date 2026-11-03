@@ -1,4 +1,4 @@
-"""`ralph-kit configure` without real git, gh, or terminal."""
+"""`macatia configure` without real git, gh, or terminal."""
 
 import contextlib
 import io
@@ -14,8 +14,8 @@ import unittest
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import configure, init, update_config
-from ralph_kit.config import load_config
+from macatia import configure, init, update_config
+from macatia.config import load_config
 
 
 sys.path.insert(0, str(KIT_ROOT / "tests"))
@@ -50,7 +50,7 @@ SLEEP_LOCK_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("caffeinate_by_default = f
 WORKTREE_SETUP = DEFAULT_CONFIGURATION.replace(
     "caffeinate_by_default = false\n",
     "caffeinate_by_default = false\n"
-    "# Prepares a run worktree: ralph-kit run --worktree runs it through the shell inside the run worktree.\n"
+    "# Prepares a run worktree: macatia run --worktree runs it through the shell inside the run worktree.\n"
     'worktree_setup = "uv sync --frozen"\n',
 )
 
@@ -71,10 +71,10 @@ class ConfigureTests(unittest.TestCase):
         self.installed = set()  # Agent CLIs on PATH.
         self.write(DEFAULT_CONFIGURATION)
 
-    def write(self, contents, name="ralph.toml"):
+    def write(self, contents, name="macatia.toml"):
         (self.root / name).write_text(contents, encoding="utf-8")
 
-    def read(self, name="ralph.toml"):
+    def read(self, name="macatia.toml"):
         return (self.root / name).read_text(encoding="utf-8")
 
     def run_configure(self, answers=None, config=None):
@@ -104,36 +104,36 @@ class ConfigureTests(unittest.TestCase):
         return "\n".join(itertools.takewhile(lambda line: line.startswith("  ") and ")" in line, shown))
 
     def test_without_a_terminal_it_refuses_and_writes_nothing(self):
-        with self.assertRaisesRegex(configure.ConfigureError, "needs an interactive terminal; edit ralph.toml directly"):
+        with self.assertRaisesRegex(configure.ConfigureError, "needs an interactive terminal; edit macatia.toml directly"):
             self.run_configure()
         self.assertEqual(self.prompts, [])
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
     def test_a_missing_configuration_points_to_init(self):
-        (self.root / "ralph.toml").unlink()
-        with self.assertRaisesRegex(configure.ConfigureError, "run `ralph-kit init` first"):
+        (self.root / "macatia.toml").unlink()
+        with self.assertRaisesRegex(configure.ConfigureError, "run `macatia init` first"):
             self.run_configure(answers=[])
         self.assertEqual(self.prompts, [])
 
     def test_an_invalid_configuration_is_refused_with_a_fix_by_hand_before_starting_over(self):
         for config, suggestion in (
-            (None, "Fix ralph.toml by hand: `ralph-kit init --force` would start over and lose its settings."),
-            (pathlib.Path("b.toml"), "Fix b.toml by hand: `ralph-kit init --config b.toml --force` would start over and lose its settings."),
+            (None, "Fix macatia.toml by hand: `macatia init --force` would start over and lose its settings."),
+            (pathlib.Path("b.toml"), "Fix b.toml by hand: `macatia init --config b.toml --force` would start over and lose its settings."),
         ):
             with self.subTest(config=config):
                 invalid = DEFAULT_CONFIGURATION.replace('remote = "origin"', 'remote = "-x"')
-                self.write(invalid, name=str(config or "ralph.toml"))
+                self.write(invalid, name=str(config or "macatia.toml"))
                 with self.assertRaises(configure.ConfigureError) as raised:
                     self.run_configure(answers=[], config=config)
                 self.assertIn("configuration.remote is not a safe Git name", str(raised.exception))
                 self.assertIn(suggestion, str(raised.exception))
                 self.assertEqual(self.prompts, [])
-                self.assertEqual(self.read(str(config or "ralph.toml")), invalid)
+                self.assertEqual(self.read(str(config or "macatia.toml")), invalid)
 
     def test_the_menu_summarises_each_section(self):
         self.run_configure(answers=["11"])
         menu = self.menu()
-        self.assertIn("? ralph.toml — what do you want to change?", self.output.getvalue())
+        self.assertIn("? macatia.toml — what do you want to change?", self.output.getvalue())
         lines = [line.strip() for line in menu.strip().splitlines()]
         self.assertEqual(lines[0], "1)   Model profiles  (implementation claude/sonnet medium · review claude/opus high · correction = implementation)")
         self.assertTrue(lines[1].startswith("2)   Backup  (codex/codex-large medium)"))
@@ -158,22 +158,22 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
     def test_save_without_change_writes_nothing(self):
-        before = (self.root / "ralph.toml").stat().st_mtime_ns
+        before = (self.root / "macatia.toml").stat().st_mtime_ns
         self.assertFalse(self.run_configure(answers=["4", "1", "1", "", ""]))  # On then off again, then Save.
         self.assertIn("No changes: nothing written.", self.output.getvalue())
-        self.assertEqual((self.root / "ralph.toml").stat().st_mtime_ns, before)
+        self.assertEqual((self.root / "macatia.toml").stat().st_mtime_ns, before)
 
     def test_verification_toggles_each_check_and_warns_without_the_quality_policy(self):
         self.assertTrue(self.run_configure(answers=["4", "2", "", "10"]))
-        config = load_config(self.root / "ralph.toml", self.root)
+        config = load_config(self.root / "macatia.toml", self.root)
         self.assertFalse(config.verification.local_checks)
         self.assertTrue(config.verification.ci_checks)
         output = self.output.getvalue()
-        self.assertIn("⚠ quality.py and quality-gates.json missing: `ralph-kit check` will fail until they exist.", output)
+        self.assertIn("⚠ quality.py and quality-gates.json missing: `macatia check` will fail until they exist.", output)
         self.assertIn("Changes:\n  verification.ci_checks: false → true\n", output)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION.replace("ci_checks = false", "ci_checks = true"))
-        self.assertIn("Next step: commit ralph.toml, then run `ralph-kit check`.", output)
-        self.assertEqual(sorted(path.name for path in self.root.iterdir()), [".git", "ralph.toml"])
+        self.assertIn("Next step: commit macatia.toml, then run `macatia check`.", output)
+        self.assertEqual(sorted(path.name for path in self.root.iterdir()), [".git", "macatia.toml"])
 
     def test_no_warning_when_the_quality_policy_exists(self):
         (self.root / ".github/scripts").mkdir(parents=True)
@@ -181,7 +181,7 @@ class ConfigureTests(unittest.TestCase):
         (self.root / init.QUALITY_MANIFEST).write_text("{}")
         self.run_configure(answers=["4", "1", "", "10"])
         self.assertNotIn("⚠", self.output.getvalue())
-        self.assertTrue(load_config(self.root / "ralph.toml", self.root).verification.local_checks)
+        self.assertTrue(load_config(self.root / "macatia.toml", self.root).verification.local_checks)
 
     def test_a_save_keeps_every_value_it_did_not_change(self):
         # Custom labels, quality policy paths, display names, a distinct correction, several authors, another remote.
@@ -200,7 +200,7 @@ class ConfigureTests(unittest.TestCase):
         self.write("# Tuned by hand\n" + DEFAULT_CONFIGURATION.replace('remote = "origin"', 'remote = "origin"  # fork'))
         self.run_configure(answers=["4", "1", "", "10"])
         output = self.output.getvalue()
-        self.assertEqual(output.count("has comments that ralph-kit does not write: saving will drop them"), 1)
+        self.assertEqual(output.count("has comments that macatia does not write: saving will drop them"), 1)
         self.assertNotIn("Tuned by hand", self.read())
 
     def test_rendered_comments_and_hashes_in_strings_are_not_announced(self):
@@ -209,10 +209,10 @@ class ConfigureTests(unittest.TestCase):
         self.assertNotIn("comments", self.output.getvalue())
 
     def test_defaulted_settings_are_announced_once_with_update_config(self):
-        for config, suggestion in ((None, "`ralph-kit update-config`"), (pathlib.Path("b.toml"), "`ralph-kit update-config --config b.toml`")):
+        for config, suggestion in ((None, "`macatia update-config`"), (pathlib.Path("b.toml"), "`macatia update-config --config b.toml`")):
             with self.subTest(config=config):
                 self.output = io.StringIO()
-                name = str(config or "ralph.toml")
+                name = str(config or "macatia.toml")
                 self.write(
                     DEFAULT_CONFIGURATION.replace("review_by_default = false\n", "")
                     .replace('standalone = "standalone"\n', "")
@@ -230,8 +230,8 @@ class ConfigureTests(unittest.TestCase):
         self.write(DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", ""))
         self.run_configure(answers=["11"])
         self.assertIn(
-            "ℹ ralph.toml leaves out caffeinate_by_default, so its default value is used: "
-            "`ralph-kit update-config` writes it.",
+            "ℹ macatia.toml leaves out caffeinate_by_default, so its default value is used: "
+            "`macatia update-config` writes it.",
             self.output.getvalue(),
         )
 
@@ -240,7 +240,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertNotIn("leaves out", self.output.getvalue())
 
     def test_a_file_completed_by_update_config_opens_without_announcements(self):
-        review = "# true makes every run a reviewed run; ralph-kit run --no-review overrides it.\nreview_by_default = false\n"
+        review = "# true makes every run a reviewed run; macatia run --no-review overrides it.\nreview_by_default = false\n"
         self.write(
             DEFAULT_CONFIGURATION.replace(review, "")
             .replace('work_started = "work-started"\nstandalone = "standalone"\n', "")
@@ -248,7 +248,7 @@ class ConfigureTests(unittest.TestCase):
         )
         labels = json.dumps([[{"name": name} for name in init.DEFAULT_LABELS.values()]])
         with contextlib.redirect_stdout(io.StringIO()):
-            self.assertEqual(update_config.run(self.root, self.root / "ralph.toml", command=lambda *args: labels), 0)
+            self.assertEqual(update_config.run(self.root, self.root / "macatia.toml", command=lambda *args: labels), 0)
 
         self.assertFalse(self.run_configure(answers=["10"]))  # Save without a change.
         output = self.output.getvalue()
@@ -282,7 +282,7 @@ class ConfigureTests(unittest.TestCase):
         # Remove bob (second of alice, bob, octocat), then Back and Save.
         self.assertTrue(self.run_configure(answers=["3", "2", "2", "", "10"]))
         self.assertIn("  ✓ bob removed", self.output.getvalue())
-        self.assertEqual(load_config(self.root / "ralph.toml", self.root).trusted_authors, {"alice", "octocat"})
+        self.assertEqual(load_config(self.root / "macatia.toml", self.root).trusted_authors, {"alice", "octocat"})
         self.assertEqual(self.read(), CUSTOM_CONFIGURATION.replace('["alice", "bob", "octocat"]', '["alice", "octocat"]'))
 
     def test_removing_the_last_trusted_author_is_refused(self):
@@ -293,7 +293,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
     def test_a_gh_login_that_is_not_trusted_is_warned_about(self):
-        warning = "  ⚠ The current gh account, hubot, is not a trusted author: Ralph would ignore its own implementation evidence."
+        warning = "  ⚠ The current gh account, hubot, is not a trusted author: Macatia would ignore its own implementation evidence."
         self.responses[GH_LOGIN] = "hubot"
         self.run_configure(answers=["3", "1", "hubot", "", "11"])
         output = self.output.getvalue()
@@ -320,7 +320,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("? b.toml — what do you want to change?", self.output.getvalue())
         self.assertTrue(load_config(self.root / "b.toml", self.root).verification.local_checks)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
-        self.assertIn("Next step: commit b.toml, then run `ralph-kit check --config b.toml`.", self.output.getvalue())
+        self.assertIn("Next step: commit b.toml, then run `macatia check --config b.toml`.", self.output.getvalue())
 
     def test_git_edits_the_repository_base_branch_and_remote(self):
         # Without gh or git output: no hint and no label offer, editing still works.
@@ -338,7 +338,7 @@ class ConfigureTests(unittest.TestCase):
             "Changes:\n  repository: acme/widget → acme/gadget\n  base_branch: trunk → develop\n  remote: origin → upstream\n",
             output,
         )
-        config = load_config(self.root / "ralph.toml", self.root)
+        config = load_config(self.root / "macatia.toml", self.root)
         self.assertEqual((config.repository, config.base_branch, config.remote), ("acme/gadget", "develop", "upstream"))
         self.assertEqual(
             self.read(),
@@ -369,9 +369,9 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("? GitHub repository (owner/name); detected acme/gadget\n", output)
         # The gh default branch belongs to another repository: the remote's HEAD is used instead.
         self.assertIn("  2) Base branch  (trunk; detected develop)\n", output)
-        self.assertIn("? Base branch (Ralph never commits to it); detected develop\n", output)
+        self.assertIn("? Base branch (Macatia never commits to it); detected develop\n", output)
         self.assertIn("  3) Remote  (origin; Git remotes: origin, upstream)\n", output)
-        self.assertIn("? Remote Ralph pushes to; Git remotes: origin, upstream\n", output)
+        self.assertIn("? Remote Macatia pushes to; Git remotes: origin, upstream\n", output)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
     def test_git_hides_detected_values_that_match(self):
@@ -442,7 +442,7 @@ class ConfigureTests(unittest.TestCase):
         self.responses[labels_of("acme/full")] = json.dumps([[{"name": name} for name in init.LABELS.values()]])
         self.run_configure(answers=["5", "1", "acme/other", "", "1", "acme/full", "", "10"])
         self.assertEqual(created, [])
-        self.assertEqual(load_config(self.root / "ralph.toml", self.root).repository, "acme/full")
+        self.assertEqual(load_config(self.root / "macatia.toml", self.root).repository, "acme/full")
 
     def test_going_back_to_the_saved_repository_offers_no_labels(self):
         created = []
@@ -460,10 +460,10 @@ class ConfigureTests(unittest.TestCase):
         self.run_configure(answers=["5", "1", "acme/other", "", "1", "acme/widget", "3", "upstream", "", "10"])
         self.assertNotIn("Labels missing on acme/widget", self.output.getvalue())
         self.assertEqual(created, [])
-        self.assertEqual(load_config(self.root / "ralph.toml", self.root).remote, "upstream")
+        self.assertEqual(load_config(self.root / "macatia.toml", self.root).remote, "upstream")
 
     def models(self):
-        config = load_config(self.root / "ralph.toml", self.root, require_review=False)
+        config = load_config(self.root / "macatia.toml", self.root, require_review=False)
         return {
             role: (profile.engine, profile.name, profile.display_name, profile.reasoning_effort)
             for role, profile in config.models.items()
@@ -613,7 +613,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("* Reviewed runs by default  (on)", self.menu())
         self.assertIn("Changes:\n  review_by_default: false → true\n\n", output)
         self.assertEqual(self.read(), REVIEWED_BY_DEFAULT)
-        self.assertTrue(load_config(self.root / "ralph.toml", self.root).review_by_default)
+        self.assertTrue(load_config(self.root / "macatia.toml", self.root).review_by_default)
 
     def test_turning_reviewed_runs_by_default_on_without_review_asks_for_its_profile(self):
         self.write(WITHOUT_REVIEW)
@@ -623,7 +623,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("  ✓ review: claude/opus high", output)
         self.assertIn("* Model profiles", self.menu())
         self.assertIn("* Reviewed runs by default  (on)", self.menu())
-        config = load_config(self.root / "ralph.toml", self.root, require_review=True)
+        config = load_config(self.root / "macatia.toml", self.root, require_review=True)
         self.assertTrue(config.review_by_default)
         self.assertEqual(self.models()["review"], ("claude", "opus", "opus", "high"))
 
@@ -633,10 +633,10 @@ class ConfigureTests(unittest.TestCase):
         output = self.output.getvalue()
         self.assertIn("  6)   Reviewed runs by default  (on)", output)
         self.assertIn("  1) Turn off  (runs are standard unless started with --review)\n", output)
-        self.assertNotIn("comments that ralph-kit does not write", output)
+        self.assertNotIn("comments that macatia does not write", output)
         self.assertIn("Changes:\n  review_by_default: true → false\n\n", output)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
-        self.assertIn("review", load_config(self.root / "ralph.toml", self.root).models)
+        self.assertIn("review", load_config(self.root / "macatia.toml", self.root).models)
 
     def test_going_back_from_reviewed_runs_by_default_changes_nothing(self):
         self.assertFalse(self.run_configure(answers=["6", "2", "10"]))
@@ -654,7 +654,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("* Keep the machine awake by default  (on)", self.menu())
         self.assertIn("Changes:\n  caffeinate_by_default: false → true\n\n", output)
         self.assertEqual(self.read(), SLEEP_LOCK_BY_DEFAULT)
-        self.assertTrue(load_config(self.root / "ralph.toml", self.root).caffeinate_by_default)
+        self.assertTrue(load_config(self.root / "macatia.toml", self.root).caffeinate_by_default)
 
     def test_turning_sleep_lock_by_default_off_saves_only_the_setting(self):
         self.write(SLEEP_LOCK_BY_DEFAULT)
@@ -664,7 +664,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("  1) Turn off  (runs hold no sleep lock unless started with --caffeinate)\n", output)
         self.assertIn("Changes:\n  caffeinate_by_default: true → false\n\n", output)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
-        self.assertFalse(load_config(self.root / "ralph.toml", self.root).caffeinate_by_default)
+        self.assertFalse(load_config(self.root / "macatia.toml", self.root).caffeinate_by_default)
 
     def test_going_back_from_sleep_lock_by_default_changes_nothing(self):
         self.assertFalse(self.run_configure(answers=["7", "2", "10"]))
@@ -687,7 +687,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("* Child session limits  (standard 3 · reviewed 9)", self.menu())
         self.assertIn("Changes:\n  child_session_limit.standard: 5 → 3\n\n", output)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION.replace("standard = 5\n", "standard = 3\n"))
-        limits = load_config(self.root / "ralph.toml", self.root).child_session_limits
+        limits = load_config(self.root / "macatia.toml", self.root).child_session_limits
         self.assertEqual((limits.standard, limits.reviewed), (3, 9))
 
     def test_a_configuration_without_child_session_limits_saves_their_defaults_only_with_a_change(self):
@@ -704,7 +704,7 @@ class ConfigureTests(unittest.TestCase):
         output = self.output.getvalue()
         self.assertIn(
             "? Run worktree setup: none — what do you want to do?\n"
-            "  1) Set the command  (the shell command that prepares a run worktree for ralph-kit run --worktree)\n"
+            "  1) Set the command  (the shell command that prepares a run worktree for macatia run --worktree)\n"
             "  2) Back\n",
             output,
         )
@@ -712,7 +712,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("* Run worktree setup  (uv sync --frozen)", self.menu())
         self.assertIn("Changes:\n  worktree_setup: (none) → uv sync --frozen\n\n", output)
         self.assertEqual(self.read(), WORKTREE_SETUP)
-        self.assertEqual(load_config(self.root / "ralph.toml", self.root).worktree_setup, "uv sync --frozen")
+        self.assertEqual(load_config(self.root / "macatia.toml", self.root).worktree_setup, "uv sync --frozen")
 
     def test_setting_no_run_worktree_setup_changes_nothing(self):
         self.assertFalse(self.run_configure(answers=["9", "1", "", "2", "10"]))
@@ -731,7 +731,7 @@ class ConfigureTests(unittest.TestCase):
         )
         self.assertIn("Answer [uv sync --frozen]: ", self.prompts)
         self.assertIn("Changes:\n  worktree_setup: uv sync --frozen → pnpm install --frozen-lockfile\n\n", output)
-        self.assertEqual(load_config(self.root / "ralph.toml", self.root).worktree_setup, "pnpm install --frozen-lockfile")
+        self.assertEqual(load_config(self.root / "macatia.toml", self.root).worktree_setup, "pnpm install --frozen-lockfile")
 
     def test_keeping_the_current_run_worktree_setup_changes_nothing(self):
         self.write(WORKTREE_SETUP)
@@ -747,10 +747,10 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("* Run worktree setup  (none)", self.menu())
         self.assertIn("Changes:\n  worktree_setup: uv sync --frozen → (none)\n\n", output)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
-        self.assertIsNone(load_config(self.root / "ralph.toml", self.root).worktree_setup)
+        self.assertIsNone(load_config(self.root / "macatia.toml", self.root).worktree_setup)
 
     def backup(self):
-        backup = load_config(self.root / "ralph.toml", self.root).backup
+        backup = load_config(self.root / "macatia.toml", self.root).backup
         return backup and (backup.engine, backup.name, backup.display_name, backup.reasoning_effort)
 
     def test_without_a_backup_the_section_adds_one_on_another_installed_cli(self):

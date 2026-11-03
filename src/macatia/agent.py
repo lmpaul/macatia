@@ -1,4 +1,4 @@
-"""Translate Ralph sessions to CLI commands and normalize their final results."""
+"""Translate Macatia sessions to CLI commands and normalize their final results."""
 
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def agent_command(
         "--json-schema", claude_json_schema(schema_path),
         "--append-system-prompt",
         "Read and follow AGENTS.md in the repository and applicable directories. "
-        "Work in the current repository; leave pushing and GitHub mutations to Ralph.",
+        "Work in the current repository; leave pushing and GitHub mutations to Macatia.",
         prompt,
     ]
 

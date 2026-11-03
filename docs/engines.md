@@ -39,9 +39,9 @@ Claude efforts are `low`, `medium`, `high`, `xhigh`, or `max`; the selected mode
 may support only a subset. Codex retains its existing effort options. Model and
 account availability are checked by the respective CLI at session start.
 
-Both kinds of run use `ralph_kit/agent.py` for engine-specific commands and result
+Both kinds of run use `macatia/agent.py` for engine-specific commands and result
 normalization. Codex writes the schema result to a file; Claude runs in print
-mode and returns it in `structured_output`. The same Ralph contract and Git
+mode and returns it in `structured_output`. The same Macatia contract and Git
 checks apply to both. Session outputs remain in the run diagnostics with the
 engine and return code.
 
@@ -50,13 +50,13 @@ engine and return code.
 An **engine failure** is a session that ends without a valid result, whatever
 the cause (quota, rate limit, expired login, outage, unknown model): a Claude
 Code error envelope, Claude Code output that is not valid JSON or has no
-structured result, a missing Codex result file, a result that breaks the Ralph
+structured result, a missing Codex result file, a result that breaks the Macatia
 contract, or a non-zero exit without a `committed` outcome. A non-zero exit with
 a valid `committed` result is accepted. Agent outcomes (`failed`, `blocked`,
 `needs_correction`, `no_changes`), rejected Git effects, and interruptions are
 not engine failures.
 
-Without `models.backup`, an engine failure stops the run safely. With one, Ralph
+Without `models.backup`, an engine failure stops the run safely. With one, Macatia
 drops the failed session's commits and uncommitted files, so they are never
 pushed, and replays the same session with the backup from the head the failed
 session started from. The backup then runs every later session of the run,
@@ -77,7 +77,7 @@ correction. An engine failure of the backup stops the run, naming both failures;
 there is no second backup and no switch back. The next run starts on the regular
 profiles again.
 
-For Claude, Ralph invokes `/implement` directly and explicitly instructs the
+For Claude, Macatia invokes `/implement` directly and explicitly instructs the
 agent to read `AGENTS.md`. Repo skills are exposed through individual relative
 symlinks in `.claude/skills/`, pointing to `.agents/skills/`. Keep these links
 available for `implement` and its dependencies. Each agent session starts
@@ -86,7 +86,7 @@ fresh.
 The existing unattended permissions policy is retained: Codex uses
 `--dangerously-bypass-approvals-and-sandbox`; Claude uses
 `--dangerously-skip-permissions`. Both agents can execute commands and modify
-files. Run in a checkout and environment appropriate for that access. Ralph
+files. Run in a checkout and environment appropriate for that access. Macatia
 still owns publishing and a human owns merge.
 
 CLI references: [Codex non-interactive mode](https://developers.openai.com/codex/noninteractive)

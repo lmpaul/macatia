@@ -24,8 +24,8 @@ from .config import (
     DEFAULT_CHILD_SESSION_LIMITS,
     DEFAULT_LABELS,
     ChildSessionLimits,
-    RalphConfig,
-    RalphConfigError,
+    MacatiaConfig,
+    MacatiaConfigError,
     _load_toml,
     load_config,
 )
@@ -39,7 +39,7 @@ from .init import (
 
 TABLE_HEADER = re.compile(r"\s*\[")
 COMMENT = re.compile(r"\s*#")
-DEFAULTS = {field.name: field.default for field in dataclasses.fields(RalphConfig)}
+DEFAULTS = {field.name: field.default for field in dataclasses.fields(MacatiaConfig)}
 LIMITS_TABLE = "child_session_limit"
 
 
@@ -168,7 +168,7 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
     return text, added | {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()} | limit_values
 
 
-def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[RalphConfig, dict[str, str]]:
+def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[MacatiaConfig, dict[str, str]]:
     """Complete the file, writing it only once the completed text loads; return its configuration and the added settings."""
     text, added = completed_text(path)
     if not added:
@@ -193,7 +193,7 @@ def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=
     name = config_path.name
     try:
         config, added = load_completed(config_path, root)
-    except (UpdateError, RalphConfigError, tomllib.TOMLDecodeError) as error:
+    except (UpdateError, MacatiaConfigError, tomllib.TOMLDecodeError) as error:
         print(f"❌ {error}", file=sys.stderr)
         return 1
     for key, value in added.items():
@@ -224,13 +224,13 @@ def run(root: pathlib.Path, config_path: pathlib.Path, *, confirm=None, command=
             print(f"  → create {'it' if len(missing) == 1 else 'them'} later: {label_creation_commands(labels)}")
             code = 1
     if added:
-        print(f"Commit {name} before the next run: ralph-kit run needs a clean working tree.")
+        print(f"Commit {name} before the next run: macatia run needs a clean working tree.")
     return code
 
 
 def main(argv=None, prog=None) -> int:
     parser = argparse.ArgumentParser(prog=prog, description=__doc__.splitlines()[0])
-    parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path("ralph.toml"), metavar="PATH")
+    parser.add_argument("--config", type=pathlib.Path, default=pathlib.Path("macatia.toml"), metavar="PATH")
     args = parser.parse_args(argv)  # Exits with status 2 on unknown arguments.
     root = pathlib.Path.cwd().resolve()
     path = args.config if args.config.is_absolute() else root / args.config

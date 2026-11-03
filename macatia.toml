@@ -1,12 +1,12 @@
-# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit
+# Macatia configuration for this repository. See https://github.com/lmpaul/macatia
 version = 1
-repository = "lmpaul/ralph-kit"
+repository = "lmpaul/macatia"
 base_branch = "main"
 remote = "origin"
 trusted_authors = ["lmpaul"]
-# true makes every run a reviewed run; ralph-kit run --no-review overrides it.
+# true makes every run a reviewed run; macatia run --no-review overrides it.
 review_by_default = false
-# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.
+# true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.
 caffeinate_by_default = false
 
 [labels]
@@ -27,7 +27,7 @@ name = "opus"
 display_name = "opus"
 reasoning_effort = "medium"
 
-# Used by reviewed runs: ralph-kit run --review, or every run when review_by_default = true.
+# Used by reviewed runs: macatia run --review, or every run when review_by_default = true.
 [models.review]
 engine = "claude"
 name = "opus"

@@ -2,7 +2,7 @@
 
 ### Issue tracker
 
-Issues are tracked in GitHub Issues on lmpaul/ralph-kit, using the `gh` CLI. See `docs/agents/issue-tracker.md`.
+Issues are tracked in GitHub Issues on lmpaul/macatia, using the `gh` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 

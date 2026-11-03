@@ -1,4 +1,4 @@
-"""`ralph-kit reset` through its entry point: the fake GitHub, a scripted confirmer, and a
+"""`macatia reset` through its entry point: the fake GitHub, a scripted confirmer, and a
 temporary checkout with a bare `origin`."""
 
 import contextlib
@@ -18,8 +18,8 @@ TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent / "src"))
 sys.path.insert(0, str(TESTS))
 
-from ralph_kit import check, cli, loop_core, reset  # noqa: E402
-from ralph_kit.commands import RalphError  # noqa: E402
+from macatia import check, cli, loop_core, reset  # noqa: E402
+from macatia.commands import MacatiaError  # noqa: E402
 from run_support import (  # noqa: E402
     BRANCH,
     TRUSTED_LOGIN,
@@ -41,7 +41,7 @@ from test_close import ScriptedConfirmer, ScriptedPicker  # noqa: E402
 
 
 PARENT = 69
-RUN_BRANCH = f"ralph-kit/issue-{PARENT}"
+RUN_BRANCH = f"macatia/issue-{PARENT}"
 
 
 def sha(name):
@@ -78,7 +78,7 @@ class ResetTests(unittest.TestCase):
         return implementation_evidence(loop_core.STANDARD_RUN, sha(f"implementation-{number}"), verified_head)
 
     def reset(self, *arguments, confirm=None, choose=None):
-        """Run `ralph-kit reset`; confirm=None and choose=None stand for no terminal."""
+        """Run `macatia reset`; confirm=None and choose=None stand for no terminal."""
         stdout, stderr = io.StringIO(), io.StringIO()
         with contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
             try:
@@ -115,7 +115,7 @@ class ResetTests(unittest.TestCase):
             git(self.repository.path, "switch", BRANCH)
         return head
 
-    def add_pull_request(self, *, head=RUN_BRANCH, title=f"Implement Ralph parent #{PARENT}", base="main"):
+    def add_pull_request(self, *, head=RUN_BRANCH, title=f"Implement Macatia parent #{PARENT}", base="main"):
         number = len(self.github.pull_requests) + 12
         self.github.pull_requests.append(PullRequest(number, base, head, title, "Cumulative."))
         return number
@@ -253,7 +253,7 @@ class ResetTests(unittest.TestCase):
         self.add_child(70)
         pull = self.add_pull_request(head=BRANCH)
         git(self.repository.path, "push", "origin", BRANCH)
-        self.add_pull_request(title="Implement Ralph parent #70")
+        self.add_pull_request(title="Implement Macatia parent #70")
         self.add_pull_request(base="release")
 
         self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
@@ -290,7 +290,7 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(self.reset(str(PARENT), confirm=ScriptedConfirmer(True)), 0, self.stderr)
 
         plan = self.stdout.split("✓")[0]
-        self.assertIn(f"→ close PR #{pull} Implement Ralph parent #{PARENT} from {RUN_BRANCH}, with a comment", plan)
+        self.assertIn(f"→ close PR #{pull} Implement Macatia parent #{PARENT} from {RUN_BRANCH}, with a comment", plan)
         self.assertIn(f"→ delete {RUN_BRANCH} on origin at {head}, then in this checkout at {head}", plan)
         self.assertNotIn("⚠️", plan)
         self.assertIn(f"✓ closed PR #{pull}", self.stdout)
@@ -306,7 +306,7 @@ class ResetTests(unittest.TestCase):
     def test_a_standalone_recap_names_the_closed_pull_request_and_the_deleted_branch(self):
         self.github.add_issue(PARENT, labels=("implemented", "standalone"), comments=[self.evidence(PARENT)])
         head = self.add_run_branch()
-        pull = self.add_pull_request(title=f"Implement Ralph issue #{PARENT}")
+        pull = self.add_pull_request(title=f"Implement Macatia issue #{PARENT}")
 
         self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
 
@@ -348,7 +348,7 @@ class ResetTests(unittest.TestCase):
 
         self.assertEqual(self.reset(str(PARENT), "--yes"), 130)
 
-        self.assertIn(f"Rerun `ralph-kit reset {PARENT}` to finish", self.stderr)
+        self.assertIn(f"Rerun `macatia reset {PARENT}` to finish", self.stderr)
         self.assertEqual(self.branches(), {"checkout", "origin"})
         self.assertEqual(self.github.labels(70), {"implemented"})
         self.github.after_pull_request_close = None
@@ -409,7 +409,7 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(self.reset(str(PARENT), "--yes"), 1)
 
         self.assertIn("rejected", self.stderr)
-        self.assertIn(f"Rerun `ralph-kit reset {PARENT}` to finish", self.stderr)
+        self.assertIn(f"Rerun `macatia reset {PARENT}` to finish", self.stderr)
         self.assertEqual(self.github.labels(70), {"implemented"})
         hook.unlink()
         self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
@@ -480,12 +480,12 @@ class ResetTests(unittest.TestCase):
         git(path, "add", "run.txt")
         git(path, "commit", "-m", "Run commit")
         git(path, "push", "--set-upstream", "origin", RUN_BRANCH)
-        (path / ".gitignore").write_text(".ralph/\n", encoding="utf-8")
+        (path / ".gitignore").write_text(".macatia/\n", encoding="utf-8")
         git(path, "add", ".gitignore")
         git(path, "commit", "-m", "Ignore run diagnostics")
         git(path, "push")
-        (path / ".ralph").mkdir()
-        (path / ".ralph" / "diagnostics.txt").write_text("diagnostics\n", encoding="utf-8")
+        (path / ".macatia").mkdir()
+        (path / ".macatia" / "diagnostics.txt").write_text("diagnostics\n", encoding="utf-8")
         return path
 
     def test_the_run_worktree_is_listed_then_removed_with_its_ignored_files_before_the_run_branch(self):
@@ -668,7 +668,7 @@ class ResetTests(unittest.TestCase):
 
         self.assertEqual(self.reset(str(PARENT), "--yes"), 130)
 
-        self.assertIn(f"Rerun `ralph-kit reset {PARENT}` to finish", self.stderr)
+        self.assertIn(f"Rerun `macatia reset {PARENT}` to finish", self.stderr)
         self.assertEqual(self.github.labels(PARENT), {"work-started", "human-review"})
         self.assertEqual(self.github.comments(PARENT), [])
         self.github.after_label_edit = None
@@ -756,12 +756,12 @@ class ResetTests(unittest.TestCase):
     def test_a_github_error_exits_1_and_a_rerun_finishes_the_reset(self):
         self.add_parent()
         self.add_child(70)
-        self.github.label_edit_error = RalphError("command failed (gh issue edit 70): HTTP 502")
+        self.github.label_edit_error = MacatiaError("command failed (gh issue edit 70): HTTP 502")
 
         self.assertEqual(self.reset(str(PARENT), "--yes"), 1)
 
         self.assertIn("HTTP 502", self.stderr)
-        self.assertIn(f"Rerun `ralph-kit reset {PARENT}` to finish", self.stderr)
+        self.assertIn(f"Rerun `macatia reset {PARENT}` to finish", self.stderr)
         self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
         self.assert_reset_child(70, "implemented")
         self.assertEqual(len(reset_markers(self.github.comments(70))), 1)
@@ -778,15 +778,15 @@ class ResetTests(unittest.TestCase):
         self.github.add_issue(80, labels=("implemented", "standalone"), comments=[self.evidence(80)])
         self.github.add_issue(90, labels=("ready-for-agent",))
         self.github.add_issue(91, parent=90, labels=("ready-for-agent",))
-        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/ralph-kit/issue-90")
+        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/macatia/issue-90")
         # Refused: merged, untrusted, closed, without the trace of a run.
         self.github.add_issue(81, labels=("implemented",), comments=[self.evidence(81, merged=True)])
         self.github.add_issue(82, labels=("implemented",), author="stranger")
         self.github.add_issue(83, labels=("implemented",), state="closed")
         self.github.add_issue(84, labels=("ready-for-agent",))
         # A run branch whose issue is closed, and a branch named only like a run branch.
-        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/ralph-kit/issue-83")
-        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/ralph-kit/issue-84x")
+        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/macatia/issue-83")
+        git(self.repository.path, "push", "origin", f"{BRANCH}:refs/heads/macatia/issue-84x")
 
     def test_without_issue_the_picker_offers_exactly_the_resettable_run_targets(self):
         self.add_resettable_and_refused_run_targets()
@@ -804,7 +804,7 @@ class ResetTests(unittest.TestCase):
         self.add_parent(labels=("ready-for-agent",))
         self.add_child(70)
         self.github.add_issue(80, labels=("ready-for-agent",))
-        self.add_pull_request(head="ralph-kit/issue-80", title="Implement Ralph issue #80")
+        self.add_pull_request(head="macatia/issue-80", title="Implement Macatia issue #80")
         picker = ScriptedPicker(KeyboardInterrupt())
 
         self.reset(choose=picker)
@@ -839,10 +839,10 @@ class ResetTests(unittest.TestCase):
     def test_the_picker_preselects_the_checked_out_run_branch_issue_when_it_is_listed(self):
         self.add_resettable_and_refused_run_targets()
         for branch, preselected in (
-            ("ralph-kit/issue-80", 80),
+            ("macatia/issue-80", 80),
             (RUN_BRANCH, PARENT),
-            ("ralph-kit/issue-8", None),
-            ("ralph-kit/issue-81", None),
+            ("macatia/issue-8", None),
+            ("macatia/issue-81", None),
             (BRANCH, None),
         ):
             with self.subTest(branch=branch):
@@ -874,7 +874,7 @@ class ResetTests(unittest.TestCase):
 
         self.assertIn("Cancelled. Nothing reset.", self.stderr)
         self.assertEqual(self.snapshot(), before)
-        self.assertIn("ralph-kit/issue-90", git(self.repository.origin, "branch", "--list", "ralph-kit/*"))
+        self.assertIn("macatia/issue-90", git(self.repository.origin, "branch", "--list", "macatia/*"))
 
     def test_a_number_outside_the_resettable_run_targets_is_refused(self):
         self.add_resettable_and_refused_run_targets()
@@ -903,11 +903,11 @@ class ResetTests(unittest.TestCase):
     def test_a_rerun_after_a_failure_names_the_picked_run_target(self):
         self.add_parent()
         self.add_child(70)
-        self.github.label_edit_error = RalphError("command failed (gh issue edit 70): HTTP 502")
+        self.github.label_edit_error = MacatiaError("command failed (gh issue edit 70): HTTP 502")
 
         self.assertEqual(self.reset("--yes", choose=ScriptedPicker(PARENT)), 1)
 
-        self.assertIn(f"Rerun `ralph-kit reset {PARENT}` to finish", self.stderr)
+        self.assertIn(f"Rerun `macatia reset {PARENT}` to finish", self.stderr)
 
     def test_without_issue_or_the_picker_reset_is_a_usage_error(self):
         self.add_parent()
@@ -946,7 +946,7 @@ class ResetTests(unittest.TestCase):
         with mock.patch.object(check, "arrow_select", return_value="#20  Fix login  (standalone)") as select:
             self.assertEqual(cli.reset_target_with_arrows(targets, 20), 20)
         select.assert_called_once_with(
-            "Which run target should Ralph reset?",
+            "Which run target should Macatia reset?",
             [("#12  Add a cart  (parent · 3 children to reset)", ""), ("#20  Fix login  (standalone)", "")],
             "#20  Fix login  (standalone)",
         )
@@ -971,20 +971,20 @@ class ResetTests(unittest.TestCase):
 
     def test_the_configuration_path_is_honoured_and_named_in_the_rerun(self):
         (self.repository.path / "other.toml").write_text(
-            (self.repository.path / "ralph.toml").read_text(encoding="utf-8"), encoding="utf-8"
+            (self.repository.path / "macatia.toml").read_text(encoding="utf-8"), encoding="utf-8"
         )
         self.add_parent()
         self.add_child(70)
-        self.github.label_edit_error = RalphError("HTTP 502")
+        self.github.label_edit_error = MacatiaError("HTTP 502")
 
         self.assertEqual(self.reset("--config", "other.toml", str(PARENT), "--yes"), 1)
 
-        self.assertIn(f"ralph-kit reset --config other.toml {PARENT}", self.stderr)
+        self.assertIn(f"macatia reset --config other.toml {PARENT}", self.stderr)
 
     # Purge.
 
-    def ralph_comments(self):
-        """A trusted comment carrying each Ralph marker, as the run, close and reset write them."""
+    def macatia_comments(self):
+        """A trusted comment carrying each Macatia marker, as the run, close and reset write them."""
         evidence = implementation_evidence(loop_core.STANDARD_RUN, sha("implementation"), sha("verified"))
         reviewed = implementation_evidence(loop_core.REVIEWED_RUN, sha("implementation"), sha("reviewed"))
         return [
@@ -992,9 +992,9 @@ class ResetTests(unittest.TestCase):
             evidence,
             reviewed,
             legacy_implementation_evidence(sha("base"), sha("legacy")),
-            trusted(f"{loop_core.HANDOFF_MARKER}\nRalph stopped: a human must review."),
+            trusted(f"{loop_core.HANDOFF_MARKER}\nMacatia stopped: a human must review."),
             *(
-                trusted(f"{marker}\nRalph finished.")
+                trusted(f"{marker}\nMacatia finished.")
                 for mode in (loop_core.STANDARD_RUN, loop_core.REVIEWED_RUN)
                 for marker in (mode.parent_completion_marker, mode.terminal_summary_marker)
             ),
@@ -1002,26 +1002,26 @@ class ResetTests(unittest.TestCase):
         ]
 
     def kept_comments(self):
-        """Comments a purge leaves: untrusted ones, even carrying a Ralph marker, and trusted
+        """Comments a purge leaves: untrusted ones, even carrying a Macatia marker, and trusted
         ones without one."""
         return [
             {"author": {"login": "someone"}, "body": child_base_marker(sha("base"))["body"]},
             trusted("Please also cover the empty case."),
         ]
 
-    def test_a_purge_deletes_every_ralph_comment_on_the_parent_and_its_reset_children(self):
+    def test_a_purge_deletes_every_macatia_comment_on_the_parent_and_its_reset_children(self):
         kept = self.kept_comments()
-        self.add_parent(labels=("work-started", "human-review"), comments=[*self.ralph_comments(), *kept])
-        self.add_child(70, comments=[*kept, *self.ralph_comments()])
-        self.add_child(71, labels=("human-review",), comments=self.ralph_comments())
+        self.add_parent(labels=("work-started", "human-review"), comments=[*self.macatia_comments(), *kept])
+        self.add_child(70, comments=[*kept, *self.macatia_comments()])
+        self.add_child(71, labels=("human-review",), comments=self.macatia_comments())
         # Untouched: no lifecycle label, so its triage stays whatever it carries.
-        self.add_child(72, labels=("needs-triage",), comments=[*kept, *self.ralph_comments()])
+        self.add_child(72, labels=("needs-triage",), comments=[*kept, *self.macatia_comments()])
 
         self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
 
         for number in (PARENT, 70):
             self.assertEqual(self.github.comments(number), [comment["body"] for comment in kept])
-        self.assertEqual(len(self.github.comments(72)), len(kept) + len(self.ralph_comments()))
+        self.assertEqual(len(self.github.comments(72)), len(kept) + len(self.macatia_comments()))
         self.assertEqual(self.github.comments(71), [])
         self.assertEqual(self.github.labels(PARENT), {"ready-for-agent"})
         self.assertEqual(self.github.labels(70), {"ready-for-agent"})
@@ -1029,26 +1029,26 @@ class ResetTests(unittest.TestCase):
         self.assertEqual(self.github.labels(72), {"needs-triage"})
 
     def test_a_purge_plan_counts_the_comments_it_deletes_on_each_issue(self):
-        self.add_parent(comments=self.ralph_comments()[:2])
-        self.add_child(70, comments=self.ralph_comments()[:3])
+        self.add_parent(comments=self.macatia_comments()[:2])
+        self.add_child(70, comments=self.macatia_comments()[:3])
         self.add_child(71, labels=("human-review",), comments=[trusted("No marker.")])
 
         self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 0, self.stderr)
 
-        self.assertIn("#70 Issue 70: implemented → ready-for-agent, deleting 3 Ralph comments", self.stdout)
-        self.assertIn("#71 Issue 71: human-review → ready-for-agent, deleting 0 Ralph comments", self.stdout)
-        self.assertIn(f"then #{PARENT}: -work-started, +ready-for-agent, then deleting 2 Ralph comments", self.stdout)
+        self.assertIn("#70 Issue 70: implemented → ready-for-agent, deleting 3 Macatia comments", self.stdout)
+        self.assertIn("#71 Issue 71: human-review → ready-for-agent, deleting 0 Macatia comments", self.stdout)
+        self.assertIn(f"then #{PARENT}: -work-started, +ready-for-agent, then deleting 2 Macatia comments", self.stdout)
 
-    def test_a_purge_of_a_standalone_issue_deletes_its_ralph_comments_and_leaves_no_marker(self):
+    def test_a_purge_of_a_standalone_issue_deletes_its_macatia_comments_and_leaves_no_marker(self):
         kept = self.kept_comments()
-        self.github.add_issue(80, labels=("implemented", "standalone"), comments=[*self.ralph_comments(), *kept])
+        self.github.add_issue(80, labels=("implemented", "standalone"), comments=[*self.macatia_comments(), *kept])
 
         self.assertEqual(self.reset("80", "--purge", "--yes"), 0, self.stderr)
 
         self.assertEqual(self.github.labels(80), {"ready-for-agent", "standalone"})
         self.assertEqual(self.github.comments(80), [comment["body"] for comment in kept])
         self.assertIn(
-            f"-implemented, +ready-for-agent, deleting {len(self.ralph_comments())} Ralph comments", self.stdout
+            f"-implemented, +ready-for-agent, deleting {len(self.macatia_comments())} Macatia comments", self.stdout
         )
 
     def test_a_purge_leaves_the_pull_request_comments(self):
@@ -1066,7 +1066,7 @@ class ResetTests(unittest.TestCase):
 
     def test_a_run_target_whose_only_trace_is_a_reset_marker_is_resettable_only_for_a_purge(self):
         self.add_parent(labels=("ready-for-agent",))
-        self.add_child(70, labels=("ready-for-agent",), comments=[*self.ralph_comments()[:2], reset_marker()])
+        self.add_child(70, labels=("ready-for-agent",), comments=[*self.macatia_comments()[:2], reset_marker()])
         self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
         self.github.add_issue(80, labels=("ready-for-agent",), comments=[reset_marker()])
 
@@ -1096,9 +1096,9 @@ class ResetTests(unittest.TestCase):
         ]])
 
     def test_a_rerun_after_an_interrupted_purge_finishes_it(self):
-        self.add_parent(comments=self.ralph_comments())
-        self.add_child(70, comments=self.ralph_comments())
-        self.add_child(71, labels=("human-review",), comments=self.ralph_comments())
+        self.add_parent(comments=self.macatia_comments())
+        self.add_child(70, comments=self.macatia_comments())
+        self.add_child(71, labels=("human-review",), comments=self.macatia_comments())
         deleted = []
 
         def interrupt(number):
@@ -1110,9 +1110,9 @@ class ResetTests(unittest.TestCase):
 
         self.assertEqual(self.reset(str(PARENT), "--purge", "--yes"), 130)
 
-        self.assertIn(f"Rerun `ralph-kit reset --purge {PARENT}` to finish", self.stderr)
+        self.assertIn(f"Rerun `macatia reset --purge {PARENT}` to finish", self.stderr)
         self.assertEqual(self.github.comments(70), [])
-        self.assertEqual(len(self.github.comments(71)), len(self.ralph_comments()) - 2)
+        self.assertEqual(len(self.github.comments(71)), len(self.macatia_comments()) - 2)
         self.assertEqual(self.github.labels(71), {"human-review"})
         self.github.after_comment_delete = None
 
@@ -1123,7 +1123,7 @@ class ResetTests(unittest.TestCase):
             self.assertEqual(self.github.labels(number), {"ready-for-agent"})
 
     def test_a_rerun_after_a_purge_interrupted_before_the_parent_comments_finishes_it(self):
-        self.add_parent(comments=self.ralph_comments())
+        self.add_parent(comments=self.macatia_comments())
         self.add_child(70)
 
         def interrupt(number, add, remove):

@@ -25,10 +25,10 @@ KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 FIXTURES = KIT_ROOT / "tests" / "fixtures"
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import loop_core  # noqa: E402
-from ralph_kit.child_cycle import SessionResult  # noqa: E402
-from ralph_kit.commands import RalphError  # noqa: E402
-from ralph_kit.github import (  # noqa: E402
+from macatia import loop_core  # noqa: E402
+from macatia.child_cycle import SessionResult  # noqa: E402
+from macatia.commands import MacatiaError  # noqa: E402
+from macatia.github import (  # noqa: E402
     actions_job_command,
     check_run_command,
     job_log_command,
@@ -55,7 +55,7 @@ SCRIPTED_LOCAL_GATE = [
 
 
 class RunRepository:
-    """A temporary checkout on a Ralph branch, with a bare `origin` and the fixture policy.
+    """A temporary checkout on a Macatia branch, with a bare `origin` and the fixture policy.
 
     The fixture policy has one local gate. By default it always passes; with
     `local_gate_results` ("pass" or "fail" per call, the last repeats) it runs
@@ -96,13 +96,13 @@ class RunRepository:
             )
         self.base_sha = template.base_sha
 
-    def edit_configuration(self, old, new, path="ralph.toml"):
+    def edit_configuration(self, old, new, path="macatia.toml"):
         """Replace text in the configuration at `path` and commit it, keeping the worktree clean."""
         configuration_path = self.path / path
         configuration = configuration_path.read_text(encoding="utf-8")
         assert old in configuration, old
         configuration_path.write_text(configuration.replace(old, new), encoding="utf-8")
-        git(self.path, "commit", "-am", "Edit the Ralph configuration")
+        git(self.path, "commit", "-am", "Edit the Macatia configuration")
 
     def head(self):
         return git(self.path, "rev-parse", "HEAD")
@@ -118,7 +118,7 @@ class RunRepository:
 
     def diagnostics(self):
         """The single run's diagnostics directory."""
-        runs = sorted((self.path / ".ralph" / "diagnostics").glob("*/"))
+        runs = sorted((self.path / ".macatia" / "diagnostics").glob("*/"))
         assert len(runs) == 1, runs
         return runs[0]
 
@@ -158,10 +158,10 @@ class RepositoryTemplate:
         path.mkdir()
         git(self.root, "init", "--bare", str(origin))
         git(path, "init", "-b", "main")
-        git(path, "config", "user.email", "ralph-test@example.com")
-        git(path, "config", "user.name", "Ralph Test")
+        git(path, "config", "user.email", "macatia-test@example.com")
+        git(path, "config", "user.name", "Macatia Test")
         git(path, "remote", "add", "origin", str(origin))
-        configuration = (FIXTURES / "ralph.toml").read_text(encoding="utf-8")
+        configuration = (FIXTURES / "macatia.toml").read_text(encoding="utf-8")
         flags = "local_checks = true\nci_checks = true"
         assert flags in configuration, "the fixture configuration enables both verification paths"
         configuration = configuration.replace(
@@ -169,7 +169,7 @@ class RepositoryTemplate:
         )
         for profile, engine in engines.items():
             configuration = configure_engine(configuration, profile, engine)
-        (path / "ralph.toml").write_text(configuration, encoding="utf-8")
+        (path / "macatia.toml").write_text(configuration, encoding="utf-8")
         # Run diagnostics are deliberately not ignored here: the run must ignore them itself.
         (path / ".gitignore").write_text("__pycache__/\n*.py[cod]\n", encoding="utf-8")
         if local_checks or ci_checks:
@@ -256,9 +256,9 @@ def is_child_cycle_start(body):
 
 
 def child_base_marker(child_base, author=TRUSTED_LOGIN):
-    """A child cycle start comment recording `child_base`, as Ralph writes it."""
+    """A child cycle start comment recording `child_base`, as Macatia writes it."""
     marker = json.dumps({"child_base": child_base}, separators=(",", ":"))
-    body = f"{loop_core.CHILD_BASE_MARKER_PREFIX}{marker} -->\nRalph started a child cycle."
+    body = f"{loop_core.CHILD_BASE_MARKER_PREFIX}{marker} -->\nMacatia started a child cycle."
     return {"author": {"login": author}, "body": body}
 
 
@@ -277,7 +277,7 @@ def legacy_implementation_evidence(base_sha, verified_head):
     return {
         "author": {"login": TRUSTED_LOGIN},
         "body": (
-            f"Ralph verified implementation commits `{base_sha}..{verified_head}` and "
+            f"Macatia verified implementation commits `{base_sha}..{verified_head}` and "
             f"reviewed head `{verified_head}` with no corrections. Applicable local gates "
             f"and canonical CI are green for exact head `{verified_head}`."
         ),
@@ -332,7 +332,7 @@ class FakeGitHub:
     conclusion for every check, or a mapping from check name to either a
     conclusion or the check-run fields to override (such as another commit's
     `head_sha`, or an empty `details_url` for a check without an Actions job).
-    A round can also be a `RalphError`, raised as the failed `gh` call would.
+    A round can also be a `MacatiaError`, raised as the failed `gh` call would.
     A failed check's job reports `job_head_sha` (by default the checked head)
     and its log is `job_log_output`, or a failed download with `job_log_error`.
     Setting `interrupt_after_comment_on` to an issue number kills the run once,
@@ -354,7 +354,7 @@ class FakeGitHub:
     as `gh` does for an issue that does not exist. A commit is on a branch when
     `on_branch` maps its SHA to True; `compared` keeps each (branch, SHA) asked.
     `commit_pulls` maps a commit SHA to the pull requests GitHub associates with
-    it, each a `CommitPull`, or to a `RalphError` its lookup raises;
+    it, each a `CommitPull`, or to a `MacatiaError` its lookup raises;
     `pull_lookups` keeps each (base, SHA) asked.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     The open issues listing answers every open issue in the order they were added,
@@ -475,7 +475,7 @@ class FakeGitHub:
 
     def issue(self, number):
         if number not in self.issues:
-            raise RalphError(
+            raise MacatiaError(
                 f"command failed (gh issue view {number}): "
                 f"GraphQL: Could not resolve to an issue or pull request with the number of {number}."
             )
@@ -510,7 +510,7 @@ class FakeGitHub:
     def merged_pull_requests(self, base, sha):
         self.pull_lookups.append((base, sha))
         pulls = self.commit_pulls.get(sha, [])
-        if isinstance(pulls, RalphError):
+        if isinstance(pulls, MacatiaError):
             raise pulls
         return merged_pull_requests_into(base, [pull.listing() for pull in pulls])
 
@@ -594,7 +594,7 @@ class FakeGitHub:
                     if self.after_comment_delete is not None:
                         self.after_comment_delete(number)
                     return
-        raise RalphError(f"command failed (gh api --method DELETE issues/comments/{comment_id}): Not Found")
+        raise MacatiaError(f"command failed (gh api --method DELETE issues/comments/{comment_id}): Not Found")
 
     def close_pull_request(self, number, comment):
         pull = self._pull(number)
@@ -625,7 +625,7 @@ class FakeGitHub:
         if self.before_check_runs is not None:
             self.before_check_runs(head_sha)
         ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
-        if isinstance(ci_round, RalphError):
+        if isinstance(ci_round, MacatiaError):
             raise ci_round
         checks = ci_round if isinstance(ci_round, dict) else dict.fromkeys(self.check_names, ci_round)
         return [
@@ -704,7 +704,7 @@ class ScriptedSessions:
     A scripted exception, any `BaseException` such as `KeyboardInterrupt`, is
     raised by its session instead, as a crashing or interrupted adapter would; a
     `ScriptedSignal` signals the run's own process.
-    `prompts` keeps the prompt Ralph would give the agent for each session, in order.
+    `prompts` keeps the prompt Macatia would give the agent for each session, in order.
     `before_session`, when set, is called with each request before it is answered.
     """
 
@@ -785,7 +785,7 @@ class EngineCall:
 
 
 class ScriptedEngine:
-    """Stands in for the `codex` and `claude` processes behind Ralph's real session handling.
+    """Stands in for the `codex` and `claude` processes behind Macatia's real session handling.
 
     Each engine command is answered with the next scripted result: the engine
     commits for real, then writes its result the way that CLI does (Codex to
@@ -963,7 +963,7 @@ def start_run(
     and `existing_persistent_terminals` the names of those that already exist.
 
     `sessions` is either `ScriptedSessions`, answering each session request, or
-    a `ScriptedEngine`, answering each engine command of Ralph's real sessions.
+    a `ScriptedEngine`, answering each engine command of Macatia's real sessions.
     A command-line usage error ends the run with argparse's exit code.
     """
 

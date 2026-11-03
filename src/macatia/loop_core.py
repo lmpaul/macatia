@@ -42,13 +42,13 @@ from .child_cycle import (
     SessionTotal,
     run_child_cycle,
 )
-from .commands import RalphError, command as run_command
+from .commands import MacatiaError, command as run_command
 from .config import (
     DIAGNOSTICS_DIRECTORY,
     RUN_BRANCH_PREFIX,
     AgentProfile,
-    RalphConfig,
-    RalphConfigError,
+    MacatiaConfig,
+    MacatiaConfigError,
     load_config,
 )
 from .github import GitHub, MergedPullRequest
@@ -90,16 +90,16 @@ class RunMode:
     unverified_warning: str
 
 
-DEFAULT_CONFIG_PATH = pathlib.Path("ralph.toml")
+DEFAULT_CONFIG_PATH = pathlib.Path("macatia.toml")
 MAX_STOP_REASON_LENGTH = 1600
-ORIGINAL_EVIDENCE_PREFIX = "<!-- ralph-implementation-evidence: "
+ORIGINAL_EVIDENCE_PREFIX = "<!-- macatia-implementation-evidence: "
 # Persisted in child cycle start comments, so its value must never change.
-CHILD_BASE_MARKER_PREFIX = "<!-- ralph-child-base: "
+CHILD_BASE_MARKER_PREFIX = "<!-- macatia-child-base: "
 # Persisted in reset markers by both run modes, so its value must never change.
-RESET_MARKER_PREFIX = "<!-- ralph-reset: "
+RESET_MARKER_PREFIX = "<!-- macatia-reset: "
 # Persisted in handoff comments by both run modes, so its value must never change.
 # Handoff comments posted before it existed carry no marker.
-HANDOFF_MARKER = "<!-- ralph-handoff -->"
+HANDOFF_MARKER = "<!-- macatia-handoff -->"
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
@@ -116,11 +116,11 @@ any changes before returning; the worktree must be clean."""
 MAX_AGENT_SUMMARY_LENGTH = 500
 DEFAULT_CI_POLL_SECONDS = 45.0
 LONG_AGENT_SUMMARY = (
-    "Agent completed the session; detailed output is retained in Ralph diagnostics."
+    "Agent completed the session; detailed output is retained in Macatia diagnostics."
 )
 
 
-# Standard run (`ralph-kit run`): implementation and corrections, no review session.
+# Standard run (`macatia run`): implementation and corrections, no review session.
 STANDARD_RUN = RunMode(
     review=False,
     description=(
@@ -130,21 +130,21 @@ STANDARD_RUN = RunMode(
     diagnostics_label="run",
     # The "experimental" marker names predate the standard run becoming the default.
     # They are persisted in GitHub comments, so they must not change.
-    implementation_evidence_prefix="<!-- ralph-experimental-implementation-evidence: ",
-    parent_completion_marker="<!-- ralph-experimental-parent-completion -->",
-    terminal_summary_marker="<!-- ralph-experimental-terminal-summary -->",
+    implementation_evidence_prefix="<!-- macatia-experimental-implementation-evidence: ",
+    parent_completion_marker="<!-- macatia-experimental-parent-completion -->",
+    terminal_summary_marker="<!-- macatia-experimental-terminal-summary -->",
     evidence_head_key="verified_head",
     follow_up_role="correction",
     follow_up_commits="correction commits",
     gate_correction_scope="Preserve the issue acceptance criteria while fixing this gate.",
     unverified_warning=(
-        "ℹ️ Ralph is running without automated verification: local gates and "
+        "ℹ️ Macatia is running without automated verification: local gates and "
         "remote CI are explicitly disabled; human review is required before merge."
     ),
 )
 
 
-# Reviewed run (`ralph-kit run --review`): adds an independent review session per child.
+# Reviewed run (`macatia run --review`): adds an independent review session per child.
 REVIEWED_RUN = RunMode(
     review=True,
     description=(
@@ -153,25 +153,25 @@ REVIEWED_RUN = RunMode(
     ),
     diagnostics_label="run --review",
     implementation_evidence_prefix=ORIGINAL_EVIDENCE_PREFIX,
-    parent_completion_marker="<!-- ralph-parent-completion -->",
-    terminal_summary_marker="<!-- ralph-terminal-summary -->",
+    parent_completion_marker="<!-- macatia-parent-completion -->",
+    terminal_summary_marker="<!-- macatia-terminal-summary -->",
     evidence_head_key="reviewed_head",
     follow_up_role="review",
     follow_up_commits="corrective review commits",
-    gate_correction_scope="Ralph separately\nreviews completeness against the entire issue.",
+    gate_correction_scope="Macatia separately\nreviews completeness against the entire issue.",
     unverified_warning=(
-        "⚠️ Ralph is running without automated verification: independent "
+        "⚠️ Macatia is running without automated verification: independent "
         "agent review is the only configured check."
     ),
 )
 
 
 REVIEW_BY_DEFAULT_NOTICE = (
-    "ℹ️ review_by_default is on in ralph.toml: this is a reviewed run, with a review "
+    "ℹ️ review_by_default is on in macatia.toml: this is a reviewed run, with a review "
     "session per child. Use --no-review for a standard run."
 )
 CAFFEINATE_BY_DEFAULT_NOTICE = (
-    "ℹ️ caffeinate_by_default is on in ralph.toml: this run holds a sleep lock until it "
+    "ℹ️ caffeinate_by_default is on in macatia.toml: this run holds a sleep lock until it "
     "ends. Use --no-caffeinate to let the machine sleep."
 )
 
@@ -211,7 +211,7 @@ def utc_timestamp() -> str:
 
 
 class DiagnosticRecorder:
-    """Keeps untracked evidence for one Ralph invocation and its agents."""
+    """Keeps untracked evidence for one Macatia invocation and its agents."""
 
     def __init__(self, repository_root: pathlib.Path, loop_label: str):
         self.run_id = uuid.uuid4().hex
@@ -433,12 +433,12 @@ class RunAdapters:
     )
     # Asks a startup choice between Stop and an accepting choice:
     # (question, accepting label, accept_by_default=) -> True on the accepting choice.
-    # None when Ralph is not in a terminal, which always stops.
+    # None when Macatia is not in a terminal, which always stops.
     confirm: Callable[..., bool] | None = None
     # Picks the run target of a run started without one:
     # (startable run targets by ascending number, preselected number or None) -> the
     # chosen number. Ctrl-C raises KeyboardInterrupt, which the run counts as Stop.
-    # None when Ralph is not in a terminal: the run then needs its run target.
+    # None when Macatia is not in a terminal: the run then needs its run target.
     choose_run_target: Callable[[list[StartableRunTarget], int | None], int] | None = None
     # Holds the sleep lock for the duration of the block, for `--caffeinate` or
     # `caffeinate_by_default`.
@@ -449,7 +449,7 @@ class RunAdapters:
     # (command, directory).
     restart_here: Callable[[str, pathlib.Path], None] = restart_here
     # Asks where a `--tmux` run continues: (persistent terminal name) -> the answer. Ctrl-C raises
-    # KeyboardInterrupt, which the run counts as Stop. None when Ralph is not in a terminal.
+    # KeyboardInterrupt, which the run counts as Stop. None when Macatia is not in a terminal.
     choose_continuation: Callable[[str], Continuation] | None = None
 
 
@@ -463,11 +463,11 @@ class RunState:
     """
 
     adapters: RunAdapters
-    # Ralph runs against the repository it is started from, not where it is installed.
+    # Macatia runs against the repository it is started from, not where it is installed.
     repository_root: pathlib.Path
     started_at: float
     loaded_mode: RunMode | None = None
-    loaded_config: RalphConfig | None = None
+    loaded_config: MacatiaConfig | None = None
     loaded_github: GitHub | None = None
     diagnostics: DiagnosticRecorder | None = None
     branch: str | None = None
@@ -509,19 +509,19 @@ class RunState:
     @property
     def mode(self) -> RunMode:
         if self.loaded_mode is None:
-            raise RalphError("Ralph run mode was not initialized")
+            raise MacatiaError("Macatia run mode was not initialized")
         return self.loaded_mode
 
     @property
-    def config(self) -> RalphConfig:
+    def config(self) -> MacatiaConfig:
         if self.loaded_config is None:
-            raise RalphError("Ralph configuration was not initialized")
+            raise MacatiaError("Macatia configuration was not initialized")
         return self.loaded_config
 
     @property
     def github(self) -> GitHub:
         if self.loaded_github is None:
-            raise RalphError("Ralph GitHub access was not initialized")
+            raise MacatiaError("Macatia GitHub access was not initialized")
         return self.loaded_github
 
 
@@ -544,7 +544,7 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         backup_line = state.backup_switch.summary_line(state.config.backup)
     warnings = "".join(f"\n- warning: {warning}" for warning in state.warnings)
     return (
-        f"🏁 Ralph summary for {run_target_name(state)}:\n"
+        f"🏁 Macatia summary for {run_target_name(state)}:\n"
         f"- implemented children this run: {state.summary.implemented}\n"
         f"- remaining children: {state.summary.remaining}\n"
         f"- agent sessions: {state.summary.agent_sessions}\n"
@@ -614,9 +614,9 @@ def publish_terminal_summary(state: RunState, summary: str) -> None:
 def open_pull_request(state: RunState, branch: str) -> dict[str, Any] | None:
     pulls = state.github.open_pull_requests(branch, state.config.base_branch)
     if not isinstance(pulls, list):
-        raise RalphError("GitHub pull request lookup returned invalid data")
+        raise MacatiaError("GitHub pull request lookup returned invalid data")
     if len(pulls) > 1:
-        raise RalphError(f"branch {branch} has more than one open pull request")
+        raise MacatiaError(f"branch {branch} has more than one open pull request")
     return pulls[0] if pulls else None
 
 
@@ -637,8 +637,8 @@ def report_stop(
     try:
         with spinner(status):
             publish_terminal_summary(state, summary)
-    except RalphError as publish_error:
-        print(f"Ralph could not publish terminal summary: {publish_error}", file=sys.stderr)
+    except MacatiaError as publish_error:
+        print(f"Macatia could not publish terminal summary: {publish_error}", file=sys.stderr)
     print(summary, file=sys.stderr)
 
 
@@ -653,7 +653,7 @@ class RemainingChild:
 
 def stop_details(state: RunState, error: BaseException) -> str:
     message = " ".join(str(error).split())
-    if not isinstance(error, (RalphError, Interrupted)):
+    if not isinstance(error, (MacatiaError, Interrupted)):
         message = f"{type(error).__name__}: {message}"
     sections = [f"Stop reason: {sanitized_text(message)[:MAX_STOP_REASON_LENGTH]}"]
     try:
@@ -685,14 +685,14 @@ def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
     if isinstance(error, Interrupted):
         if error.unverified is not None:
             return []
-        return [f"Ralph was interrupted: {rerun_instruction(state)} to continue."]
-    if not isinstance(error, RalphError):
+        return [f"Macatia was interrupted: {rerun_instruction(state)} to continue."]
+    if not isinstance(error, MacatiaError):
         directory = (
             state.diagnostics.directory.relative_to(state.repository_root)
             if state.diagnostics is not None else DIAGNOSTICS_DIRECTORY
         )
         return [
-            f"Ralph crashed: inspect the run diagnostics in `{directory}`, fix the cause, "
+            f"Macatia crashed: inspect the run diagnostics in `{directory}`, fix the cause, "
             f"then {rerun_instruction(state)}."
         ]
     if isinstance(
@@ -830,8 +830,8 @@ def unsatisfied_blockers(state: RunState, child_number: int) -> str:
 
 
 def handoff_comment_url(state: RunState, child_number: int) -> str | None:
-    """The link to Ralph's latest handoff comment on a child in human review."""
-    records = ralph_records(issue_details(state, child_number), state.config.trusted_authors)
+    """The link to Macatia's latest handoff comment on a child in human review."""
+    records = macatia_records(issue_details(state, child_number), state.config.trusted_authors)
     for comment in reversed(records):
         body = str(comment.get("body", ""))
         if body.startswith((HANDOFF_MARKER, HANDOFF_PREFIX)):
@@ -924,7 +924,7 @@ def release_interrupted_child(state: RunState, interruption: Interrupted) -> Non
         send_started_child_to_human_review(
             state,
             child_number,
-            f"Ralph stopped because the run was interrupted ({interruption}) before it "
+            f"Macatia stopped because the run was interrupted ({interruption}) before it "
             f"verified this child. The unverified commits {commits} are on the branch: "
             "inspect them, then close this child or relabel it "
             f"{configured_label(state, 'ready_for_agent')} and rerun. This child remains "
@@ -934,7 +934,7 @@ def release_interrupted_child(state: RunState, interruption: Interrupted) -> Non
     state.working_child = None
 
 
-class EngineFailure(RalphError):
+class EngineFailure(MacatiaError):
     """An agent session that ended without a valid result, whatever the cause."""
 
     def __init__(self, reason: str, engine: str, completed: subprocess.CompletedProcess[str]):
@@ -966,7 +966,7 @@ class BackupSwitch:
         )
 
 
-class NoRunnableChild(RalphError):
+class NoRunnableChild(MacatiaError):
     """Children remain, but none of them can run."""
 
     def __init__(self, run_target: int, standalone: bool):
@@ -976,7 +976,7 @@ class NoRunnableChild(RalphError):
         )
 
 
-class ChildHandedToHumanReview(RalphError):
+class ChildHandedToHumanReview(MacatiaError):
     """The child cycle handed a child to human review, which stops the run."""
 
     def __init__(self, child_number: int, cycle: HandedToHumanReview):
@@ -985,7 +985,7 @@ class ChildHandedToHumanReview(RalphError):
         self.cause = cycle.cause
 
 
-class ChildLeftAgentWorking(RalphError):
+class ChildLeftAgentWorking(MacatiaError):
     """Children were agent working at startup, left by an earlier run or held by a concurrent one.
 
     `warning` is the startup warning, for the terminal summary.
@@ -1002,7 +1002,7 @@ class ChildLeftAgentWorking(RalphError):
         self.warning = warning
 
 
-class ChildAgentWorkingInAnotherRun(RalphError):
+class ChildAgentWorkingInAnotherRun(MacatiaError):
     """Another run on the same parent is working on these children.
 
     A run releases its own child before selecting the next one, so any child
@@ -1024,7 +1024,7 @@ def child_numbers(children: Iterable[dict[str, Any]]) -> str:
 def left_agent_working_warning(state: RunState, children: list[dict[str, Any]]) -> str:
     return (
         f"{child_numbers(children)} labelled {configured_label(state, 'agent_working')}. "
-        "Ralph cannot tell an interrupted run from a run still active "
+        "Macatia cannot tell an interrupted run from a run still active "
         "elsewhere: resuming while another run is active makes two agents do the same work "
         "on two branches."
     )
@@ -1034,7 +1034,7 @@ def resolve_left_agent_working(state: RunState, children: list[dict[str, Any]]) 
     """Ask once whether to resume every child left agent working; anything but Resume stops the run.
 
     Resume relabels them ready-for-agent. Without a terminal, or on Ctrl-C at the
-    prompt, Ralph stops.
+    prompt, Macatia stops.
     """
     label = configured_label(state, "agent_working")
     warning = left_agent_working_warning(state, children)
@@ -1053,7 +1053,7 @@ def resolve_left_agent_working(state: RunState, children: list[dict[str, Any]]) 
         print(f"🔁 Resuming child #{child['number']}.", flush=True)
 
 
-class DependencyDeadlock(RalphError):
+class DependencyDeadlock(MacatiaError):
     """Every remaining runnable-looking child is blocked by incomplete work."""
 
     def __init__(self, children: list[dict[str, Any]]):
@@ -1061,7 +1061,7 @@ class DependencyDeadlock(RalphError):
         self.children = children
 
 
-class LocalGateFailure(RalphError):
+class LocalGateFailure(MacatiaError):
     """An applicable local gate failed with a safe diagnostic."""
 
     def __init__(self, description: str, diagnostic: str):
@@ -1070,7 +1070,7 @@ class LocalGateFailure(RalphError):
         self.diagnostic = diagnostic
 
 
-class ProductCIFailure(RalphError):
+class ProductCIFailure(MacatiaError):
     """A completed required check failed because the implementation is faulty."""
 
     def __init__(self, diagnostic: str, check_runs: list[dict[str, Any]]):
@@ -1079,7 +1079,7 @@ class ProductCIFailure(RalphError):
         self.check_runs = check_runs
 
 
-class InfrastructureFailure(RalphError):
+class InfrastructureFailure(MacatiaError):
     """Remote CI evidence could not be trusted or obtained."""
 
     def __init__(self, operation: str, diagnostic: str):
@@ -1088,7 +1088,7 @@ class InfrastructureFailure(RalphError):
         self.diagnostic = diagnostic
 
 
-class InfrastructureRetriesExhausted(RalphError):
+class InfrastructureRetriesExhausted(MacatiaError):
     """The bounded retries for one remote operation were exhausted."""
 
     def __init__(self, failure: InfrastructureFailure, retries: int):
@@ -1134,7 +1134,7 @@ class InfrastructureRetryTracker:
                 return operation()
             except InfrastructureFailure as failure:
                 if current_head(self.state) != expected_head:
-                    raise RalphError(
+                    raise MacatiaError(
                         "branch advanced during an infrastructure retry"
                     ) from failure
                 if retries >= self.maximum_retries:
@@ -1142,7 +1142,7 @@ class InfrastructureRetryTracker:
                 retries += 1
                 self.infra_retries += 1
                 retry_seconds = float(
-                    os.environ.get("RALPH_INFRA_RETRY_SECONDS", "30")
+                    os.environ.get("MACATIA_INFRA_RETRY_SECONDS", "30")
                 )
                 print(
                     f"⚠️ {not_ready}; the next check is in "
@@ -1203,7 +1203,7 @@ def parse_arguments(
         "--config",
         type=pathlib.Path,
         default=DEFAULT_CONFIG_PATH,
-        help="repository-specific Ralph TOML configuration",
+        help="repository-specific Macatia TOML configuration",
     )
     parser.add_argument("parent_issue", nargs="?", type=positive_integer, metavar="ISSUE")
     if len(flags) == 2:
@@ -1222,21 +1222,21 @@ def parse_arguments(
         ),
     )
     if arguments.parent_issue is None and issue_required:
-        parser.error("pass the issue to run: ralph-kit run ISSUE")
+        parser.error("pass the issue to run: macatia run ISSUE")
     return arguments
 
 
 def load_quality_module(path: pathlib.Path):
     specification = importlib.util.spec_from_file_location(
-        "ralph_quality", path
+        "macatia_quality", path
     )
     if specification is None or specification.loader is None:
-        raise RalphError(f"could not load quality policy from {path}")
+        raise MacatiaError(f"could not load quality policy from {path}")
     module = importlib.util.module_from_spec(specification)
     try:
         specification.loader.exec_module(module)
     except OSError as error:
-        raise RalphError(f"could not load quality policy from {path}: {error}") from error
+        raise MacatiaError(f"could not load quality policy from {path}: {error}") from error
     return module
 
 
@@ -1246,7 +1246,7 @@ def current_head(state: RunState) -> str:
 
 def require_clean_worktree(state: RunState, context: str) -> None:
     if git(state, "status", "--porcelain"):
-        raise RalphError(f"worktree is dirty {context}")
+        raise MacatiaError(f"worktree is dirty {context}")
 
 
 def require_repository_root(state: RunState) -> None:
@@ -1257,8 +1257,8 @@ def require_repository_root(state: RunState) -> None:
         else None
     )
     if actual_root != state.repository_root:
-        raise RalphError(
-            f"wrong worktree: start ralph-kit from the repository root, not {state.repository_root}"
+        raise MacatiaError(
+            f"wrong worktree: start macatia from the repository root, not {state.repository_root}"
         )
 
 
@@ -1271,7 +1271,7 @@ def preflight(state: RunState) -> str:
         ["git", "check-ref-format", "--branch", configuration.base_branch],
         check=False,
     ).returncode != 0:
-        raise RalphError(
+        raise MacatiaError(
             f"configured base branch is not a valid Git branch: "
             f"{configuration.base_branch}"
         )
@@ -1279,14 +1279,14 @@ def preflight(state: RunState) -> str:
         state,
         ["git", "remote", "get-url", configuration.remote], check=False
     ).returncode != 0:
-        raise RalphError(f"configured Git remote does not exist: {configuration.remote}")
+        raise MacatiaError(f"configured Git remote does not exist: {configuration.remote}")
 
     branch_result = command(
         state,
         ["git", "symbolic-ref", "--quiet", "--short", "HEAD"], check=False
     )
     if branch_result.returncode != 0:
-        raise RalphError("detached HEAD is not allowed")
+        raise MacatiaError("detached HEAD is not allowed")
     branch = branch_result.stdout.strip()
     # A `--worktree` run leaves the person's checkout alone; the restarted run checks its own.
     if not state.offer_run_worktree:
@@ -1299,11 +1299,11 @@ def preflight(state: RunState) -> str:
         f"branch refs/heads/{branch}"
     )
     if expected_entry not in worktrees:
-        raise RalphError("current checkout does not match the selected Git worktree")
+        raise MacatiaError("current checkout does not match the selected Git worktree")
 
     repository = state.github.repository_name()
     if repository != configuration.repository:
-        raise RalphError(
+        raise MacatiaError(
             "wrong repository: expected "
             f"{configuration.repository}, found {repository}"
         )
@@ -1320,7 +1320,7 @@ def branch_heads(
     )
     if listing.returncode != 0:
         detail = " ".join((listing.stderr or "").split())
-        raise RalphError(f"could not reach {remote} to look for {branch}: {detail}")
+        raise MacatiaError(f"could not reach {remote} to look for {branch}: {detail}")
     # A pattern also matches longer refs ending in it, such as refs/heads/x/<run branch>.
     remote_head = next(
         (
@@ -1338,8 +1338,8 @@ def branch_heads(
 
 
 def cumulative_draft_pull_request_title(run_target: int, *, standalone: bool) -> str:
-    """The title Ralph gives the cumulative draft PR of a run target."""
-    return f"Implement Ralph {'issue' if standalone else 'parent'} #{run_target}"
+    """The title Macatia gives the cumulative draft PR of a run target."""
+    return f"Implement Macatia {'issue' if standalone else 'parent'} #{run_target}"
 
 
 def offer_run_branch(state: RunState, parent_issue: int) -> str:
@@ -1364,17 +1364,17 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
         not_done, by_hand = "was not switched to", f"switch to {run_branch}"
     confirm = state.adapters.confirm
     if confirm is None:
-        raise RalphError(
+        raise MacatiaError(
             f"{base} is the base branch: {by_hand} and push it to {remote}, "
             f"or run `{state.rerun_command}` in a terminal"
         )
-    print(f"⚠️  {base} is the base branch: Ralph does not run on it.", flush=True)
+    print(f"⚠️  {base} is the base branch: Macatia does not run on it.", flush=True)
     try:
         accepted = confirm(question, accept, accept_by_default=True)
     except KeyboardInterrupt:
         accepted = False
     if not accepted:
-        raise RalphError(f"stopped on {base}: {run_branch} {not_done}")
+        raise MacatiaError(f"stopped on {base}: {run_branch} {not_done}")
 
     if local_head is None and remote_head is None:
         create_run_branch(state, run_branch)
@@ -1386,8 +1386,8 @@ def offer_run_branch(state: RunState, parent_issue: int) -> str:
     if upstream != f"{remote}/{run_branch}" or remote_head != current_head(state):
         try:
             push_branch(state, run_branch)
-        except RalphError as error:
-            raise RalphError(
+        except MacatiaError as error:
+            raise MacatiaError(
                 f"could not push {run_branch} to {remote}; the local branch is kept: {error}"
             ) from error
     return run_branch
@@ -1398,16 +1398,16 @@ def require_persistent_terminal(state: RunState) -> None:
     tmux, or outside a terminal, where there is no continuation choice."""
     unavailability = state.adapters.persistent_terminal.unavailable()
     if unavailability is not None:
-        raise RalphError(str(unavailability))
+        raise MacatiaError(str(unavailability))
     if state.adapters.choose_continuation is None:
-        raise RalphError("--tmux needs a terminal: run in a terminal, or without --tmux")
+        raise MacatiaError("--tmux needs a terminal: run in a terminal, or without --tmux")
 
 
 def require_no_existing_persistent_terminal(state: RunState, parent_issue: int) -> str:
     """Stop when the persistent terminal of `parent_issue` already exists; return its name."""
     name = persistent_terminal_name(state.config.repository, parent_issue)
     if state.adapters.persistent_terminal.exists(name):
-        raise RalphError(already_exists(name))
+        raise MacatiaError(already_exists(name))
     return name
 
 
@@ -1429,7 +1429,7 @@ def ask_where_to_continue(
     except KeyboardInterrupt:
         continuation = Continuation.STOP
     if continuation is Continuation.STOP:
-        raise RalphError(f"{name} was not started")
+        raise MacatiaError(f"{name} was not started")
     if continuation is Continuation.CONTINUE_HERE:
         return True
     assert state.rerun_command is not None
@@ -1482,13 +1482,13 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
         pathlib.Path(lines[0].removeprefix("worktree ")).resolve() == path
         for lines in worktree_entries(state)
     ):
-        raise RalphError(
+        raise MacatiaError(
             f"{path} already exists but is not the run worktree of {run_branch}: move it "
             "away, or run without --worktree"
         )
     confirm = state.adapters.confirm
     if confirm is None:
-        raise RalphError(
+        raise MacatiaError(
             f"{run_branch} has no run worktree: run `{state.rerun_command}` in a terminal "
             f"to create it at {path}"
         )
@@ -1502,7 +1502,7 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
             capture_output=False,
         )
         if fetched.returncode != 0:
-            raise RalphError(f"could not fetch {base} from {remote}; no run worktree was created")
+            raise MacatiaError(f"could not fetch {base} from {remote}; no run worktree was created")
         require_configuration_on(state, f"{remote}/{base}")
     else:
         remote_head, revision = followed_run_branch(state, run_branch, local_head, remote_head)
@@ -1516,7 +1516,7 @@ def offer_run_worktree(state: RunState, parent_issue: int) -> pathlib.Path | Non
     except KeyboardInterrupt:
         accepted = False
     if not accepted:
-        raise RalphError(f"the run worktree for {run_branch} was not created")
+        raise MacatiaError(f"the run worktree for {run_branch} was not created")
     if local_head is None and remote_head is None:
         # --no-track: the run branch follows its own remote branch once pushed, never the base.
         git(
@@ -1547,7 +1547,7 @@ def prepare_run_worktree(state: RunState, path: pathlib.Path) -> None:
     # Not captured: the command writes its own progress to the terminal.
     completed = subprocess.run(setup, shell=True, cwd=path, check=False)
     if completed.returncode != 0:
-        raise RalphError(
+        raise MacatiaError(
             f"worktree_setup exited with {completed.returncode} in {path}: fix it, or run "
             "without --worktree"
         )
@@ -1583,11 +1583,11 @@ def require_run_branch_checked_out_nowhere(state: RunState, run_branch: str) -> 
         checkout = lines[0].removeprefix("worktree ")
         # Git lists a worktree whose directory was deleted as prunable, and keeps its branch.
         if any(line.startswith("prunable") for line in lines):
-            raise RalphError(
+            raise MacatiaError(
                 f"{run_branch} is checked out in {checkout}, which no longer exists: remove "
                 "it with `git worktree prune`, or run without --worktree"
             )
-        raise RalphError(
+        raise MacatiaError(
             f"{run_branch} is checked out in {checkout}: switch it to another branch there, "
             "or run without --worktree"
         )
@@ -1620,7 +1620,7 @@ def continue_in_run_worktree(
     nothing changed."""
     confirm = state.adapters.confirm
     if confirm is None:
-        raise RalphError(
+        raise MacatiaError(
             f"{run_branch} has a run worktree at {path}: run `{state.rerun_command}` "
             "in a terminal to continue in it"
         )
@@ -1633,7 +1633,7 @@ def continue_in_run_worktree(
     except KeyboardInterrupt:
         accepted = False
     if not accepted:
-        raise RalphError(f"the run did not continue in the run worktree {path}")
+        raise MacatiaError(f"the run did not continue in the run worktree {path}")
     if remote_head is not None:
         follow_remote_run_branch(state, run_branch, local_head, remote_head, path)
 
@@ -1649,7 +1649,7 @@ def require_configuration_on(state: RunState, revision: str) -> None:
     if relative is None or command(
         state, ["git", "cat-file", "-e", f"{revision}:{relative}"], check=False
     ).returncode != 0:
-        raise RalphError(
+        raise MacatiaError(
             f"{state.config_path} is not on {revision}, where the run worktree reads it: "
             "commit and push it, or run without --worktree"
         )
@@ -1701,7 +1701,7 @@ def fetch_run_branch(state: RunState, run_branch: str) -> str:
         capture_output=False,
     )
     if fetched.returncode != 0:
-        raise RalphError(f"could not fetch {run_branch} from {remote}")
+        raise MacatiaError(f"could not fetch {run_branch} from {remote}")
     return git(state, "rev-parse", tracking)
 
 
@@ -1725,7 +1725,7 @@ def require_not_diverged(state: RunState, run_branch: str, local_head: str, remo
     if not (
         is_ancestor(state, local_head, remote_head) or is_ancestor(state, remote_head, local_head)
     ):
-        raise RalphError(
+        raise MacatiaError(
             f"{run_branch} has diverged from {state.config.remote}/{run_branch}; reconcile "
             f"them, then run `{state.rerun_command}` again"
         )
@@ -1744,11 +1744,11 @@ def create_run_branch(state: RunState, run_branch: str) -> None:
         capture_output=False,
     )
     if pulled.returncode != 0:
-        raise RalphError(
+        raise MacatiaError(
             f"{base} cannot fast-forward to {remote}/{base}; {run_branch} was not created"
         )
     if current_head(state) != git(state, "rev-parse", "FETCH_HEAD"):
-        raise RalphError(
+        raise MacatiaError(
             f"{base} has commits that are not on {remote}/{base}; {run_branch} was not created"
         )
     git(state, "switch", "--create", run_branch)
@@ -1828,7 +1828,7 @@ def select_runnable_child(
 def issue_details(state: RunState, issue_number: int) -> dict[str, Any]:
     details = state.github.issue(issue_number)
     if int(details.get("number", 0)) != issue_number:
-        raise RalphError(f"GitHub returned the wrong issue for #{issue_number}")
+        raise MacatiaError(f"GitHub returned the wrong issue for #{issue_number}")
     return details
 
 
@@ -1845,9 +1845,9 @@ def comments_since_reset_marker(
     issue: dict[str, Any], trusted_authors: Iterable[str]
 ) -> list[dict[str, Any]]:
     """The issue's comments, whatever their author, newer than its latest trusted reset
-    marker: Ralph reads none of its own records older than it (ADR 0003).
+    marker: Macatia reads none of its own records older than it (ADR 0003).
 
-    Every reader of Ralph's records goes through here or `ralph_records`.
+    Every reader of Macatia's records goes through here or `macatia_records`.
     """
     trusted = set(trusted_authors)
     comments = list(issue.get("comments", []))
@@ -1858,8 +1858,8 @@ def comments_since_reset_marker(
     return comments
 
 
-def ralph_records(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list[dict[str, Any]]:
-    """The issue's trusted comments that count as Ralph's records, oldest first."""
+def macatia_records(issue: dict[str, Any], trusted_authors: Iterable[str]) -> list[dict[str, Any]]:
+    """The issue's trusted comments that count as Macatia's records, oldest first."""
     trusted = set(trusted_authors)
     return [
         comment for comment in comments_since_reset_marker(issue, trusted)
@@ -1888,7 +1888,7 @@ def implementation_evidence_heads(
         if not allow_original:
             return None
         legacy_implementation = re.search(
-            r"^Ralph verified implementation commits "
+            r"^Macatia verified implementation commits "
             r"`[0-9a-f]{40}\.\.([0-9a-f]{40})`",
             body,
         )
@@ -1925,7 +1925,7 @@ def latest_implementation_heads(
 
     The standard run accepts every format: its own, the reviewed run's, and the legacy one.
     """
-    for comment in reversed(ralph_records(issue, trusted_authors)):
+    for comment in reversed(macatia_records(issue, trusted_authors)):
         heads = implementation_evidence_heads(
             str(comment.get("body", "")), mode, allow_original=True
         )
@@ -1986,7 +1986,7 @@ def latest_update_is_trusted_marker_comment(
     return any(
         any(marker in str(comment.get("body", "")) for marker in markers)
         and comment.get("createdAt") == updated_at
-        for comment in ralph_records(issue, state.config.trusted_authors)
+        for comment in macatia_records(issue, state.config.trusted_authors)
     )
 
 
@@ -2027,7 +2027,7 @@ def merged_pull_request_is_on_current_branch(
     def lookup():
         try:
             return state.github.merged_pull_requests(state.config.base_branch, verified_head)
-        except RalphError as error:
+        except MacatiaError as error:
             raise InfrastructureFailure(subject, str(error)) from error
 
     pulls = state.blocker_pull_requests.get(verified_head)
@@ -2082,7 +2082,7 @@ def mark_parent_work_started(state: RunState, parent_number: int) -> None:
         state.github.edit_issue_labels(
             parent_number, add=work_started, remove=sorted({ready_label} & parent_labels)
         )
-    except RalphError as error:
+    except MacatiaError as error:
         warn_informational_label_failed(state, f"parent #{parent_number}", work_started, error)
 
 
@@ -2096,18 +2096,18 @@ def mark_standalone(state: RunState, issue_number: int) -> None:
         if standalone in labels(issue_details(state, issue_number)):
             return
         state.github.edit_issue_labels(issue_number, add=standalone, remove=[])
-    except RalphError as error:
+    except MacatiaError as error:
         warn_informational_label_failed(
             state, f"standalone issue #{issue_number}", standalone, error
         )
 
 
 def warn_informational_label_failed(
-    state: RunState, issue: str, label: str, error: RalphError
+    state: RunState, issue: str, label: str, error: MacatiaError
 ) -> None:
     """Warn that an informational label write failed; the run continues without it."""
     warning = (
-        f"Ralph could not label {issue} {label}: "
+        f"Macatia could not label {issue} {label}: "
         f"{sanitized_text(' '.join(str(error).split()))}. The run continues; add the "
         "label by hand if you want it."
     )
@@ -2117,7 +2117,7 @@ def warn_informational_label_failed(
 
 def latest_child_base_comment(state: RunState, issue: dict[str, Any]) -> str | None:
     """The body of the child's latest trusted comment carrying a child base marker."""
-    for comment in reversed(ralph_records(issue, state.config.trusted_authors)):
+    for comment in reversed(macatia_records(issue, state.config.trusted_authors)):
         body = str(comment.get("body", ""))
         if CHILD_BASE_MARKER_PREFIX in body:
             return body
@@ -2284,12 +2284,12 @@ def start_child_cycle(
             child_base = resumed_child_base(state, child_number, siblings, recorded, head)
         else:
             note = (
-                " Ralph started from the current branch head because the recorded "
+                " Macatia started from the current branch head because the recorded "
                 f"child base `{recorded}` is no longer on the branch."
             )
     elif latest_child_base_comment(state, issue) is not None:
         note = (
-            " Ralph started from the current branch head because the latest child base "
+            " Macatia started from the current branch head because the latest child base "
             "marker is malformed."
         )
     if child_base.moved_past is not None:
@@ -2306,7 +2306,7 @@ def start_child_cycle(
     state.github.comment_on_issue(
         child_number,
         f"{CHILD_BASE_MARKER_PREFIX}{marker} -->\n"
-        f"Ralph started a child cycle from child base `{child_base.commit}`: this child's "
+        f"Macatia started a child cycle from child base `{child_base.commit}`: this child's "
         f"implementation evidence covers every commit after it.{note}",
     )
     return child_base
@@ -2340,7 +2340,7 @@ def trusted_issue_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
 
 def require_trusted_issue(state: RunState, issue: dict[str, Any]) -> None:
     if refusal := trusted_issue_refusal(state, issue):
-        raise RalphError(refusal)
+        raise MacatiaError(refusal)
 
 
 def run_target_refusal(state: RunState, issue_number: int) -> str | None:
@@ -2357,7 +2357,7 @@ def run_target_refusal(state: RunState, issue_number: int) -> str | None:
 
 def require_run_target(state: RunState, issue_number: int) -> None:
     if refusal := run_target_refusal(state, issue_number):
-        raise RalphError(refusal)
+        raise MacatiaError(refusal)
 
 
 def standalone_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
@@ -2395,7 +2395,7 @@ def standalone_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
 
 def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None:
     if refusal := standalone_refusal(state, issue):
-        raise RalphError(refusal)
+        raise MacatiaError(refusal)
 
 
 def parent_refusal(state: RunState, parent: dict[str, Any]) -> str | None:
@@ -2415,16 +2415,16 @@ def parent_refusal(state: RunState, parent: dict[str, Any]) -> str | None:
 
 def require_startable_parent(state: RunState, parent: dict[str, Any]) -> None:
     if refusal := parent_refusal(state, parent):
-        raise RalphError(refusal)
+        raise MacatiaError(refusal)
 
 
 def parse_agent_result(path: pathlib.Path) -> dict[str, Any]:
     try:
         result = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
-        raise RalphError("agent did not return valid structured output") from error
+        raise MacatiaError("agent did not return valid structured output") from error
     if not isinstance(result, dict):
-        raise RalphError("agent structured output is not an object")
+        raise MacatiaError("agent structured output is not an object")
     outcome = result.get("outcome")
     summary = result.get("summary")
     findings = result.get("findings", [])
@@ -2437,15 +2437,15 @@ def parse_agent_result(path: pathlib.Path) -> dict[str, Any]:
         or not isinstance(findings, list)
         or any(not isinstance(finding, str) or not finding.strip() for finding in findings)
     ):
-        raise RalphError("agent structured output does not match the Ralph contract")
+        raise MacatiaError("agent structured output does not match the Macatia contract")
     if outcome == "needs_correction" and not findings:
-        raise RalphError(
-            "agent structured output does not match the Ralph contract: "
+        raise MacatiaError(
+            "agent structured output does not match the Macatia contract: "
             "needs_correction requires at least one unresolved actionable finding"
         )
     if outcome in {"committed", "no_changes"} and findings:
-        raise RalphError(
-            "agent structured output does not match the Ralph contract: "
+        raise MacatiaError(
+            "agent structured output does not match the Macatia contract: "
             f"{outcome} requires an empty findings array; put completed work and "
             "successful checks in summary, or use needs_correction for unresolved gaps"
         )
@@ -2512,7 +2512,7 @@ def run_agent(
     role: str, prompt: str, issue_number: int
 ) -> tuple[dict[str, Any], str, list[str]]:
     if state.diagnostics is None:
-        raise RalphError("diagnostics were not initialized")
+        raise MacatiaError("diagnostics were not initialized")
     before_head = current_head(state)
     session_kind = {
         "implementation": "implementation",
@@ -2537,7 +2537,7 @@ def run_agent(
     completed: subprocess.CompletedProcess[str] | None = None
     structured_output: str | None = None
     validation: list[str] = []
-    with tempfile.TemporaryDirectory(prefix="buyr-ralph-") as temporary_directory:
+    with tempfile.TemporaryDirectory(prefix="buyr-macatia-") as temporary_directory:
         output_path = pathlib.Path(temporary_directory) / "result.json"
         try:
             print(
@@ -2568,10 +2568,10 @@ def run_agent(
                 validation.append(f"{engine_label} exited non-zero; inspecting retained output and Git state.")
             try:
                 result = parse_agent_result(output_path)
-            except RalphError as error:
+            except MacatiaError as error:
                 raise EngineFailure(str(error), profile.engine, completed) from error
             record["structured_result"] = result
-            validation.append("Structured output passed the Ralph contract.")
+            validation.append("Structured output passed the Macatia contract.")
             if completed.returncode != 0 and result["outcome"] != "committed":
                 raise EngineFailure(
                     f"{role} exited non-zero without a committed outcome", profile.engine, completed
@@ -2592,7 +2592,7 @@ def run_agent(
                 flush=True,
             )
             return result, after_head, commits
-        except (RalphError, ChildWorkRejected) as error:
+        except (MacatiaError, ChildWorkRejected) as error:
             validation.append(f"Rejected: {error}")
             raise
         finally:
@@ -2771,7 +2771,7 @@ def run_local_gates(
     child_number: int,
 ) -> None:
     if current_head(state) != head:
-        raise RalphError(f"local gates expected head {head}, found {current_head(state)}")
+        raise MacatiaError(f"local gates expected head {head}, found {current_head(state)}")
     changed_paths = quality.changed_paths(base, head)
     gates = [
         gate
@@ -2810,7 +2810,7 @@ def run_local_gates(
             diagnostic = evidence_diagnostic(state, arguments, completed, directory)
             raise LocalGateFailure(str(gate["description"]), diagnostic)
     if current_head(state) != head:
-        raise RalphError("a local quality gate changed the branch head")
+        raise MacatiaError("a local quality gate changed the branch head")
     require_clean_worktree(state, "after local quality gates")
 
 
@@ -2844,7 +2844,7 @@ def stop_children_for_dependency_deadlock(
         (send_started_child_to_human_review if resumable else send_child_to_human_review)(
             state,
             child_number,
-            "Ralph stopped because the parent has a dependency deadlock. This child "
+            "Macatia stopped because the parent has a dependency deadlock. This child "
             "remains open for human review.",
         )
 
@@ -2877,7 +2877,7 @@ def push_and_prepare_draft_pull_request(state: RunState, branch: str, parent_iss
 def check_runs_for_head(state: RunState, head_sha: str) -> list[dict[str, Any]]:
     try:
         response = state.github.check_runs(head_sha)
-    except RalphError as error:
+    except MacatiaError as error:
         raise InfrastructureFailure(
             "canonical CI", sanitized_diagnostic(str(error))
         ) from error
@@ -2886,11 +2886,11 @@ def check_runs_for_head(state: RunState, head_sha: str) -> list[dict[str, Any]]:
     elif isinstance(response, list):
         pages = response
     else:
-        raise RalphError("GitHub check-runs endpoint returned invalid data")
+        raise MacatiaError("GitHub check-runs endpoint returned invalid data")
     runs = []
     for page in pages:
         if not isinstance(page, dict) or not isinstance(page.get("check_runs"), list):
-            raise RalphError("GitHub check-runs page returned invalid data")
+            raise MacatiaError("GitHub check-runs page returned invalid data")
         runs.extend(page["check_runs"])
     return runs
 
@@ -2922,7 +2922,7 @@ def classify_ci_failure(
     head_sha: str,
     check_runs: Iterable[dict[str, Any]],
     requirements: dict[str, str],
-) -> RalphError | None:
+) -> MacatiaError | None:
     required_names = required_check_names(requirements)
     latest_runs = latest_required_runs(head_sha, check_runs, requirements)
     missing_names = required_names - latest_runs.keys()
@@ -3044,7 +3044,7 @@ def wait_for_exact_sha_ci(
         manifest, quality.changed_paths(base_sha, head_sha)
     )
     poll_seconds = ci_poll_seconds()
-    timeout_seconds = float(os.environ.get("RALPH_CI_TIMEOUT_SECONDS", "1800"))
+    timeout_seconds = float(os.environ.get("MACATIA_CI_TIMEOUT_SECONDS", "1800"))
     clock = state.adapters.clock
     deadline = clock() + timeout_seconds
     latest_error = "canonical CI evidence is not available"
@@ -3052,7 +3052,7 @@ def wait_for_exact_sha_ci(
     try:
         while True:
             if current_head(state) != head_sha:
-                raise RalphError("branch advanced while waiting for canonical CI")
+                raise MacatiaError("branch advanced while waiting for canonical CI")
             check_runs = check_runs_for_head(state, head_sha)
             classified_failure = classify_ci_failure(head_sha, check_runs, requirements)
             if classified_failure is not None:
@@ -3067,7 +3067,7 @@ def wait_for_exact_sha_ci(
             except RuntimeError as error:
                 latest_error = str(error)
             if clock() >= deadline:
-                raise RalphError(
+                raise MacatiaError(
                     f"canonical CI did not become green for exact head {head_sha}: {latest_error}"
                 )
             progress.update(required_ci_progress(head_sha, check_runs, requirements))
@@ -3134,7 +3134,7 @@ class CIProgress:
 
 def ci_poll_seconds() -> float:
     return float(
-        os.environ.get("RALPH_CI_POLL_SECONDS", str(DEFAULT_CI_POLL_SECONDS))
+        os.environ.get("MACATIA_CI_POLL_SECONDS", str(DEFAULT_CI_POLL_SECONDS))
     )
 
 
@@ -3145,12 +3145,12 @@ def require_published_exact_head(state: RunState, branch: str, expected_head: st
         else "local-only verification"
     )
     if current_head(state) != expected_head:
-        raise RalphError(f"branch advanced after {verification_name}")
+        raise MacatiaError(f"branch advanced after {verification_name}")
     remote_ref = f"refs/heads/{branch}"
     remote_output = git(state, "ls-remote", "--heads", state.config.remote, remote_ref)
     remote_heads = [line.split()[0] for line in remote_output.splitlines() if line]
     if remote_heads != [expected_head]:
-        raise RalphError(f"published branch advanced after {verification_name}")
+        raise MacatiaError(f"published branch advanced after {verification_name}")
 
 
 def verification_evidence(state: RunState, verified_head: str) -> str:
@@ -3170,7 +3170,7 @@ def verification_evidence(state: RunState, verified_head: str) -> str:
         )
     return (
         f"Standard run: {checks} "
-        "No separate Ralph review session was run."
+        "No separate Macatia review session was run."
     )
 
 
@@ -3226,7 +3226,7 @@ def publish_success(
     )
     body = (
         f"{mode.implementation_evidence_prefix}{evidence} -->\n"
-        f"Ralph verified implementation commits `{implementation_range}` and "
+        f"Macatia verified implementation commits `{implementation_range}` and "
         f"{correction_evidence}.{uncovered_commits} {verification_evidence(state, verified_head)}"
     )
     require_published_exact_head(state, branch, verified_head)
@@ -3248,7 +3248,7 @@ def publish_parent_completion(
     work_started = {configured_label(state, "work_started")} & labels(parent)
     body = (
         f"{state.mode.parent_completion_marker}\n"
-        f"Ralph observed all {child_count} children complete on cumulative "
+        f"Macatia observed all {child_count} children complete on cumulative "
         f"head `{verified_head}`. This run used {sessions} agent sessions; the "
         "parent is ready for human review and remains unmerged."
     )
@@ -3262,7 +3262,7 @@ def publish_parent_completion(
     if human_review_label not in current_lifecycle and not completion_comment_is_latest:
         state.github.comment_on_issue(parent_number, body)
         if current_head(state) != verified_head:
-            raise RalphError("branch advanced while handing parent to human review")
+            raise MacatiaError("branch advanced while handing parent to human review")
     if current_lifecycle != {human_review_label} or work_started:
         state.github.edit_issue_labels(
             parent_number,
@@ -3296,7 +3296,7 @@ def run_session(state: RunState, request: SessionRequest) -> SessionResult:
             raise
         if state.backup_switch is not None:
             regular_failure = state.backup_switch.failure
-            raise RalphError(
+            raise MacatiaError(
                 f"engine failure of the backup ({engine_name(backup.engine)}): {failure}; after "
                 f"the {engine_name(regular_failure.engine)} engine failure: {regular_failure}"
             ) from failure
@@ -3318,7 +3318,7 @@ def switch_to_backup(
     Without a session left for the replay, the run reports the engine failure alone.
     """
     git(state, "reset", "--hard", start_head)
-    # Ignored files, Ralph's diagnostics among them, stay.
+    # Ignored files, Macatia's diagnostics among them, stay.
     git(state, "clean", "-fd")
     session_limit = state.child_session_limit
     backup = state.config.backup
@@ -3360,7 +3360,7 @@ def session_request_prompt(state: RunState, request: SessionRequest) -> str:
         )
     if request.role == "CI correction":
         return ci_correction_prompt(state, request.child, request.correction, request.diagnostic)
-    raise RalphError(f"unknown agent session role: {request.role}")
+    raise MacatiaError(f"unknown agent session role: {request.role}")
 
 
 def check_local_gates(
@@ -3369,16 +3369,16 @@ def check_local_gates(
     """Child cycle adapter: run the applicable local gates on head_sha."""
     state = context.state
     if not state.config.verification.local_checks:
-        print("⚠️ Local quality gates are disabled by Ralph configuration.", flush=True)
+        print("⚠️ Local quality gates are disabled by Macatia configuration.", flush=True)
         observed_head = current_head(state)
         if observed_head != head_sha:
-            raise RalphError(
+            raise MacatiaError(
                 f"disabled local gates expected head {head_sha}, found {observed_head}"
             )
         require_clean_worktree(state, "while local quality gates are disabled")
         return None
     if context.quality is None or context.manifest is None:
-        raise RalphError("local quality gates require a loaded quality policy")
+        raise MacatiaError("local quality gates require a loaded quality policy")
     try:
         run_local_gates(
             state, context.quality, context.manifest, base_sha, head_sha, child_number
@@ -3451,7 +3451,7 @@ def real_run_adapters(
     choose_run_target: Callable[[list[StartableRunTarget], int | None], int] | None = None,
     choose_continuation: Callable[[str], Continuation] | None = None,
 ) -> RunAdapters:
-    """The run adapters `ralph-kit run` uses: the `gh` CLI, the real child cycle adapters,
+    """The run adapters `macatia run` uses: the `gh` CLI, the real child cycle adapters,
     tmux, and the command line's confirm, run target picker and continuation choice, None
     outside a terminal."""
     return RunAdapters(
@@ -3500,8 +3500,8 @@ def main(
             configuration = load_config(
                 config_path.resolve(), state.repository_root, require_review=True
             )
-    except RalphConfigError as error:
-        raise RalphError(str(error)) from error
+    except MacatiaConfigError as error:
+        raise MacatiaError(str(error)) from error
     caffeinated_by_setting = configuration.caffeinate_by_default and not (
         arguments.caffeinate or arguments.no_caffeinate
     )
@@ -3528,7 +3528,7 @@ def main(
         try:
             manifest = quality.load_manifest(configuration.verification.quality_manifest)
         except (OSError, ValueError, KeyError, TypeError) as error:
-            raise RalphError(f"invalid Ralph quality policy: {error}") from error
+            raise MacatiaError(f"invalid Macatia quality policy: {error}") from error
     if not configuration.verification.has_automated_verification:
         print(mode.unverified_warning, flush=True)
     parent_issue = arguments.parent_issue
@@ -3545,7 +3545,7 @@ def rerun_command(arguments: argparse.Namespace, parent_issue: int | None) -> st
     """How to start the run again on `parent_issue`, with `--worktree` when given; never with
     `--tmux`, which a run restarted or stopped in a persistent terminal does not need."""
     return shlex.join([
-        "ralph-kit",
+        "macatia",
         "run",
         *(["--review"] if arguments.review else []),
         *(["--no-review"] if arguments.no_review else []),
@@ -3605,9 +3605,9 @@ def choose_run_target(state: RunState) -> int | None:
     try:
         chosen = choose(targets, preselected)
     except KeyboardInterrupt:
-        raise RalphError("no run target was chosen") from None
+        raise MacatiaError("no run target was chosen") from None
     if chosen not in numbers:
-        raise RalphError(f"#{chosen} is not one of the startable run targets")
+        raise MacatiaError(f"#{chosen} is not one of the startable run targets")
     return chosen
 
 
@@ -3788,9 +3788,9 @@ def run(
         try:
             try:
                 return main(state, argv, prog)
-            except RalphError as error:
+            except MacatiaError as error:
                 if state.summary.parent is None:
-                    print(f"Ralph stopped: {error}", file=sys.stderr)
+                    print(f"Macatia stopped: {error}", file=sys.stderr)
                 report_stop(state, "stopped safely", error)
                 return 1
             except Exception as error:
@@ -3799,22 +3799,22 @@ def run(
         except (KeyboardInterrupt, Interrupted) as error:
             interruption = as_interruption(error)
             if state.summary.parent is None:
-                print(f"Ralph {interruption}.", file=sys.stderr)
+                print(f"Macatia {interruption}.", file=sys.stderr)
             # A second interruption leaves the cleanup unfinished: the next startup handles it.
             cleanup = interrupted_cleanup_status(state)
             try:
                 try:
                     with spinner(cleanup):
                         release_interrupted_child(state, interruption)
-                except RalphError as release_error:
+                except MacatiaError as release_error:
                     print(
-                        f"Ralph could not release the interrupted child: {release_error}",
+                        f"Macatia could not release the interrupted child: {release_error}",
                         file=sys.stderr,
                     )
                 report_stop(state, "interrupted", interruption, cleanup)
             except (KeyboardInterrupt, Interrupted) as second:
                 print(
-                    "Ralph was interrupted again; exiting without finishing the cleanup.",
+                    "Macatia was interrupted again; exiting without finishing the cleanup.",
                     file=sys.stderr,
                 )
                 return as_interruption(second).exit_code

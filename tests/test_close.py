@@ -1,4 +1,4 @@
-"""`ralph-kit close` in memory: the fake GitHub, a scripted confirmer, no Git checkout."""
+"""`macatia close` in memory: the fake GitHub, a scripted confirmer, no Git checkout."""
 
 import contextlib
 import hashlib
@@ -15,9 +15,9 @@ TESTS = pathlib.Path(__file__).resolve().parent
 sys.path.insert(0, str(TESTS.parent / "src"))
 sys.path.insert(0, str(TESTS))
 
-from ralph_kit import check, cli, close  # noqa: E402
-from ralph_kit.commands import RalphError  # noqa: E402
-from ralph_kit.loop_core import REVIEWED_RUN, STANDARD_RUN  # noqa: E402
+from macatia import check, cli, close  # noqa: E402
+from macatia.commands import MacatiaError  # noqa: E402
+from macatia.loop_core import REVIEWED_RUN, STANDARD_RUN  # noqa: E402
 from run_support import (  # noqa: E402
     FIXTURES,
     CommitPull,
@@ -79,7 +79,7 @@ class CloseTests(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         # A plain directory, not a Git checkout: closing needs only the configuration.
         self.root = pathlib.Path(directory.name).resolve()
-        shutil.copyfile(FIXTURES / "ralph.toml", self.root / "ralph.toml")
+        shutil.copyfile(FIXTURES / "macatia.toml", self.root / "macatia.toml")
         self.github = FakeGitHub()
 
     def add_parent(self, *, labels=("human-review",), **options):
@@ -97,7 +97,7 @@ class CloseTests(unittest.TestCase):
         return implementation_evidence(mode, sha(f"implementation-{number}-{version}"), verified_head)
 
     def close(self, *arguments, confirm=None, typed=None, choose=None, branch=None):
-        """Run `ralph-kit close`; confirm=None, typed=None and choose=None stand for no
+        """Run `macatia close`; confirm=None, typed=None and choose=None stand for no
         terminal, and `branch` is the checked-out branch."""
         stdout, stderr = io.StringIO(), io.StringIO()
         self.opened = 0
@@ -320,9 +320,9 @@ class CloseTests(unittest.TestCase):
 
     def test_a_rerun_after_a_standalone_issue_failed_to_close_does_not_comment_again(self):
         self.add_standalone(80)
-        self.github.close_error = {80: RalphError("command failed (gh issue close 80): HTTP 502")}
+        self.github.close_error = {80: MacatiaError("command failed (gh issue close 80): HTTP 502")}
         self.assertEqual(self.close("80", "--yes"), 1)
-        self.assertIn("ralph-kit close 80", self.stderr)
+        self.assertIn("macatia close 80", self.stderr)
         self.github.close_error = {}
 
         self.assertEqual(self.close("80", "--yes"), 0, self.stderr)
@@ -372,7 +372,7 @@ class CloseTests(unittest.TestCase):
 
     def test_a_github_error_on_the_parent_lookup_writes_nothing(self):
         self.add_standalone(80)
-        self.github.parent_error = {80: RalphError("command failed (gh api parent): HTTP 502")}
+        self.github.parent_error = {80: MacatiaError("command failed (gh api parent): HTTP 502")}
 
         self.assertEqual(self.close("80", "--yes"), 1)
 
@@ -470,7 +470,7 @@ class CloseTests(unittest.TestCase):
         self.add_parent()
         self.add_child(70)
         self.add_child(71)
-        self.github.close_error = {71: RalphError("command failed (gh issue close 71): HTTP 502")}
+        self.github.close_error = {71: MacatiaError("command failed (gh issue close 71): HTTP 502")}
 
         self.assertEqual(self.close(str(PARENT), "--yes"), 1)
 
@@ -491,7 +491,7 @@ class CloseTests(unittest.TestCase):
     def test_a_rerun_after_the_parent_failed_to_close_does_not_comment_again(self):
         self.add_parent()
         self.add_child(70)
-        self.github.close_error = {PARENT: RalphError("command failed (gh issue close 69): HTTP 502")}
+        self.github.close_error = {PARENT: MacatiaError("command failed (gh issue close 69): HTTP 502")}
 
         self.assertEqual(self.close(str(PARENT), "--yes"), 1)
         self.assertEqual(self.close(str(PARENT), "--yes"), 0, self.stderr)
@@ -510,7 +510,7 @@ class CloseTests(unittest.TestCase):
         self.assertEqual(len(self.github.comments(PARENT)), 1)
 
     def test_a_configuration_path_is_read_relative_to_the_root(self):
-        configuration = (self.root / "ralph.toml").read_text(encoding="utf-8")
+        configuration = (self.root / "macatia.toml").read_text(encoding="utf-8")
         (self.root / "other.toml").write_text(
             configuration.replace('human_review = "human-review"', 'human_review = "handoff"'),
             encoding="utf-8",
@@ -651,7 +651,7 @@ class CloseTests(unittest.TestCase):
         self.add_child(70)
         self.add_child(71)
         self.github.on_branch[sha("verified-71-v1")] = False
-        self.github.commit_pulls[sha("verified-71-v1")] = RalphError(
+        self.github.commit_pulls[sha("verified-71-v1")] = MacatiaError(
             "command failed (gh api repos/lmpaul/buyr/commits/x/pulls): HTTP 502"
         )
 
@@ -964,11 +964,11 @@ class CloseTests(unittest.TestCase):
 
     def test_a_forced_rerun_is_suggested_with_force(self):
         self.add_failing_parent()
-        self.github.close_error = {71: RalphError("command failed (gh issue close 71): HTTP 502")}
+        self.github.close_error = {71: MacatiaError("command failed (gh issue close 71): HTTP 502")}
 
         self.assertEqual(self.close("--force", str(PARENT), typed=ScriptedConfirmer(str(PARENT))), 1)
 
-        self.assertIn(f"ralph-kit close --force {PARENT}", self.stderr)
+        self.assertIn(f"macatia close --force {PARENT}", self.stderr)
 
 
     # Without ISSUE: the closable run target picker.
@@ -1043,9 +1043,9 @@ class CloseTests(unittest.TestCase):
     def test_the_picker_preselects_the_run_branch_issue_when_it_is_listed(self):
         self.add_closable_and_refused_run_targets()
         for branch, preselected in (
-            ("ralph-kit/issue-80", 80),
-            ("ralph-kit/issue-8", None),
-            ("ralph-kit/issue-81", None),
+            ("macatia/issue-80", 80),
+            ("macatia/issue-8", None),
+            ("macatia/issue-81", None),
             ("main", None),
             (None, None),
         ):
@@ -1067,7 +1067,7 @@ class CloseTests(unittest.TestCase):
     def test_a_github_error_while_listing_exits_1_and_writes_nothing(self):
         self.add_parent()
         self.add_child(70)
-        self.github.open_issues_error = RalphError("command failed (gh api): HTTP 502")
+        self.github.open_issues_error = MacatiaError("command failed (gh api): HTTP 502")
         picker = ScriptedPicker(PARENT)
 
         self.assertEqual(self.close(choose=picker), 1)
@@ -1088,13 +1088,13 @@ class CloseTests(unittest.TestCase):
         self.add_parent()
         self.add_child(70)
         self.add_child(71)
-        self.github.close_error = {71: RalphError("command failed (gh issue close 71): HTTP 502")}
+        self.github.close_error = {71: MacatiaError("command failed (gh issue close 71): HTTP 502")}
 
-        shutil.copyfile(self.root / "ralph.toml", self.root / "other.toml")
+        shutil.copyfile(self.root / "macatia.toml", self.root / "other.toml")
 
         self.assertEqual(self.close("--yes", "--config", "other.toml", choose=ScriptedPicker(PARENT)), 1)
 
-        self.assertIn(f"ralph-kit close --config other.toml {PARENT}", self.stderr)
+        self.assertIn(f"macatia close --config other.toml {PARENT}", self.stderr)
 
     def test_without_issue_or_the_picker_close_asks_for_the_issue_before_reading_github(self):
         self.assertEqual(self.close("--yes"), 2)
@@ -1140,7 +1140,7 @@ class CloseTests(unittest.TestCase):
 
 
 class CloseCommandLineTests(unittest.TestCase):
-    """`ralph-kit close` picks its run target with the arrow keys only in a terminal."""
+    """`macatia close` picks its run target with the arrow keys only in a terminal."""
 
     def picker_passed(self, *, stdin_tty, stdout_tty):
         with (
@@ -1175,7 +1175,7 @@ class CloseCommandLineTests(unittest.TestCase):
             ):
                 self.assertEqual(cli.close_target_with_arrows(targets, preselected), 20)
                 select.assert_called_once_with(
-                    "Which run target should Ralph close?",
+                    "Which run target should Macatia close?",
                     [("#12  Add a cart  (parent · 3 open children)", ""),
                      ("#20  Fix login  (standalone)", "")],
                     default,

@@ -1,4 +1,4 @@
-"""`ralph-kit configure`: change sections of an existing configuration, then save only what changed."""
+"""`macatia configure`: change sections of an existing configuration, then save only what changed."""
 
 from __future__ import annotations
 
@@ -16,9 +16,9 @@ from .config import (
     DEFAULT_CHILD_SESSION_LIMITS,
     MODEL_ROLES,
     AgentProfile,
+    MacatiaConfig,
+    MacatiaConfigError,
     MissingConfigError,
-    RalphConfig,
-    RalphConfigError,
     child_session_limit_error,
     load_config,
 )
@@ -80,7 +80,7 @@ def _profile_summary(profile: AgentProfile) -> str:
     return f"{profile.engine}/{profile.name} {profile.reasoning_effort}"
 
 
-def _role_summary(config: RalphConfig, role: str) -> str:
+def _role_summary(config: MacatiaConfig, role: str) -> str:
     profile = config.models.get(role)
     if profile is None:
         return "none"
@@ -89,7 +89,7 @@ def _role_summary(config: RalphConfig, role: str) -> str:
     return _profile_summary(profile)
 
 
-def _models_summary(config: RalphConfig) -> str:
+def _models_summary(config: MacatiaConfig) -> str:
     return " · ".join(
         "correction = implementation" if summary == "same as implementation" else f"{role} {summary}"
         for role in MODEL_ROLES
@@ -102,7 +102,7 @@ def _on(value: bool) -> str:
 
 
 # Each section: its one-line summary, and which changed keys mark it changed; EDITORS edits each one.
-SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] = {
+SECTIONS: dict[str, tuple[Callable[[MacatiaConfig], str], Callable[[str], bool]]] = {
     "Model profiles": (_models_summary, lambda key: key.split(".")[:2] in [["models", role] for role in MODEL_ROLES]),
     "Backup": (
         lambda config: _profile_summary(config.backup) if config.backup else "none",
@@ -130,7 +130,7 @@ SECTIONS: dict[str, tuple[Callable[[RalphConfig], str], Callable[[str], bool]]] 
 }
 
 
-def _toml_values(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
+def _toml_values(config: MacatiaConfig, root: pathlib.Path) -> dict[str, str]:
     """Every configured value by its TOML key, as the renderer writes it."""
     keys = {
         "repository": config.repository,
@@ -160,7 +160,7 @@ def _toml_values(config: RalphConfig, root: pathlib.Path) -> dict[str, str]:
     return keys
 
 
-def changes(before: RalphConfig, after: RalphConfig, root: pathlib.Path) -> dict[str, tuple[str | None, str | None]]:
+def changes(before: MacatiaConfig, after: MacatiaConfig, root: pathlib.Path) -> dict[str, tuple[str | None, str | None]]:
     """Each changed key with its old and new value; None when the key is absent."""
     old, new = _toml_values(before, root), _toml_values(after, root)
     return {key: (old.get(key), new.get(key)) for key in dict.fromkeys([*old, *new]) if old.get(key) != new.get(key)}
@@ -192,7 +192,7 @@ def _author_error(value: str) -> str | None:
     return "a GitHub account name, without spaces" if any(character.isspace() for character in value) else None
 
 
-def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_trusted_authors(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     with prompter.working("Reading the current gh account…"):
         login = current_login(state.command)  # None without gh: no warning.
     warned = False
@@ -201,7 +201,7 @@ def _edit_trusted_authors(prompter: Prompter, config: RalphConfig, state: EditSt
         if not login or login in authors:
             warned = False
         elif not warned:  # Once, then again only if it becomes untrusted after being trusted.
-            prompter.say(f"  ⚠ The current gh account, {login}, is not a trusted author: Ralph would ignore its own implementation evidence.")
+            prompter.say(f"  ⚠ The current gh account, {login}, is not a trusted author: Macatia would ignore its own implementation evidence.")
             warned = True
         answer = prompter.choice(
             f"Trusted authors: {', '.join(sorted(authors))} — what do you want to do?",
@@ -269,7 +269,7 @@ def _ask_model(
     return profile
 
 
-def _ask_role_profile(prompter: Prompter, config: RalphConfig, state: EditState, role: str) -> AgentProfile:
+def _ask_role_profile(prompter: Prompter, config: MacatiaConfig, state: EditState, role: str) -> AgentProfile:
     """The role's model profile, with its current one as the default.
 
     A configuration without review starts it from implementation's engine and a high effort.
@@ -283,7 +283,7 @@ def _ask_role_profile(prompter: Prompter, config: RalphConfig, state: EditState,
     )
 
 
-def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_model_profiles(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     while True:
         role = prompter.choice(
             "Model profiles: which session role do you want to change?",
@@ -309,7 +309,7 @@ def _edit_model_profiles(prompter: Prompter, config: RalphConfig, state: EditSta
         prompter.say(f"  ✓ {role}: {_profile_summary(profile)}")
 
 
-def _ask_backup(prompter: Prompter, config: RalphConfig, state: EditState) -> AgentProfile:
+def _ask_backup(prompter: Prompter, config: MacatiaConfig, state: EditState) -> AgentProfile:
     """A backup different from every session role's model profile, from the current one when there is one."""
     current = config.backup
     options = backup_engines(
@@ -323,7 +323,7 @@ def _ask_backup(prompter: Prompter, config: RalphConfig, state: EditState) -> Ag
     return _ask_model(prompter, state, engine, current, BACKUP_MODEL_KEY, "Model for the backup", "medium", config.models)
 
 
-def _edit_backup(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_backup(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     while True:
         backup = config.backup
         actions = [("Change the backup", ""), ("Remove the backup", "")] if backup else [("Add a backup", "")]
@@ -344,7 +344,7 @@ def _edit_backup(prompter: Prompter, config: RalphConfig, state: EditState) -> R
             prompter.say(f"  ✓ backup: {_profile_summary(profile)}")
 
 
-def _edit_verification(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_verification(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     while True:
         verification = config.verification
         answer = prompter.choice(
@@ -365,10 +365,10 @@ def _edit_verification(prompter: Prompter, config: RalphConfig, state: EditState
         missing = [path for path in (verification.quality_module, verification.quality_manifest) if not path.is_file()]
         if enabled and missing:
             names = " and ".join(path.name for path in missing)
-            prompter.say(f"  ⚠ {names} missing: `ralph-kit check` will fail until {'they exist' if len(missing) > 1 else 'it exists'}.")
+            prompter.say(f"  ⚠ {names} missing: `macatia check` will fail until {'they exist' if len(missing) > 1 else 'it exists'}.")
 
 
-def _edit_review_by_default(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_review_by_default(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     enabled = config.review_by_default
     answer = prompter.choice(
         f"Reviewed runs by default: {_on(enabled)} — what do you want to do?",
@@ -390,7 +390,7 @@ def _edit_review_by_default(prompter: Prompter, config: RalphConfig, state: Edit
     return dataclasses.replace(config, review_by_default=not enabled)
 
 
-def _edit_caffeinate_by_default(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_caffeinate_by_default(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     enabled = config.caffeinate_by_default
     answer = prompter.choice(
         f"Keep the machine awake by default: {_on(enabled)} — what do you want to do?",
@@ -413,7 +413,7 @@ def _child_session_limit_error(key: str, value: str) -> str | None:
     return child_session_limit_error(key, int(value) if re.fullmatch(r"[0-9]+", value) else value)
 
 
-def _edit_child_session_limits(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_child_session_limits(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     while True:
         limits = config.child_session_limits
         answer = prompter.choice(
@@ -440,12 +440,12 @@ def _edit_child_session_limits(prompter: Prompter, config: RalphConfig, state: E
         prompter.say(f"  ✓ {answer}: {value} agent sessions per child")
 
 
-def _edit_worktree_setup(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_worktree_setup(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     while True:
         current = config.worktree_setup
         actions = (
             [("Change the command", ""), ("Remove the command", "")] if current
-            else [("Set the command", "the shell command that prepares a run worktree for ralph-kit run --worktree")]
+            else [("Set the command", "the shell command that prepares a run worktree for macatia run --worktree")]
         )
         answer = prompter.choice(f"Run worktree setup: {current or 'none'} — what do you want to do?", [*actions, (BACK, "")], BACK)
         if answer == BACK:
@@ -478,7 +478,7 @@ def _with_hint(text: str, hint: str | None) -> str:
     return f"{text}; {hint}" if hint else text
 
 
-def _edit_git(prompter: Prompter, config: RalphConfig, state: EditState) -> RalphConfig:
+def _edit_git(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     command = state.command
     with prompter.working("Detecting the GitHub repository…"):
         detected_repository, detected_branch = detect_repository(command)
@@ -495,11 +495,11 @@ def _edit_git(prompter: Prompter, config: RalphConfig, state: EditState) -> Ralp
                 _detected_hint(config.repository, detected_repository),
             ),
             "Base branch": GitField(
-                "base_branch", "Base branch (Ralph never commits to it)", git_name_error,
+                "base_branch", "Base branch (Macatia never commits to it)", git_name_error,
                 _detected_hint(config.base_branch, branch),
             ),
             "Remote": GitField(
-                "remote", "Remote Ralph pushes to", git_name_error,
+                "remote", "Remote Macatia pushes to", git_name_error,
                 f"Git remotes: {', '.join(remotes)}" if remotes and remotes != [config.remote] else None,
             ),
         }
@@ -521,7 +521,7 @@ def _edit_git(prompter: Prompter, config: RalphConfig, state: EditState) -> Ralp
             state.labels_to_create = offer_labels(prompter, command, value, config.labels) if changed else {}
 
 
-EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = {
+EDITORS: dict[str, Callable[[Prompter, MacatiaConfig, EditState], MacatiaConfig]] = {
     "Model profiles": _edit_model_profiles,
     "Backup": _edit_backup,
     "Trusted authors": _edit_trusted_authors,
@@ -534,7 +534,7 @@ EDITORS: dict[str, Callable[[Prompter, RalphConfig, EditState], RalphConfig]] = 
 }
 
 
-def _menu(prompter: Prompter, title: str, config: RalphConfig, changed: dict[str, tuple[str | None, str | None]]) -> str:
+def _menu(prompter: Prompter, title: str, config: MacatiaConfig, changed: dict[str, tuple[str | None, str | None]]) -> str:
     choices = []
     for name, (summary, owns) in SECTIONS.items():
         marker = "* " if any(owns(key) for key in changed) else "  "
@@ -564,24 +564,24 @@ def run(
     display_path = target.relative_to(root) if target.is_relative_to(root) else target
     option_text = "" if target == root / CONFIG_NAME else f" --config {shlex.quote(str(display_path))}"
     if not prompter.interactive:
-        raise ConfigureError(f"ralph-kit configure needs an interactive terminal; edit {display_path} directly")
+        raise ConfigureError(f"macatia configure needs an interactive terminal; edit {display_path} directly")
     try:
         original = load_config(target, root, require_review=False)
     except MissingConfigError as error:
         raise ConfigureError(str(error)) from None
-    except RalphConfigError as error:
+    except MacatiaConfigError as error:
         raise ConfigureError(
-            f"{error}\n   Fix {display_path} by hand: `ralph-kit init{option_text} --force` would start over and lose its settings."
+            f"{error}\n   Fix {display_path} by hand: `macatia init{option_text} --force` would start over and lose its settings."
         ) from None
 
     rendered = render(original, root)
     if set(_comments(target.read_text(encoding="utf-8"))) - set(_comments(rendered)):
-        prompter.say(f"ℹ {display_path} has comments that ralph-kit does not write: saving will drop them.")
+        prompter.say(f"ℹ {display_path} has comments that macatia does not write: saving will drop them.")
     if defaulted := sorted(original.defaulted_settings):
         one = len(defaulted) == 1
         prompter.say(
             f"ℹ {display_path} leaves out {', '.join(defaulted)}, so {'its default value is' if one else 'their default values are'} used: "
-            f"`ralph-kit update-config{option_text}` writes {'it' if one else 'them'}."
+            f"`macatia update-config{option_text}` writes {'it' if one else 'them'}."
         )
 
     edited = original
@@ -610,12 +610,12 @@ def run(
     staged.write_text(render(edited, root), encoding="utf-8")
     try:
         load_config(staged, root, require_review="review" in edited.models or edited.review_by_default)
-    except RalphConfigError as error:  # The renderer must always produce a loadable file.
+    except MacatiaConfigError as error:  # The renderer must always produce a loadable file.
         staged.unlink()
         raise ConfigureError(f"saved configuration is invalid, please report this bug: {error}") from error
     staged.replace(target)
     prompter.say(f"\n✅ Wrote {target}.")
     if state.labels_to_create:
         create_offered_labels(prompter, command, edited.repository, state.labels_to_create)
-    prompter.say(f"   Next step: commit {display_path}, then run `ralph-kit check{option_text}`.")
+    prompter.say(f"   Next step: commit {display_path}, then run `macatia check{option_text}`.")
     return True

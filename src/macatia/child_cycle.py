@@ -18,7 +18,7 @@ from .sanitize import format_findings
 MAX_CORRECTIONS = 3
 # The visible text of every handoff comment starts with this, so a stopped run can link
 # the latest one, including those posted before the handoff marker existed.
-HANDOFF_PREFIX = "Ralph stopped"
+HANDOFF_PREFIX = "Macatia stopped"
 
 
 @dataclass(frozen=True)
@@ -149,7 +149,7 @@ class AgentOutcomeStop(Exception):
 
 
 class ChildWorkRejected(Exception):
-    """Raised by an adapter when the child's own work breaks Ralph's contract."""
+    """Raised by an adapter when the child's own work breaks Macatia's contract."""
 
 
 class HumanReviewStop(Exception):
@@ -205,21 +205,21 @@ def run_child_cycle(
         cause = HandoffCause.CHILD_SESSION_LIMIT
         mode = "reviewed" if review else "standard"
         body = (
-            f"Ralph stopped before {error.role} because the child session limit of "
+            f"Macatia stopped before {error.role} because the child session limit of "
             f"{session_limit.maximum} ({mode} run) was exhausted. "
             f"This child remains open for human review.{_diagnostic_detail(error.diagnostic)}"
         )
         reason = str(error)
     except CorrectionLimitExhausted as error:
         body = (
-            f"Ralph stopped before {error.role} because the correction limit of "
+            f"Macatia stopped before {error.role} because the correction limit of "
             f"{MAX_CORRECTIONS} was exhausted. This child remains open for human review."
             f"{_findings_detail(error.findings)}{_diagnostic_detail(error.diagnostic)}"
         )
         reason = str(error)
     except AgentOutcomeStop as error:
         body = (
-            f"Ralph stopped because {error.role} reported {error.outcome}: "
+            f"Macatia stopped because {error.role} reported {error.outcome}: "
             f"{error.summary} This child remains open for human review."
             f"{_findings_detail(error.findings)}"
         )
@@ -230,7 +230,7 @@ def run_child_cycle(
         cause = error.cause
     except ChildWorkRejected as error:
         reason = str(error)
-        body = f"Ralph stopped because {reason}. This child remains open for human review."
+        body = f"Macatia stopped because {reason}. This child remains open for human review."
     adapters.hand_to_human_review(child, body)
     return HandedToHumanReview(reason, cause)
 
@@ -272,7 +272,7 @@ class _ChildCycle:
             if isinstance(verdict, CIUnavailable):
                 raise HumanReviewStop(
                     verdict.reason,
-                    "Ralph stopped after bounded infrastructure retries without changing the "
+                    "Macatia stopped after bounded infrastructure retries without changing the "
                     "implementation or consuming another agent session. This child remains open "
                     f"for human review. Last infrastructure diagnostic: {verdict.diagnostic}",
                     HandoffCause.INFRASTRUCTURE,
@@ -302,7 +302,7 @@ class _ChildCycle:
             role = request.role
             raise HumanReviewStop(
                 f"{role[0].upper()}{role[1:]} did not create a new commit",
-                f"Ralph stopped because the {role} did not create a new commit; a "
+                f"Macatia stopped because the {role} did not create a new commit; a "
                 "correction session must commit its repair. This child remains open "
                 "for human review."
                 f"{_findings_detail(result.findings or findings or [])}"

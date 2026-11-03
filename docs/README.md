@@ -1,8 +1,8 @@
-# ralph-kit documentation
+# macatia documentation
 
 ## User guide
 
-- [Configuration](configuration.md): `init`, `configure`, `update-config` and every `ralph.toml` setting.
+- [Configuration](configuration.md): `init`, `configure`, `update-config` and every `macatia.toml` setting.
 - [Readiness check](check.md): `check`, before each run.
 - [The loop](run.md): `run` and `run --review`, the run branch, `--caffeinate` and `--tmux`.
 - [Codex and Claude Code](engines.md): engines, engine failures and the backup.
@@ -17,4 +17,4 @@ The project vocabulary is defined in [GLOSSARY.md](../GLOSSARY.md).
 
 - [Architecture decision records](adr/)
 - [Agent skill configuration](agents/): issue tracker, triage labels and domain docs.
-- [Contributing](../CONTRIBUTING.md): developing ralph-kit and its test suites.
+- [Contributing](../CONTRIBUTING.md): developing macatia and its test suites.

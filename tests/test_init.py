@@ -1,4 +1,4 @@
-"""`ralph-kit init` without real git, gh, or terminal."""
+"""`macatia init` without real git, gh, or terminal."""
 
 import contextlib
 import io
@@ -14,20 +14,20 @@ import unittest
 KIT_ROOT = pathlib.Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(KIT_ROOT / "src"))
 
-from ralph_kit import check, init
-from ralph_kit.config import load_config
+from macatia import check, init
+from macatia.config import load_config
 
 
 DEFAULT_CONFIGURATION = """\
-# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit
+# Macatia configuration for this repository. See https://github.com/lmpaul/macatia
 version = 1
 repository = "acme/widget"
 base_branch = "trunk"
 remote = "origin"
 trusted_authors = ["octocat"]
-# true makes every run a reviewed run; ralph-kit run --no-review overrides it.
+# true makes every run a reviewed run; macatia run --no-review overrides it.
 review_by_default = false
-# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.
+# true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.
 caffeinate_by_default = false
 
 [labels]
@@ -48,7 +48,7 @@ name = "sonnet"
 display_name = "sonnet"
 reasoning_effort = "medium"
 
-# Used by reviewed runs: ralph-kit run --review, or every run when review_by_default = true.
+# Used by reviewed runs: macatia run --review, or every run when review_by_default = true.
 [models.review]
 engine = "claude"
 name = "opus"
@@ -83,15 +83,15 @@ reviewed = 9
 """
 # Values init never asks about, as the renderer writes them.
 CUSTOM_CONFIGURATION = """\
-# Ralph configuration for this repository. See https://github.com/lmpaul/ralph-kit
+# Macatia configuration for this repository. See https://github.com/lmpaul/macatia
 version = 1
 repository = "acme/gadget"
 base_branch = "develop"
 remote = "upstream"
 trusted_authors = ["alice", "bob", "octocat"]
-# true makes every run a reviewed run; ralph-kit run --no-review overrides it.
+# true makes every run a reviewed run; macatia run --no-review overrides it.
 review_by_default = false
-# true makes every run hold a sleep lock; ralph-kit run --no-caffeinate overrides it.
+# true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.
 caffeinate_by_default = false
 
 [labels]
@@ -112,7 +112,7 @@ name = "sonnet"
 display_name = "Sonnet \\"daily\\""
 reasoning_effort = "medium"
 
-# Used by reviewed runs: ralph-kit run --review, or every run when review_by_default = true.
+# Used by reviewed runs: macatia run --review, or every run when review_by_default = true.
 [models.review]
 engine = "codex"
 name = "gpt-5"
@@ -284,7 +284,7 @@ class InitTests(unittest.TestCase):
         self.installed = set()
         with self.assertRaisesRegex(init.InitError, "no agent CLI"):
             self.run_init(answers=[])
-        self.assertFalse((self.root / "ralph.toml").exists())
+        self.assertFalse((self.root / "macatia.toml").exists())
 
     def test_choices_use_the_arrow_selector_when_available(self):
         asked = []
@@ -332,14 +332,14 @@ class InitTests(unittest.TestCase):
                     (config.backup.engine, config.backup.name, config.backup.reasoning_effort),
                     (other, model, "medium"),
                 )
-                self.assertIn("[models.backup]", (self.root / "ralph.toml").read_text())
-                (self.root / "ralph.toml").unlink()
+                self.assertIn("[models.backup]", (self.root / "macatia.toml").read_text())
+                (self.root / "macatia.toml").unlink()
 
     def test_single_engine_defaults_to_no_backup(self):
         self.installed = {"claude"}
         config = self.run_init(answers=[""] * 5)
         self.assertIsNone(config.backup)
-        self.assertNotIn("[models.backup]", (self.root / "ralph.toml").read_text())
+        self.assertNotIn("[models.backup]", (self.root / "macatia.toml").read_text())
         output = self.output.getvalue()
         self.assertIn("? Backup", output)
         backup_options = output.split("? Backup", 1)[1]
@@ -414,7 +414,7 @@ class InitTests(unittest.TestCase):
 
     def test_default_answers_write_the_default_configuration(self):
         config = self.run_init(answers=[""] * 8)
-        self.assertEqual((self.root / "ralph.toml").read_text(), DEFAULT_CONFIGURATION)
+        self.assertEqual((self.root / "macatia.toml").read_text(), DEFAULT_CONFIGURATION)
         self.assertNotIn("worktree", self.output.getvalue())  # Never asked: configure sets it.
         self.assertIsNone(config.worktree_setup)
 
@@ -425,14 +425,14 @@ class InitTests(unittest.TestCase):
             "# The most agent sessions one child may receive in a run. The correction limit (three corrections)\n"
             "# bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.\n"
             "standard = 5\nreviewed = 9\n",
-            (self.root / "ralph.toml").read_text(),
+            (self.root / "macatia.toml").read_text(),
         )
         self.assertEqual((config.child_session_limits.standard, config.child_session_limits.reviewed), (5, 9))
 
     def test_no_backup_with_both_engines_writes_no_section(self):
         config = self.run_init(answers=[""] * 5 + ["3"])
         self.assertIsNone(config.backup)
-        self.assertNotIn("[models.backup]", (self.root / "ralph.toml").read_text())
+        self.assertNotIn("[models.backup]", (self.root / "macatia.toml").read_text())
 
     def test_missing_labels_are_offered_and_created_after_writing(self):
         self.responses[("gh", "api", "--paginate", "--slurp", "repos/acme/widget/labels")] = json.dumps([[{"name": "needs-triage"}]])
@@ -441,7 +441,7 @@ class InitTests(unittest.TestCase):
 
         def command(*args):
             if args[:3] == ("gh", "label", "create"):
-                self.assertTrue((self.root / "ralph.toml").exists())
+                self.assertTrue((self.root / "macatia.toml").exists())
                 commands.append(args)
                 created.append(args[3])
                 return ""
@@ -457,7 +457,7 @@ class InitTests(unittest.TestCase):
         self.assertIn("✓ Label standalone created", self.output.getvalue())
         self.assertIn(
             ("gh", "label", "create", "work-started", "--repo", "acme/widget",
-             "--description", "Ralph has started work on this parent", "--color", "E4E9F2"),
+             "--description", "Macatia has started work on this parent", "--color", "E4E9F2"),
             commands,
         )
 
@@ -465,17 +465,17 @@ class InitTests(unittest.TestCase):
         config = self.run_init()
         self.assertEqual(len(config.labels), 10)
         self.assertEqual(config.labels["standalone"], "standalone")
-        self.assertIn('work_started = "work-started"\nstandalone = "standalone"\n', (self.root / "ralph.toml").read_text())
+        self.assertIn('work_started = "work-started"\nstandalone = "standalone"\n', (self.root / "macatia.toml").read_text())
 
     def test_configuration_declares_the_agent_working_label(self):
         config = self.run_init()
         self.assertEqual(config.labels["agent_working"], "agent-working")
-        self.assertIn('agent_working = "agent-working"\n', (self.root / "ralph.toml").read_text())
+        self.assertIn('agent_working = "agent-working"\n', (self.root / "macatia.toml").read_text())
 
     def test_configuration_declares_the_work_started_label_outside_triage_and_lifecycle(self):
         config = self.run_init()
         self.assertEqual(config.labels["work_started"], "work-started")
-        self.assertIn('work_started = "work-started"\n', (self.root / "ralph.toml").read_text())
+        self.assertIn('work_started = "work-started"\n', (self.root / "macatia.toml").read_text())
         self.assertNotIn("work-started", config.triage_labels)
         self.assertNotIn("work-started", config.lifecycle_labels)
 
@@ -504,14 +504,14 @@ class InitTests(unittest.TestCase):
         self.assertIn("gh not found in PATH", str(raised.exception))
         self.assertIn("no agent CLI", str(raised.exception))
         self.assertEqual(probes, [])
-        self.assertFalse((self.root / "ralph.toml").exists())
+        self.assertFalse((self.root / "macatia.toml").exists())
 
     def test_gh_older_than_the_minimum_version_stops_before_questions(self):
         self.responses[("gh", "--version")] = "gh version 2.69.0 (2025-03-19)"
         with self.assertRaisesRegex(init.InitError, "gh 2.69.0, 2.70.0 or newer required"):
             self.run_init(answers=[])
         self.assertEqual(self.prompts, [])
-        self.assertFalse((self.root / "ralph.toml").exists())
+        self.assertFalse((self.root / "macatia.toml").exists())
 
     def test_unauthenticated_gh_stops_before_questions(self):
         del self.responses[("gh", "auth", "status")]
@@ -561,69 +561,69 @@ class InitTests(unittest.TestCase):
         self.assertTrue(config.verification.local_checks and config.verification.ci_checks)
 
     def test_existing_config_is_kept_before_any_question(self):
-        (self.root / "ralph.toml").write_text("keep")
-        with self.assertRaisesRegex(init.InitError, r"already exists: change it with `ralph-kit configure`, or use --force to start over"):
+        (self.root / "macatia.toml").write_text("keep")
+        with self.assertRaisesRegex(init.InitError, r"already exists: change it with `macatia configure`, or use --force to start over"):
             self.run_init(answers=[])
         self.assertEqual(self.prompts, [])
-        self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
+        self.assertEqual((self.root / "macatia.toml").read_text(), "keep")
         self.run_init(answers=[""] * 8, force=True)
 
     def test_config_option_writes_the_given_path_and_leaves_the_default_alone(self):
-        (self.root / "ralph.toml").write_text("keep")
+        (self.root / "macatia.toml").write_text("keep")
         (self.root / "variants").mkdir()
         config = self.run_init(answers=[""] * 8, config=pathlib.Path("variants/review.toml"))
         self.assertEqual(config.repository, "acme/widget")
         self.assertTrue((self.root / "variants/review.toml").is_file())
-        self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
+        self.assertEqual((self.root / "macatia.toml").read_text(), "keep")
         output = self.output.getvalue()
         self.assertIn(f"Wrote {self.root / 'variants/review.toml'}.", output)
-        self.assertIn("Next step: commit variants/review.toml and .gitignore, then run `ralph-kit check --config variants/review.toml`.", output)
+        self.assertIn("Next step: commit variants/review.toml and .gitignore, then run `macatia check --config variants/review.toml`.", output)
 
     def test_force_overwrites_only_the_given_path(self):
-        (self.root / "ralph.toml").write_text("keep")
+        (self.root / "macatia.toml").write_text("keep")
         (self.root / "other.toml").write_text("old")
-        with self.assertRaisesRegex(init.InitError, r"other.toml already exists: change it with `ralph-kit configure --config other.toml`, or use --force"):
+        with self.assertRaisesRegex(init.InitError, r"other.toml already exists: change it with `macatia configure --config other.toml`, or use --force"):
             self.run_init(answers=[], config=pathlib.Path("other.toml"))
         self.assertEqual(self.prompts, [])
         self.assertEqual((self.root / "other.toml").read_text(), "old")
         self.run_init(answers=[""] * 8, force=True, config=self.root / "other.toml")
         self.assertIn("[models.implementation]", (self.root / "other.toml").read_text())
-        self.assertEqual((self.root / "ralph.toml").read_text(), "keep")
-        self.assertIn("then run `ralph-kit check --config other.toml`.", self.output.getvalue())
+        self.assertEqual((self.root / "macatia.toml").read_text(), "keep")
+        self.assertIn("then run `macatia check --config other.toml`.", self.output.getvalue())
 
     def test_config_in_a_missing_directory_stops_before_any_question(self):
         with self.assertRaisesRegex(init.InitError, "missing/ does not exist"):
-            self.run_init(answers=[], config=pathlib.Path("missing/ralph.toml"))
+            self.run_init(answers=[], config=pathlib.Path("missing/macatia.toml"))
         self.assertEqual(self.prompts, [])
 
     def test_must_run_from_repository_root(self):
         self.responses[("git", "rev-parse", "--show-toplevel")] = str(self.root.parent)
         with self.assertRaisesRegex(init.InitError, "root of a Git repository"):
             self.run_init(answers=[])
-        self.assertFalse((self.root / "ralph.toml").exists())
+        self.assertFalse((self.root / "macatia.toml").exists())
 
     def test_missing_gitignore_is_created_with_the_diagnostics_entry(self):
         self.run_init(answers=[""] * 8)
-        self.assertEqual(self.gitignore(), ".ralph/\n")
-        self.assertIn("Next step: commit ralph.toml and .gitignore, then run `ralph-kit check`.", self.output.getvalue())
+        self.assertEqual(self.gitignore(), ".macatia/\n")
+        self.assertIn("Next step: commit macatia.toml and .gitignore, then run `macatia check`.", self.output.getvalue())
 
     def test_entry_is_appended_keeping_content_and_line_endings(self):
         for existing, expected in (
-            ("dist/\n", "dist/\n.ralph/\n"),
-            ("dist/", "dist/\n.ralph/\n"),
-            ("dist/\r\nbuild/", "dist/\r\nbuild/\r\n.ralph/\r\n"),
+            ("dist/\n", "dist/\n.macatia/\n"),
+            ("dist/", "dist/\n.macatia/\n"),
+            ("dist/\r\nbuild/", "dist/\r\nbuild/\r\n.macatia/\r\n"),
         ):
             with self.subTest(existing=existing):
                 (self.root / ".gitignore").write_bytes(existing.encode())
                 self.run_init(answers=[""] * 8, force=True)
                 self.assertEqual(self.gitignore(), expected)
-                self.assertIn("Added .ralph/ to .gitignore", self.output.getvalue())
+                self.assertIn("Added .macatia/ to .gitignore", self.output.getvalue())
 
     def test_gitignore_is_unchanged_when_git_already_ignores_diagnostics(self):
         for path, rules in (
-            (".gitignore", "/.ralph\n"),
-            (".gitignore", ".r*/**\n"),
-            (".git/info/exclude", ".ralph/\n"),
+            (".gitignore", "/.macatia\n"),
+            (".gitignore", ".m*/**\n"),
+            (".git/info/exclude", ".macatia/\n"),
         ):
             with self.subTest(path=path, rules=rules):
                 self.output = io.StringIO()
@@ -632,8 +632,8 @@ class InitTests(unittest.TestCase):
                 (self.root / path).write_text(rules)
                 self.run_init(answers=[""] * 8, force=True)
                 self.assertEqual(self.gitignore(), rules if path == ".gitignore" else None)
-                self.assertNotIn("Added .ralph/", self.output.getvalue())
-                self.assertIn("Next step: commit ralph.toml, then run", self.output.getvalue())
+                self.assertNotIn("Added .macatia/", self.output.getvalue())
+                self.assertIn("Next step: commit macatia.toml, then run", self.output.getvalue())
 
     def test_gitignore_is_unchanged_when_nothing_is_written(self):
         (self.root / ".gitignore").write_text("dist/\n")
@@ -643,9 +643,9 @@ class InitTests(unittest.TestCase):
             ("missing prerequisites", None, {"git"}, "gh not found"),
         ):
             with self.subTest(name):
-                (self.root / "ralph.toml").unlink(missing_ok=True)
+                (self.root / "macatia.toml").unlink(missing_ok=True)
                 if configuration:
-                    (self.root / "ralph.toml").write_text(configuration)
+                    (self.root / "macatia.toml").write_text(configuration)
                 self.tools = tools
                 with self.assertRaisesRegex((init.InitError, init.InitAborted), error):
                     self.run_init(answers=["1"])
@@ -654,7 +654,7 @@ class InitTests(unittest.TestCase):
     def test_interrupted_questions_write_nothing(self):
         with self.assertRaises(init.InitAborted):
             self.run_init(answers=["1"])
-        self.assertFalse((self.root / "ralph.toml").exists())
+        self.assertFalse((self.root / "macatia.toml").exists())
 
 
 class RenderTests(unittest.TestCase):
@@ -664,7 +664,7 @@ class RenderTests(unittest.TestCase):
         self.root = pathlib.Path(directory.name).resolve()
 
     def load(self, contents, **options):
-        path = self.root / "ralph.toml"
+        path = self.root / "macatia.toml"
         path.write_text(contents, encoding="utf-8")
         return load_config(path, self.root, **options)
 
@@ -679,7 +679,7 @@ class RenderTests(unittest.TestCase):
 
     def test_hand_written_configuration_is_rendered_in_the_renderer_layout(self):
         # Unsorted authors and an implicit engine: the renderer writes them its own way.
-        hand_written = (KIT_ROOT / "tests/fixtures/ralph.toml").read_text().replace(
+        hand_written = (KIT_ROOT / "tests/fixtures/macatia.toml").read_text().replace(
             'trusted_authors = ["lmpaul"]', 'trusted_authors = ["zoe", "lmpaul"]'
         ).replace('[models.review]\nengine = "codex"\n', "[models.review]\n")
         self.assertIn('["zoe", "lmpaul"]', hand_written)

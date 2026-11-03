@@ -11,7 +11,7 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
   exit 2
 fi
 tag="v$version"
-init=src/ralph_kit/__init__.py
+init=src/macatia/__init__.py
 
 current="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' "$init")"
 if [[ -z "$current" ]]; then
@@ -58,7 +58,7 @@ tail -n 1 "$log"
 rm -f "$log"
 
 sed -i.bak "s/^__version__ = \"$current\"$/__version__ = \"$version\"/" "$init"
-sed -i.bak "s/ralph-kit@v$current/ralph-kit@$tag/" README.md
+sed -i.bak "s/macatia@v$current/macatia@$tag/" README.md
 rm -f "$init.bak" README.md.bak
 
 git diff

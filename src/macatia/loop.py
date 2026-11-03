@@ -1,4 +1,4 @@
-"""`ralph-kit run`: the run entry point; startup selects the standard or reviewed run."""
+"""`macatia run`: the run entry point; startup selects the standard or reviewed run."""
 
 from __future__ import annotations
 
