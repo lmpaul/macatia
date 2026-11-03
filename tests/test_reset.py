@@ -474,7 +474,8 @@ class ResetTests(unittest.TestCase):
     def add_run_worktree(self):
         """The run branch with one commit of its own, pushed, checked out in its run worktree
         with an ignored file; returns the run worktree's path."""
-        path = self.repository.path.parent / "repository.worktrees" / f"issue-{PARENT}"
+        # Git reports the real path: on macOS the temporary directory is under a /var symlink.
+        path = self.repository.path.parent.resolve() / "repository.worktrees" / f"issue-{PARENT}"
         git(self.repository.path, "worktree", "add", "--quiet", "-b", RUN_BRANCH, str(path))
         (path / "run.txt").write_text("run\n", encoding="utf-8")
         git(path, "add", "run.txt")
