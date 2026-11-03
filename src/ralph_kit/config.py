@@ -115,8 +115,10 @@ class RalphConfig:
     # Makes a run without --caffeinate or --no-caffeinate hold the sleep lock.
     caffeinate_by_default: bool = False
     child_session_limits: ChildSessionLimits = ChildSessionLimits()
+    # The shell command that prepares a run worktree; None when the file leaves it out.
+    worktree_setup: str | None = None
     # Settings the file leaves out, which got their default value, as dotted keys such as
-    # child_session_limit.reviewed or labels.work_started. Never models.review or models.backup:
+    # child_session_limit.reviewed or labels.work_started. Never models.review, models.backup or worktree_setup:
     # leaving them out turns the feature off.
     defaulted_settings: frozenset[str] = frozenset()
 
@@ -255,7 +257,7 @@ def load_config(
             "models",
             "verification",
         },
-        {"review_by_default", "caffeinate_by_default", "child_session_limit"},
+        {"review_by_default", "caffeinate_by_default", "child_session_limit", "worktree_setup"},
     )
     if values["version"] != 1:
         raise RalphConfigError("configuration.version must be 1")
@@ -286,6 +288,10 @@ def load_config(
     caffeinate_by_default = values.get("caffeinate_by_default", False)
     if not isinstance(caffeinate_by_default, bool):
         raise RalphConfigError("configuration.caffeinate_by_default must be a boolean")
+
+    worktree_setup = values.get("worktree_setup")
+    if worktree_setup is not None:
+        worktree_setup = _string(worktree_setup, "configuration.worktree_setup")
 
     child_session_limits = _child_session_limits(
         values.get("child_session_limit", {}), "configuration.child_session_limit"
@@ -372,6 +378,7 @@ def load_config(
         review_by_default=review_by_default,
         caffeinate_by_default=caffeinate_by_default,
         child_session_limits=child_session_limits,
+        worktree_setup=worktree_setup,
         defaulted_settings=defaulted_settings,
         verification=VerificationConfig(
             local_checks=verification_values["local_checks"],

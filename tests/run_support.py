@@ -863,17 +863,18 @@ class FakeSleepLock:
 
 @dataclass(frozen=True)
 class Restart:
-    """A restart the run asked of the persistent terminal, and whether it still held the
-    sleep lock then."""
+    """A restart the run asked of the persistent terminal `name`, or of this terminal when
+    `name` is None, and whether it still held the sleep lock then."""
 
-    name: str
+    name: str | None
     command: str
     directory: pathlib.Path
     sleep_lock_held: bool
 
 
 class FakePersistentTerminal:
-    """Stands in for tmux: records each restart instead of replacing the process.
+    """Stands in for tmux and for the restart in this terminal: records each restart instead
+    of replacing the process.
 
     `unavailability` is why a persistent terminal cannot be used, an `Unavailability`, or
     None when it can; `checked` counts how often the run asked. `existing` are the names of
@@ -896,6 +897,9 @@ class FakePersistentTerminal:
 
     def restart(self, name, command, directory):
         self.restarts.append(Restart(name, command, directory, self.sleep_lock.held))
+
+    def restart_here(self, command, directory):
+        self.restarts.append(Restart(None, command, directory, self.sleep_lock.held))
 
 
 class ScriptedContinuation:
@@ -998,6 +1002,7 @@ def start_run(
             choose_run_target=choose_run_target,
             keep_awake=sleep_lock,
             persistent_terminal=persistent_terminal,
+            restart_here=persistent_terminal.restart_here,
             choose_continuation=choose_continuation,
         )
     else:
@@ -1010,6 +1015,7 @@ def start_run(
             choose_run_target=choose_run_target,
             keep_awake=sleep_lock,
             persistent_terminal=persistent_terminal,
+            restart_here=persistent_terminal.restart_here,
             choose_continuation=choose_continuation,
         )
     output = TerminalOutput if terminal else io.StringIO

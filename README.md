@@ -102,8 +102,9 @@ What it keeps under control:
 | `ralph-kit reset [ISSUE]` | Makes an issue and its children ready to run again from scratch. |
 
 Without `ISSUE`, at a terminal, `run`, `close` and `reset` list the issues they
-can act on. `run` also takes `--review`, `--caffeinate` (keep the machine awake)
-and `--tmux` (continue in a persistent terminal). Every command takes
+can act on. `run` also takes `--review`, `--caffeinate` (keep the machine awake),
+`--tmux` (continue in a persistent terminal) and `--worktree` (run in a separate
+run worktree, away from your own checkout). Every command takes
 `--config PATH` to use another configuration file.
 
 ## Documentation

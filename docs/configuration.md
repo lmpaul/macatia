@@ -47,7 +47,7 @@ Commit `ralph.toml` (and `.gitignore` when `init` changed it) and run on a clean
 `init` on an existing file points to `configure`: `ralph-kit configure [--config PATH]`
 opens an existing, valid configuration and shows a menu of its sections (model
 profiles, backup, trusted authors, verification, Git, reviewed runs by default, keep the
-machine awake by default, child session limits), each with its current value
+machine awake by default, child session limits, run worktree setup), each with its current value
 and `*` once changed. Pick a section to change only what it holds; nothing is
 re-detected over an existing value, and the values no section edits (label names,
 quality policy paths, display names, a correction profile distinct from
@@ -85,6 +85,9 @@ for nothing else.
 Child session limits changes `standard` or `reviewed` in `[child_session_limit]`, with
 the current value as the default and the same validation as loading (an integer, at
 least 1 for standard and 2 for reviewed). `init` writes the table with its defaults.
+Run worktree setup sets `worktree_setup` when there is none (an empty answer goes back),
+otherwise changes it, with the current command as the default, or removes it, which drops
+the key from the file.
 Save lists each changed key as `key: old → new`, writes the file, validates it and
 suggests committing it, then `ralph-kit check`; Save without changes, Quit without
 saving and Ctrl-C write nothing. The file is rewritten in the layout `init` uses, so
@@ -111,7 +114,7 @@ the end of `[labels]` with its default name, and a `[child_session_limit]` table
 with `standard` and `reviewed` at the end of the file, or the limit a partial
 table leaves out at the end of that table, without the table's comment. A comment
 block directly above the next table stays with that table. The rest of the file and its comments
-stay as they are; `[models.review]` and `[models.backup]` are never added. It lists
+stay as they are; `[models.review]`, `[models.backup]` and `worktree_setup` are never added. It lists
 each added setting as `key = value`, and with nothing to add says so and writes
 nothing. It refuses when the default name is already another role's label, when
 the labels are not in a `[labels]` table, or when a partial `child_session_limit`
@@ -145,6 +148,19 @@ ralph-kit check --config review.toml
 - `caffeinate_by_default` is optional (`false` when missing). `true` makes every
   run hold a sleep lock until it ends; `ralph-kit run --no-caffeinate` overrides
   it for one run.
+- `worktree_setup` is optional, with no default: a non-empty string without
+  surrounding whitespace, the shell command that prepares a run worktree for
+  `ralph-kit run --worktree`, such as `pnpm install --frozen-lockfile` or
+  `uv sync`, run in the run worktree on every `--worktree` run (see
+  [Run worktree](run.md#preparing-the-run-worktree-worktree_setup)). Leaving it
+  out prepares nothing.
+  `init` never asks for it and `update-config` never adds it: set it with
+  `configure` or by hand. `check` validates it without running it.
+
+  ```toml
+  worktree_setup = "uv sync"
+  ```
+
 - `[child_session_limit]` is an optional table with two optional integer keys:
   `standard` (5 when missing, at least 1) and `reviewed` (9 when missing, at
   least 2, so a reviewed run can always reach its review session), the child
@@ -191,5 +207,5 @@ ralph-kit check --config review.toml
 
 The loader rejects missing and unknown settings, duplicate TOML keys, duplicate
 authors, duplicate label values, unsafe repository paths, unsupported mode
-values, and child session limits that are not integers or are below their
+values, a `worktree_setup` that is not a non-empty string, and child session limits that are not integers or are below their
 minimum before starting an agent or changing GitHub state.

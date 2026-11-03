@@ -33,7 +33,8 @@ launches a real agent, or calls GitHub. Each rule is tested at one level:
   them): `tests/test_close.py`, the close command's entry point in memory with
   the GitHub fake and a scripted confirmer.
 - **Reset** (every refusal, the plan, the confirmation, the cumulative draft PR,
-  the run branch, the labels, reset markers and recap, the purge, and resuming them):
+  the run worktree, the run branch, the labels, reset markers and recap, the
+  purge, and resuming them):
   `tests/test_reset.py`, the reset command's entry point with the GitHub fake, a
   scripted confirmer and a temporary checkout with a bare `origin`.
 - **Live suite**: the only proof of compatibility with the real `gh`, `codex`,

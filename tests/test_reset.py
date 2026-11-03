@@ -7,6 +7,7 @@ import io
 import json
 import pathlib
 import re
+import shutil
 import subprocess
 import sys
 import unittest
@@ -467,6 +468,134 @@ class ResetTests(unittest.TestCase):
         self.assertIn("⚠️  #70 is agent-working: a run may still be working on it", self.stdout)
         self.assertEqual(confirmer.questions, [f"Reset #{PARENT}?"])
         self.assert_reset_child(70, "agent_working")
+
+    # The run worktree.
+
+    def add_run_worktree(self):
+        """The run branch with one commit of its own, pushed, checked out in its run worktree
+        with an ignored file; returns the run worktree's path."""
+        path = self.repository.path.parent / "repository.worktrees" / f"issue-{PARENT}"
+        git(self.repository.path, "worktree", "add", "--quiet", "-b", RUN_BRANCH, str(path))
+        (path / "run.txt").write_text("run\n", encoding="utf-8")
+        git(path, "add", "run.txt")
+        git(path, "commit", "-m", "Run commit")
+        git(path, "push", "--set-upstream", "origin", RUN_BRANCH)
+        (path / ".gitignore").write_text(".ralph/\n", encoding="utf-8")
+        git(path, "add", ".gitignore")
+        git(path, "commit", "-m", "Ignore run diagnostics")
+        git(path, "push")
+        (path / ".ralph").mkdir()
+        (path / ".ralph" / "diagnostics.txt").write_text("diagnostics\n", encoding="utf-8")
+        return path
+
+    def test_the_run_worktree_is_listed_then_removed_with_its_ignored_files_before_the_run_branch(self):
+        self.add_parent()
+        self.add_child(70)
+        path = self.add_run_worktree()
+        self.add_pull_request()
+        removed = []
+        real_command = reset.command
+
+        def command(root, arguments, **options):
+            if arguments[:3] == ["git", "push", "origin"]:
+                removed.append(path.exists())
+            return real_command(root, arguments, **options)
+
+        with mock.patch.object(reset, "command", command):
+            self.assertEqual(self.reset(str(PARENT), confirm=ScriptedConfirmer(True)), 0, self.stderr)
+
+        plan = self.stdout.split("✓")[0]
+        self.assertIn(f"→ remove the run worktree of {RUN_BRANCH} at {path}, with its ignored files", plan)
+        self.assertIn(f"✓ removed the run worktree of {RUN_BRANCH} at {path}", self.stdout)
+        self.assertEqual(removed, [False])
+        self.assertFalse(path.exists())
+        self.assertNotIn(str(path), git(self.repository.path, "worktree", "list"))
+        self.assertEqual(self.branches(), set())
+        self.assertEqual(self.checked_out(), BRANCH)
+        self.assert_reset_child(70, "implemented")
+
+    def test_a_dirty_run_worktree_is_refused_among_the_other_reasons_before_anything_is_written(self):
+        self.add_parent()
+        self.add_child(70)
+        self.add_child(71, labels=("implemented",), comments=[self.evidence(71, merged=True)])
+        path = self.add_run_worktree()
+        self.add_pull_request()
+        (path / "run.txt").write_text("edited\n", encoding="utf-8")
+
+        self.assert_refused(
+            PARENT, "#71 is merged", f"the run worktree of {RUN_BRANCH} at {path} is dirty"
+        )
+
+        self.assertEqual(self.github.pull_requests[0].state, "open")
+        self.assertTrue(path.exists())
+        self.assertEqual(self.branches(), {"checkout", "origin"})
+
+    def test_an_untracked_file_in_the_run_worktree_makes_it_dirty(self):
+        self.add_parent()
+        self.add_child(70)
+        path = self.add_run_worktree()
+        (path / "notes.txt").write_text("notes\n", encoding="utf-8")
+
+        self.assert_refused(PARENT, f"the run worktree of {RUN_BRANCH} at {path} is dirty")
+
+        self.assertTrue((path / "notes.txt").exists())
+
+    def test_a_reset_started_from_inside_the_run_worktree_is_refused(self):
+        self.add_parent()
+        self.add_child(70)
+        path = self.add_run_worktree()
+        self.add_pull_request()
+        (path / "run.txt").write_text("edited\n", encoding="utf-8")
+        self.repository.path = path
+
+        self.assert_refused(
+            PARENT,
+            f"the reset was started from inside the run worktree of {RUN_BRANCH} at {path}",
+            "run it from outside the run worktree",
+            f"the run worktree of {RUN_BRANCH} at {path} is dirty",
+        )
+
+        self.assertTrue(path.exists())
+        self.assertEqual(self.github.pull_requests[0].state, "open")
+
+    def test_a_locked_run_worktree_is_refused_before_anything_is_written(self):
+        self.add_parent()
+        self.add_child(70)
+        path = self.add_run_worktree()
+        self.add_pull_request()
+        git(self.repository.path, "worktree", "lock", str(path))
+
+        self.assert_refused(
+            PARENT,
+            f"the run worktree of {RUN_BRANCH} at {path} is locked",
+            f"git worktree unlock {path}",
+        )
+
+        self.assertEqual(self.github.pull_requests[0].state, "open")
+        self.assertTrue(path.exists())
+
+    def test_a_run_worktree_whose_directory_was_deleted_is_removed_with_its_run_branch(self):
+        self.add_parent()
+        self.add_child(70)
+        path = self.add_run_worktree()
+        shutil.rmtree(path)
+
+        self.assertEqual(self.reset(str(PARENT), "--yes"), 0, self.stderr)
+
+        self.assertIn(f"✓ removed the run worktree of {RUN_BRANCH} at {path}", self.stdout)
+        self.assertNotIn(str(path), git(self.repository.path, "worktree", "list"))
+        self.assertEqual(self.branches(), set())
+
+        self.add_parent(labels=("ready-for-agent",))
+        self.add_child(70, labels=("ready-for-agent",))
+        path = self.add_run_worktree()
+        confirmer = ScriptedConfirmer(True)
+
+        self.assertEqual(self.reset(choose=ScriptedPicker(PARENT), confirm=confirmer), 0, self.stderr)
+
+        self.assertIn(f"→ remove the run worktree of {RUN_BRANCH} at {path}", self.stdout)
+        self.assertFalse(path.exists())
+        self.assertEqual(self.branches(), set())
 
     # Refusals.
 

@@ -47,6 +47,12 @@ _start, _review = CUSTOM_CONFIGURATION.split("# Used by reviewed runs", 1)
 WITHOUT_REVIEW = _start + _review.split("\n\n", 1)[1]
 REVIEWED_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("review_by_default = false\n", "review_by_default = true\n")
 SLEEP_LOCK_BY_DEFAULT = DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", "caffeinate_by_default = true\n")
+WORKTREE_SETUP = DEFAULT_CONFIGURATION.replace(
+    "caffeinate_by_default = false\n",
+    "caffeinate_by_default = false\n"
+    "# Prepares a run worktree: ralph-kit run --worktree runs it through the shell inside the run worktree.\n"
+    'worktree_setup = "uv sync --frozen"\n',
+)
 
 
 def labels_of(repository):
@@ -125,7 +131,7 @@ class ConfigureTests(unittest.TestCase):
                 self.assertEqual(self.read(str(config or "ralph.toml")), invalid)
 
     def test_the_menu_summarises_each_section(self):
-        self.run_configure(answers=["10"])
+        self.run_configure(answers=["11"])
         menu = self.menu()
         self.assertIn("? ralph.toml — what do you want to change?", self.output.getvalue())
         lines = [line.strip() for line in menu.strip().splitlines()]
@@ -137,10 +143,10 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(lines[5], "6)   Reviewed runs by default  (off)")
         self.assertEqual(lines[6], "7)   Keep the machine awake by default  (off)")
         self.assertEqual(lines[7], "8)   Child session limits  (standard 5 · reviewed 9)")
-        self.assertEqual(lines[8:], ["9)   Save", "10)   Quit without saving"])
+        self.assertEqual(lines[8:], ["9)   Run worktree setup  (none)", "10)   Save", "11)   Quit without saving"])
 
     def test_quit_without_saving_writes_nothing(self):
-        written = self.run_configure(answers=["4", "1", "2", "", "10"])
+        written = self.run_configure(answers=["4", "1", "2", "", "11"])
         self.assertFalse(written)
         self.assertIn("* Verification  (local on · CI on)", self.menu())
         self.assertIn("Nothing written.", self.output.getvalue())
@@ -158,7 +164,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual((self.root / "ralph.toml").stat().st_mtime_ns, before)
 
     def test_verification_toggles_each_check_and_warns_without_the_quality_policy(self):
-        self.assertTrue(self.run_configure(answers=["4", "2", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["4", "2", "", "10"]))
         config = load_config(self.root / "ralph.toml", self.root)
         self.assertFalse(config.verification.local_checks)
         self.assertTrue(config.verification.ci_checks)
@@ -173,33 +179,33 @@ class ConfigureTests(unittest.TestCase):
         (self.root / ".github/scripts").mkdir(parents=True)
         (self.root / init.QUALITY_MODULE).write_text("")
         (self.root / init.QUALITY_MANIFEST).write_text("{}")
-        self.run_configure(answers=["4", "1", "", "9"])
+        self.run_configure(answers=["4", "1", "", "10"])
         self.assertNotIn("⚠", self.output.getvalue())
         self.assertTrue(load_config(self.root / "ralph.toml", self.root).verification.local_checks)
 
     def test_a_save_keeps_every_value_it_did_not_change(self):
         # Custom labels, quality policy paths, display names, a distinct correction, several authors, another remote.
         self.write(CUSTOM_CONFIGURATION)
-        self.run_configure(answers=["4", "1", "", "9"])
+        self.run_configure(answers=["4", "1", "", "10"])
         self.assertEqual(self.read(), CUSTOM_CONFIGURATION.replace("local_checks = true", "local_checks = false"))
         self.assertIn("Changes:\n  verification.local_checks: true → false\n\n", self.output.getvalue())
         self.assertNotIn("⚠", self.output.getvalue())  # Turning a check off needs no quality policy.
 
     def test_a_configuration_without_review_stays_without_it(self):
         self.write(WITHOUT_REVIEW)
-        self.run_configure(answers=["4", "2", "", "9"])
+        self.run_configure(answers=["4", "2", "", "10"])
         self.assertEqual(self.read(), WITHOUT_REVIEW.replace("ci_checks = false", "ci_checks = true"))
 
     def test_comments_the_renderer_would_not_write_are_announced_once(self):
         self.write("# Tuned by hand\n" + DEFAULT_CONFIGURATION.replace('remote = "origin"', 'remote = "origin"  # fork'))
-        self.run_configure(answers=["4", "1", "", "9"])
+        self.run_configure(answers=["4", "1", "", "10"])
         output = self.output.getvalue()
         self.assertEqual(output.count("has comments that ralph-kit does not write: saving will drop them"), 1)
         self.assertNotIn("Tuned by hand", self.read())
 
     def test_rendered_comments_and_hashes_in_strings_are_not_announced(self):
         self.write(DEFAULT_CONFIGURATION.replace('"needs-triage"', '"needs #triage"'))
-        self.run_configure(answers=["10"])
+        self.run_configure(answers=["11"])
         self.assertNotIn("comments", self.output.getvalue())
 
     def test_defaulted_settings_are_announced_once_with_update_config(self):
@@ -213,7 +219,7 @@ class ConfigureTests(unittest.TestCase):
                     .replace("reviewed = 9\n", ""),
                     name=name,
                 )
-                self.run_configure(answers=["10"], config=config)
+                self.run_configure(answers=["11"], config=config)
                 lines = [line for line in self.output.getvalue().splitlines() if "leaves out" in line]
                 self.assertEqual(lines, [
                     f"ℹ {name} leaves out child_session_limit.reviewed, labels.standalone, review_by_default, "
@@ -222,7 +228,7 @@ class ConfigureTests(unittest.TestCase):
 
     def test_one_defaulted_setting_is_announced_in_the_singular(self):
         self.write(DEFAULT_CONFIGURATION.replace("caffeinate_by_default = false\n", ""))
-        self.run_configure(answers=["10"])
+        self.run_configure(answers=["11"])
         self.assertIn(
             "ℹ ralph.toml leaves out caffeinate_by_default, so its default value is used: "
             "`ralph-kit update-config` writes it.",
@@ -230,7 +236,7 @@ class ConfigureTests(unittest.TestCase):
         )
 
     def test_a_file_declaring_every_setting_announces_no_defaulted_setting(self):
-        self.run_configure(answers=["10"])
+        self.run_configure(answers=["11"])
         self.assertNotIn("leaves out", self.output.getvalue())
 
     def test_a_file_completed_by_update_config_opens_without_announcements(self):
@@ -244,7 +250,7 @@ class ConfigureTests(unittest.TestCase):
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertEqual(update_config.run(self.root, self.root / "ralph.toml", command=lambda *args: labels), 0)
 
-        self.assertFalse(self.run_configure(answers=["9"]))  # Save without a change.
+        self.assertFalse(self.run_configure(answers=["10"]))  # Save without a change.
         output = self.output.getvalue()
         self.assertNotIn("leaves out", output)
         self.assertNotIn("comments", output)
@@ -253,7 +259,7 @@ class ConfigureTests(unittest.TestCase):
     def test_trusted_authors_lists_them_and_adds_one_without_duplicates(self):
         self.write(CUSTOM_CONFIGURATION)
         # Add zoe, then alice again, then Back and Save.
-        self.assertTrue(self.run_configure(answers=["3", "1", "zoe smith", "zoe", "1", "alice", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["3", "1", "zoe smith", "zoe", "1", "alice", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("? Trusted authors: alice, bob, octocat — what do you want to do?", output)
         self.assertIn("  ✓ zoe added", output)
@@ -267,20 +273,20 @@ class ConfigureTests(unittest.TestCase):
         )
 
     def test_adding_nothing_goes_back(self):
-        self.assertFalse(self.run_configure(answers=["3", "1", "", "", "9"]))
+        self.assertFalse(self.run_configure(answers=["3", "1", "", "", "10"]))
         self.assertIn("GitHub account to trust (leave empty to go back)", self.output.getvalue())
         self.assertIn("No changes: nothing written.", self.output.getvalue())
 
     def test_trusted_authors_removes_one(self):
         self.write(CUSTOM_CONFIGURATION)
         # Remove bob (second of alice, bob, octocat), then Back and Save.
-        self.assertTrue(self.run_configure(answers=["3", "2", "2", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["3", "2", "2", "", "10"]))
         self.assertIn("  ✓ bob removed", self.output.getvalue())
         self.assertEqual(load_config(self.root / "ralph.toml", self.root).trusted_authors, {"alice", "octocat"})
         self.assertEqual(self.read(), CUSTOM_CONFIGURATION.replace('["alice", "bob", "octocat"]', '["alice", "octocat"]'))
 
     def test_removing_the_last_trusted_author_is_refused(self):
-        self.assertFalse(self.run_configure(answers=["3", "2", "", "9"]))
+        self.assertFalse(self.run_configure(answers=["3", "2", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("  ✗ octocat is the last trusted author: add another one before removing it.", output)
         self.assertIn("No changes: nothing written.", output)
@@ -289,7 +295,7 @@ class ConfigureTests(unittest.TestCase):
     def test_a_gh_login_that_is_not_trusted_is_warned_about(self):
         warning = "  ⚠ The current gh account, hubot, is not a trusted author: Ralph would ignore its own implementation evidence."
         self.responses[GH_LOGIN] = "hubot"
-        self.run_configure(answers=["3", "1", "hubot", "", "10"])
+        self.run_configure(answers=["3", "1", "hubot", "", "11"])
         output = self.output.getvalue()
         self.assertEqual(output.count(warning), 1)  # Not after hubot was added.
         self.assertLess(output.index(warning), output.index("? Trusted authors: octocat —"))
@@ -297,7 +303,7 @@ class ConfigureTests(unittest.TestCase):
     def test_removing_the_gh_login_warns(self):
         self.write(CUSTOM_CONFIGURATION)
         self.responses[GH_LOGIN] = "octocat"
-        self.run_configure(answers=["3", "2", "3", "", "10"])
+        self.run_configure(answers=["3", "2", "3", "", "11"])
         self.assertIn("  ✓ octocat removed\n  ⚠ The current gh account, octocat, is not a trusted author", self.output.getvalue())
 
     def test_no_warning_when_the_gh_login_is_trusted_or_gh_is_missing(self):
@@ -305,12 +311,12 @@ class ConfigureTests(unittest.TestCase):
             with self.subTest(login=login):
                 self.output = io.StringIO()
                 self.responses[GH_LOGIN] = login
-                self.run_configure(answers=["3", "", "10"])
+                self.run_configure(answers=["3", "", "11"])
                 self.assertNotIn("⚠", self.output.getvalue())
 
     def test_config_option_edits_another_configuration(self):
         self.write(DEFAULT_CONFIGURATION, name="b.toml")
-        self.run_configure(answers=["4", "1", "", "9"], config=pathlib.Path("b.toml"))
+        self.run_configure(answers=["4", "1", "", "10"], config=pathlib.Path("b.toml"))
         self.assertIn("? b.toml — what do you want to change?", self.output.getvalue())
         self.assertTrue(load_config(self.root / "b.toml", self.root).verification.local_checks)
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
@@ -318,7 +324,7 @@ class ConfigureTests(unittest.TestCase):
 
     def test_git_edits_the_repository_base_branch_and_remote(self):
         # Without gh or git output: no hint and no label offer, editing still works.
-        answers = ["5", "1", "acme", "acme/gadget", "2", "-x", "develop", "3", "my fork", "upstream", "", "9"]
+        answers = ["5", "1", "acme", "acme/gadget", "2", "-x", "develop", "3", "my fork", "upstream", "", "10"]
         self.assertTrue(self.run_configure(answers=answers))
         output = self.output.getvalue()
         self.assertIn("? GitHub repository (owner/name)\n", output)
@@ -345,7 +351,7 @@ class ConfigureTests(unittest.TestCase):
         self.write(CUSTOM_CONFIGURATION)
         self.responses[GH_REPOSITORY] = json.dumps({"nameWithOwner": "acme/widget", "defaultBranchRef": {"name": "main"}})
         self.responses[GIT_REMOTES] = "origin\nupstream"
-        self.assertFalse(self.run_configure(answers=["5", "1", "", "2", "", "3", "", "", "9"]))
+        self.assertFalse(self.run_configure(answers=["5", "1", "", "2", "", "3", "", "", "10"]))
         self.assertEqual(
             [prompt for prompt in self.prompts if prompt.startswith("Answer")],
             ["Answer [acme/gadget]: ", "Answer [develop]: ", "Answer [upstream]: "],
@@ -357,7 +363,7 @@ class ConfigureTests(unittest.TestCase):
         self.responses[GH_REPOSITORY] = json.dumps({"nameWithOwner": "acme/gadget", "defaultBranchRef": {"name": "main"}})
         self.responses[("git", "symbolic-ref", "--quiet", "--short", "refs/remotes/origin/HEAD")] = "origin/develop"
         self.responses[GIT_REMOTES] = "origin\nupstream"
-        self.run_configure(answers=["5", "1", "", "2", "", "3", "", "", "10"])
+        self.run_configure(answers=["5", "1", "", "2", "", "3", "", "", "11"])
         output = self.output.getvalue()
         self.assertIn("  1) Repository  (acme/widget; detected acme/gadget)\n", output)
         self.assertIn("? GitHub repository (owner/name); detected acme/gadget\n", output)
@@ -371,7 +377,7 @@ class ConfigureTests(unittest.TestCase):
     def test_git_hides_detected_values_that_match(self):
         self.responses[GH_REPOSITORY] = json.dumps({"nameWithOwner": "acme/widget", "defaultBranchRef": {"name": "trunk"}})
         self.responses[GIT_REMOTES] = "origin"
-        self.run_configure(answers=["5", "", "10"])
+        self.run_configure(answers=["5", "", "11"])
         output = self.output.getvalue()
         self.assertIn("  1) Repository  (acme/widget)\n  2) Base branch  (trunk)\n  3) Remote  (origin)\n", output)
 
@@ -389,7 +395,7 @@ class ConfigureTests(unittest.TestCase):
             return self.responses.get(args)
 
         self.command = command
-        self.assertTrue(self.run_configure(answers=["5", "1", "acme/other", "", "", "9"]))  # Enter keeps "Yes".
+        self.assertTrue(self.run_configure(answers=["5", "1", "acme/other", "", "", "10"]))  # Enter keeps "Yes".
         output = self.output.getvalue()
         self.assertIn("  ℹ Labels missing on acme/other: agent: standalone, agent: started, agent: working, done, human: ready, human: review, triage: info, won't fix", output)
         self.assertIn("? Create the 8 missing labels?", output)
@@ -413,9 +419,9 @@ class ConfigureTests(unittest.TestCase):
         self.command = command
         self.responses[labels_of("acme/other")] = json.dumps([[]])
         self.responses[labels_of("acme/full")] = json.dumps([[{"name": name} for name in init.LABELS.values()]])
-        self.run_configure(answers=["5", "1", "acme/other", "2", "", "9"])
+        self.run_configure(answers=["5", "1", "acme/other", "2", "", "10"])
         self.assertIn("? Create the 10 missing labels?", self.output.getvalue())
-        self.run_configure(answers=["5", "1", "acme/full", "", "9"])
+        self.run_configure(answers=["5", "1", "acme/full", "", "10"])
         self.assertIn("  ✓ Labels: all 10 present", self.output.getvalue())
         self.assertEqual(created, [])
 
@@ -430,11 +436,11 @@ class ConfigureTests(unittest.TestCase):
 
         self.command = command
         self.responses[labels_of("acme/other")] = json.dumps([[]])
-        self.run_configure(answers=["5", "1", "acme/other", "", "", "10"])  # Yes, then Quit.
+        self.run_configure(answers=["5", "1", "acme/other", "", "", "11"])  # Yes, then Quit.
         self.assertEqual(created, [])
         # Yes for acme/other, then acme/full has them all: only the last repository counts.
         self.responses[labels_of("acme/full")] = json.dumps([[{"name": name} for name in init.LABELS.values()]])
-        self.run_configure(answers=["5", "1", "acme/other", "", "1", "acme/full", "", "9"])
+        self.run_configure(answers=["5", "1", "acme/other", "", "1", "acme/full", "", "10"])
         self.assertEqual(created, [])
         self.assertEqual(load_config(self.root / "ralph.toml", self.root).repository, "acme/full")
 
@@ -451,7 +457,7 @@ class ConfigureTests(unittest.TestCase):
         self.responses[labels_of("acme/other")] = json.dumps([[]])
         self.responses[labels_of("acme/widget")] = json.dumps([[]])
         # Yes for acme/other, back to acme/widget, then a remote change so Save writes.
-        self.run_configure(answers=["5", "1", "acme/other", "", "1", "acme/widget", "3", "upstream", "", "9"])
+        self.run_configure(answers=["5", "1", "acme/other", "", "1", "acme/widget", "3", "upstream", "", "10"])
         self.assertNotIn("Labels missing on acme/widget", self.output.getvalue())
         self.assertEqual(created, [])
         self.assertEqual(load_config(self.root / "ralph.toml", self.root).remote, "upstream")
@@ -467,7 +473,7 @@ class ConfigureTests(unittest.TestCase):
         self.installed = {"claude", "codex"}
         self.responses[CODEX_MODELS] = CODEX_CATALOG
         # Review: codex, first listed model, current effort kept; then Back and Save.
-        self.assertTrue(self.run_configure(answers=["1", "2", "2", "", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["1", "2", "2", "", "", "", "10"]))
         output = self.output.getvalue()
         self.assertIn(
             "? Model profiles: which session role do you want to change?\n"
@@ -497,12 +503,12 @@ class ConfigureTests(unittest.TestCase):
 
     def test_the_current_engine_is_offered_even_when_not_installed(self):
         self.installed = {"codex"}
-        self.run_configure(answers=["1", "1", "", "", "", "", "10"])
+        self.run_configure(answers=["1", "1", "", "", "", "", "11"])
         self.assertIn("? Engine for implementation\n  1) claude  (Claude Code, not installed here)\n  2) codex  (Codex)\n", self.output.getvalue())
         # With no other CLI installed, the current engine is kept without asking.
         self.output = io.StringIO()
         self.installed = set()
-        self.assertFalse(self.run_configure(answers=["1", "1", "", "", "", "9"]))
+        self.assertFalse(self.run_configure(answers=["1", "1", "", "", "", "10"]))
         output = self.output.getvalue()
         self.assertNotIn("? Engine for", output)
         self.assertIn("  Engine: claude (Claude Code, no other agent CLI installed)", output)
@@ -510,7 +516,7 @@ class ConfigureTests(unittest.TestCase):
 
     def test_correction_follows_implementation_when_identical_and_on_yes(self):
         # Implementation: fable, current effort medium kept; Enter answers Yes; Back, Save.
-        self.assertTrue(self.run_configure(answers=["1", "1", "1", "", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["1", "1", "1", "", "", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("  1) fable  (Fable, for the hardest and longest tasks)", output)
         self.assertIn("? Correction has the same model profile as implementation: should it follow?", output)
@@ -520,20 +526,20 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("models.correction.name: sonnet → fable", output)
 
     def test_correction_keeps_its_profile_on_no(self):
-        self.assertTrue(self.run_configure(answers=["1", "1", "1", "", "2", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["1", "1", "1", "", "2", "", "10"]))
         self.assertEqual(self.models()["implementation"], ("claude", "fable", "fable", "medium"))
         self.assertEqual(self.models()["correction"], ("claude", "sonnet", "sonnet", "medium"))
         self.assertIn("· correction claude/sonnet medium", self.menu())
 
     def test_a_distinct_correction_is_not_asked_to_follow(self):
         self.write(CUSTOM_CONFIGURATION)
-        self.assertTrue(self.run_configure(answers=["1", "1", "4", "", "", "9"]))  # Implementation: haiku.
+        self.assertTrue(self.run_configure(answers=["1", "1", "4", "", "", "10"]))  # Implementation: haiku.
         self.assertNotIn("should it follow", self.output.getvalue())
         self.assertEqual(self.models()["implementation"], ("claude", "haiku", "haiku", "medium"))
         self.assertEqual(self.models()["correction"], ("claude", "opus", "Opus fixer", "high"))
 
     def test_correction_is_edited_on_its_own(self):
-        self.assertTrue(self.run_configure(answers=["1", "3", "2", "3", "", "9"]))  # Opus, high.
+        self.assertTrue(self.run_configure(answers=["1", "3", "2", "3", "", "10"]))  # Opus, high.
         self.assertEqual(self.models()["correction"], ("claude", "opus", "opus", "high"))
         self.assertEqual(self.models()["implementation"], ("claude", "sonnet", "sonnet", "medium"))
         self.assertIn("· correction claude/opus high", self.menu())
@@ -541,7 +547,7 @@ class ConfigureTests(unittest.TestCase):
     def test_an_unchanged_model_keeps_its_display_name(self):
         self.write(CUSTOM_CONFIGURATION)
         # Implementation: sonnet kept, effort changed to high.
-        self.assertTrue(self.run_configure(answers=["1", "1", "", "3", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["1", "1", "", "3", "", "10"]))
         self.assertEqual(self.models()["implementation"], ("claude", "sonnet", 'Sonnet "daily"', "high"))
         self.assertIn("Changes:\n  models.implementation.reasoning_effort: medium → high\n\n", self.output.getvalue())
 
@@ -549,7 +555,7 @@ class ConfigureTests(unittest.TestCase):
         self.installed = {"claude", "codex"}
         self.responses[CODEX_MODELS] = CODEX_CATALOG
         # Implementation: codex, codex-large, medium refused, then high; correction follows.
-        self.assertTrue(self.run_configure(answers=["1", "1", "2", "1", "1", "2", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["1", "1", "2", "1", "1", "2", "", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("  medium is unavailable: same as backup.", output)
         self.assertEqual(self.models()["implementation"], ("codex", "codex-large", "codex-large", "high"))
@@ -561,7 +567,7 @@ class ConfigureTests(unittest.TestCase):
         self.installed = {"claude", "codex"}
         self.responses[CODEX_MODELS] = CODEX_CATALOG
         # Review: codex, codex-mini refused, other with codex-mini (explained, asked again), then codex-large.
-        answers = ["1", "2", "2", "2", "3", "codex-mini", "1", "", "", "9"]
+        answers = ["1", "2", "2", "2", "3", "codex-mini", "1", "", "", "10"]
         self.assertTrue(self.run_configure(answers=answers))
         output = self.output.getvalue()
         self.assertIn("  2) codex-mini  (Mini)  (unavailable: every reasoning effort same as backup)", output)
@@ -571,7 +577,7 @@ class ConfigureTests(unittest.TestCase):
     def test_without_the_codex_catalog_the_current_model_is_the_default(self):
         self.write(CUSTOM_CONFIGURATION)
         # Review stays codex (not installed here, the only engine), Enter keeps gpt-5 and xhigh.
-        self.assertFalse(self.run_configure(answers=["1", "2", "", "", "", "9"]))
+        self.assertFalse(self.run_configure(answers=["1", "2", "", "", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("? Model for review (Codex model list unavailable)", output)
         self.assertIn("Answer [gpt-5]: ", self.prompts)
@@ -581,13 +587,13 @@ class ConfigureTests(unittest.TestCase):
     def test_a_current_model_missing_from_the_catalog_stays_offered(self):
         self.write(CUSTOM_CONFIGURATION)
         self.responses[CODEX_MODELS] = CODEX_CATALOG
-        self.assertFalse(self.run_configure(answers=["1", "2", "", "", "", "9"]))
+        self.assertFalse(self.run_configure(answers=["1", "2", "", "", "", "10"]))
         self.assertIn("  1) gpt-5  (current model)\n  2) codex-large  (Smart)\n", self.output.getvalue())
         self.assertEqual(self.read(), CUSTOM_CONFIGURATION)
 
     def test_a_configuration_without_review_can_add_one(self):
         self.write(WITHOUT_REVIEW)
-        self.assertTrue(self.run_configure(answers=["1", "2", "", "", "", "9"]))  # Init's defaults: opus, high.
+        self.assertTrue(self.run_configure(answers=["1", "2", "", "", "", "10"]))  # Init's defaults: opus, high.
         self.assertIn("  2) review  (none)", self.output.getvalue())
         self.assertEqual(self.models()["review"], ("claude", "opus", "opus", "high"))
         self.assertEqual(self.read(), CUSTOM_CONFIGURATION.replace(
@@ -596,7 +602,7 @@ class ConfigureTests(unittest.TestCase):
         ))
 
     def test_turning_reviewed_runs_by_default_on_saves_only_the_setting(self):
-        self.assertTrue(self.run_configure(answers=["6", "1", "9"]))
+        self.assertTrue(self.run_configure(answers=["6", "1", "10"]))
         output = self.output.getvalue()
         self.assertIn(
             "? Reviewed runs by default: off — what do you want to do?\n"
@@ -611,7 +617,7 @@ class ConfigureTests(unittest.TestCase):
 
     def test_turning_reviewed_runs_by_default_on_without_review_asks_for_its_profile(self):
         self.write(WITHOUT_REVIEW)
-        self.assertTrue(self.run_configure(answers=["6", "1", "", "", "9"]))  # Init's defaults: opus, high.
+        self.assertTrue(self.run_configure(answers=["6", "1", "", "", "10"]))  # Init's defaults: opus, high.
         output = self.output.getvalue()
         self.assertIn("? Model for review\n", output)
         self.assertIn("  ✓ review: claude/opus high", output)
@@ -623,7 +629,7 @@ class ConfigureTests(unittest.TestCase):
 
     def test_turning_reviewed_runs_by_default_off_keeps_the_review_profile(self):
         self.write(REVIEWED_BY_DEFAULT)
-        self.assertTrue(self.run_configure(answers=["6", "1", "9"]))
+        self.assertTrue(self.run_configure(answers=["6", "1", "10"]))
         output = self.output.getvalue()
         self.assertIn("  6)   Reviewed runs by default  (on)", output)
         self.assertIn("  1) Turn off  (runs are standard unless started with --review)\n", output)
@@ -633,12 +639,12 @@ class ConfigureTests(unittest.TestCase):
         self.assertIn("review", load_config(self.root / "ralph.toml", self.root).models)
 
     def test_going_back_from_reviewed_runs_by_default_changes_nothing(self):
-        self.assertFalse(self.run_configure(answers=["6", "2", "9"]))
+        self.assertFalse(self.run_configure(answers=["6", "2", "10"]))
         self.assertIn("No changes: nothing written.", self.output.getvalue())
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
     def test_turning_sleep_lock_by_default_on_saves_only_the_setting(self):
-        self.assertTrue(self.run_configure(answers=["7", "1", "9"]))
+        self.assertTrue(self.run_configure(answers=["7", "1", "10"]))
         output = self.output.getvalue()
         self.assertIn(
             "? Keep the machine awake by default: off — what do you want to do?\n"
@@ -652,7 +658,7 @@ class ConfigureTests(unittest.TestCase):
 
     def test_turning_sleep_lock_by_default_off_saves_only_the_setting(self):
         self.write(SLEEP_LOCK_BY_DEFAULT)
-        self.assertTrue(self.run_configure(answers=["7", "1", "9"]))
+        self.assertTrue(self.run_configure(answers=["7", "1", "10"]))
         output = self.output.getvalue()
         self.assertIn("  7)   Keep the machine awake by default  (on)", output)
         self.assertIn("  1) Turn off  (runs hold no sleep lock unless started with --caffeinate)\n", output)
@@ -661,12 +667,12 @@ class ConfigureTests(unittest.TestCase):
         self.assertFalse(load_config(self.root / "ralph.toml", self.root).caffeinate_by_default)
 
     def test_going_back_from_sleep_lock_by_default_changes_nothing(self):
-        self.assertFalse(self.run_configure(answers=["7", "2", "9"]))
+        self.assertFalse(self.run_configure(answers=["7", "2", "10"]))
         self.assertIn("No changes: nothing written.", self.output.getvalue())
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
     def test_child_session_limits_change_with_the_loading_validation_and_save_only_what_changed(self):
-        self.assertTrue(self.run_configure(answers=["8", "1", "three", "5_0", "0", "3", "2", "1", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["8", "1", "three", "5_0", "0", "3", "2", "1", "", "", "10"]))
         output = self.output.getvalue()
         self.assertIn(
             "? Child session limits: which limit do you want to change?\n"
@@ -687,11 +693,61 @@ class ConfigureTests(unittest.TestCase):
     def test_a_configuration_without_child_session_limits_saves_their_defaults_only_with_a_change(self):
         start = DEFAULT_CONFIGURATION.split("\n[child_session_limit]", 1)[0]
         self.write(start)
-        self.assertFalse(self.run_configure(answers=["8", "2", "", "3", "9"]))  # Enter keeps 9.
+        self.assertFalse(self.run_configure(answers=["8", "2", "", "3", "10"]))  # Enter keeps 9.
         self.assertIn("No changes: nothing written.", self.output.getvalue())
         self.assertEqual(self.read(), start)
-        self.assertTrue(self.run_configure(answers=["8", "2", "12", "3", "9"]))
+        self.assertTrue(self.run_configure(answers=["8", "2", "12", "3", "10"]))
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION.replace("reviewed = 9\n", "reviewed = 12\n"))
+
+    def test_run_worktree_setup_is_set_and_saved_after_the_top_level_settings(self):
+        self.assertTrue(self.run_configure(answers=["9", "1", "uv sync --frozen", "3", "10"]))
+        output = self.output.getvalue()
+        self.assertIn(
+            "? Run worktree setup: none — what do you want to do?\n"
+            "  1) Set the command  (the shell command that prepares a run worktree for ralph-kit run --worktree)\n"
+            "  2) Back\n",
+            output,
+        )
+        self.assertIn("  ✓ run worktree setup: uv sync --frozen\n", output)
+        self.assertIn("* Run worktree setup  (uv sync --frozen)", self.menu())
+        self.assertIn("Changes:\n  worktree_setup: (none) → uv sync --frozen\n\n", output)
+        self.assertEqual(self.read(), WORKTREE_SETUP)
+        self.assertEqual(load_config(self.root / "ralph.toml", self.root).worktree_setup, "uv sync --frozen")
+
+    def test_setting_no_run_worktree_setup_changes_nothing(self):
+        self.assertFalse(self.run_configure(answers=["9", "1", "", "2", "10"]))
+        self.assertIn("No changes: nothing written.", self.output.getvalue())
+        self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
+
+    def test_run_worktree_setup_is_changed_from_its_current_value(self):
+        self.write(WORKTREE_SETUP)
+        self.assertTrue(self.run_configure(answers=["9", "1", "pnpm install --frozen-lockfile", "3", "10"]))
+        output = self.output.getvalue()
+        self.assertIn("  9)   Run worktree setup  (uv sync --frozen)", output)
+        self.assertIn(
+            "? Run worktree setup: uv sync --frozen — what do you want to do?\n"
+            "  1) Change the command\n  2) Remove the command\n  3) Back\n",
+            output,
+        )
+        self.assertIn("Answer [uv sync --frozen]: ", self.prompts)
+        self.assertIn("Changes:\n  worktree_setup: uv sync --frozen → pnpm install --frozen-lockfile\n\n", output)
+        self.assertEqual(load_config(self.root / "ralph.toml", self.root).worktree_setup, "pnpm install --frozen-lockfile")
+
+    def test_keeping_the_current_run_worktree_setup_changes_nothing(self):
+        self.write(WORKTREE_SETUP)
+        self.assertFalse(self.run_configure(answers=["9", "1", "", "3", "10"]))  # Enter keeps it.
+        self.assertIn("No changes: nothing written.", self.output.getvalue())
+        self.assertEqual(self.read(), WORKTREE_SETUP)
+
+    def test_run_worktree_setup_is_removed(self):
+        self.write(WORKTREE_SETUP)
+        self.assertTrue(self.run_configure(answers=["9", "2", "2", "10"]))
+        output = self.output.getvalue()
+        self.assertIn("  ✓ run worktree setup removed\n", output)
+        self.assertIn("* Run worktree setup  (none)", self.menu())
+        self.assertIn("Changes:\n  worktree_setup: uv sync --frozen → (none)\n\n", output)
+        self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
+        self.assertIsNone(load_config(self.root / "ralph.toml", self.root).worktree_setup)
 
     def backup(self):
         backup = load_config(self.root / "ralph.toml", self.root).backup
@@ -702,7 +758,7 @@ class ConfigureTests(unittest.TestCase):
         self.installed = {"claude", "codex"}
         self.responses[CODEX_MODELS] = CODEX_CATALOG
         # Add, Enter keeps codex, codex-large and medium; Back, Save.
-        self.assertTrue(self.run_configure(answers=["2", "1", "", "", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["2", "1", "", "", "", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("  2)   Backup  (none)", output)
         self.assertIn("? Backup: none — what do you want to do?\n  1) Add a backup\n  2) Back\n", output)
@@ -719,7 +775,7 @@ class ConfigureTests(unittest.TestCase):
         self.installed = {"claude", "codex"}
         self.responses[CODEX_MODELS] = CODEX_CATALOG
         # Change, Enter keeps codex and codex-large, effort high; Back, Save.
-        self.assertTrue(self.run_configure(answers=["2", "1", "", "", "2", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["2", "1", "", "", "2", "", "10"]))
         self.assertIn("  1) codex-large  (Smart)\n  2) codex-mini  (Mini)\n  3) other", self.output.getvalue())
         self.assertIn("Changes:\n  models.backup.reasoning_effort: medium → high\n\n", self.output.getvalue())
         self.assertEqual(self.backup(), ("codex", "codex-large", "codex-large", "high"))
@@ -727,7 +783,7 @@ class ConfigureTests(unittest.TestCase):
     def test_an_unchanged_backup_keeps_its_display_name_and_writes_nothing(self):
         self.write(CUSTOM_CONFIGURATION)
         self.installed = {"codex"}
-        self.assertFalse(self.run_configure(answers=["2", "1", "", "", "", "9"]))  # Engine only codex: kept.
+        self.assertFalse(self.run_configure(answers=["2", "1", "", "", "", "10"]))  # Engine only codex: kept.
         output = self.output.getvalue()
         self.assertIn("  Engine: codex (Codex, no other agent CLI installed)", output)
         self.assertIn("Answer [gpt-5-mini]: ", self.prompts)
@@ -735,7 +791,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(self.read(), CUSTOM_CONFIGURATION)
 
     def test_removing_the_backup_drops_it_from_the_file(self):
-        self.assertTrue(self.run_configure(answers=["2", "2", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["2", "2", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("  ✓ backup removed", output)
         self.assertIn("? Backup: none — what do you want to do?", output)
@@ -747,7 +803,7 @@ class ConfigureTests(unittest.TestCase):
     def test_backup_efforts_same_as_a_session_role_are_unavailable(self):
         self.installed = {"claude"}
         # Change: claude (codex stays offered, not installed), opus, high refused, then Enter keeps medium.
-        self.assertTrue(self.run_configure(answers=["2", "1", "1", "2", "3", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["2", "1", "1", "2", "3", "", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("? Engine for the backup\n  1) claude  (Claude Code)\n  2) codex  (Codex, not installed here)\n", output)
         self.assertIn("Choice [2]: ", self.prompts)  # The current engine is the default.
@@ -763,7 +819,7 @@ class ConfigureTests(unittest.TestCase):
         self.installed = {"codex"}
         self.responses[CODEX_MODELS] = CODEX_CATALOG
         # Change, codex-mini refused, other with codex-mini (explained, asked again), then codex-large and ultra.
-        self.assertTrue(self.run_configure(answers=["2", "1", "2", "3", "codex-mini", "1", "3", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["2", "1", "2", "3", "codex-mini", "1", "3", "", "10"]))
         output = self.output.getvalue()
         self.assertIn("  2) codex-mini  (Mini)  (unavailable: every reasoning effort same as review)", output)
         self.assertEqual(output.count("  codex-mini is unavailable: every reasoning effort same as review."), 2)
@@ -772,7 +828,7 @@ class ConfigureTests(unittest.TestCase):
     def test_a_backup_is_added_without_any_agent_cli_or_codex_catalog(self):
         self.write(WITHOUT_BACKUP)
         # Add, codex (every engine offered), a typed model, Enter keeps medium; Back, Save.
-        self.assertTrue(self.run_configure(answers=["2", "1", "2", "gpt-5", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["2", "1", "2", "gpt-5", "", "", "10"]))
         output = self.output.getvalue()
         self.assertIn(
             "? Engine for the backup\n  1) claude  (Claude Code, not installed here)\n  2) codex  (Codex, not installed here)\n",
@@ -783,7 +839,7 @@ class ConfigureTests(unittest.TestCase):
 
     def test_without_any_agent_cli_the_backup_can_still_change_engine(self):
         # Change: claude offered though nothing is installed, opus, Enter keeps medium; Back, Save.
-        self.assertTrue(self.run_configure(answers=["2", "1", "1", "2", "", "", "9"]))
+        self.assertTrue(self.run_configure(answers=["2", "1", "1", "2", "", "", "10"]))
         self.assertIn(
             "? Engine for the backup\n  1) claude  (Claude Code, not installed here)\n  2) codex  (Codex, not installed here)\n",
             self.output.getvalue(),

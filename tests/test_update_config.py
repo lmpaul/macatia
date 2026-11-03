@@ -261,6 +261,7 @@ class UpdateConfigTests(unittest.TestCase):
         self.assertNotIn("[models.review]", completed)
         self.assertNotIn("[models.backup]", completed)
         self.assertNotIn("models", output)
+        self.assertNotIn("worktree_setup", completed + output)
 
     def test_a_missing_child_session_limit_table_is_added_at_the_end_of_the_file(self):
         declared = self.config.read_text()

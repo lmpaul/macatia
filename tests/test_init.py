@@ -413,8 +413,10 @@ class InitTests(unittest.TestCase):
         self.assertEqual(load_config(path, self.root).backup.reasoning_effort, "high")
 
     def test_default_answers_write_the_default_configuration(self):
-        self.run_init(answers=[""] * 8)
+        config = self.run_init(answers=[""] * 8)
         self.assertEqual((self.root / "ralph.toml").read_text(), DEFAULT_CONFIGURATION)
+        self.assertNotIn("worktree", self.output.getvalue())  # Never asked: configure sets it.
+        self.assertIsNone(config.worktree_setup)
 
     def test_the_child_session_limits_are_written_with_their_defaults(self):
         config = self.run_init()

@@ -18,7 +18,7 @@ if TYPE_CHECKING:
 USAGE = """usage: ralph-kit <command> [options]
 
 commands:
-  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--tmux] [--config PATH] [ISSUE]
+  run [--review | --no-review] [--caffeinate | --no-caffeinate] [--tmux] [--worktree] [--config PATH] [ISSUE]
       Standard run: implement the children of a parent ISSUE, or a standalone ISSUE,
       giving each child at most 5 agent sessions (9 in a reviewed run).
       Without ISSUE, at a terminal, offers the startable run targets to choose from.
@@ -30,6 +30,11 @@ commands:
       Restart in ralph-kit-<repository name>-<run target> (the default) restarts the run in that
       persistent terminal (tmux) and attaches to it; Continue here runs in this terminal;
       Stop changes nothing.
+      --worktree offers, once the run target passes its startup checks, to create a run worktree on
+      ralph-kit/issue-<run target> from the remote base branch, next to the repository in
+      <repository>.worktrees/issue-<run target>, or to continue in that run worktree when it exists,
+      prepares it with worktree_setup when configured, then restarts the run there; your checkout
+      is left as it is, dirty or on any branch.
   check [--review] [--config PATH]
       Read-only readiness check (configuration, CLIs, Git, GitHub, skills, quality policy).
       --review also checks the review role, as review_by_default = true does.
@@ -51,11 +56,11 @@ commands:
       --force closes despite failed checks, shown as warnings, once you type ISSUE at a terminal;
       it needs ISSUE.
   reset [--yes] [--purge] [--config PATH] [ISSUE]
-      Reset, after one confirmation: close the open cumulative draft PR of ISSUE, delete
-      ralph-kit/issue-ISSUE on the remote and in this checkout, then label ready-for-agent again
-      each child of ISSUE that is agent-working, implemented or in human-review, then ISSUE itself,
-      each with a reset marker Ralph reads none of its earlier records past; ISSUE must be open
-      with no merged child.
+      Reset, after one confirmation: close the open cumulative draft PR of ISSUE, remove its run
+      worktree, delete ralph-kit/issue-ISSUE on the remote and in this checkout, then label
+      ready-for-agent again each child of ISSUE that is agent-working, implemented or in
+      human-review, then ISSUE itself, each with a reset marker Ralph reads none of its earlier
+      records past; ISSUE must be open with no merged child.
       Without ISSUE, at a terminal, offers the resettable run targets to choose from.
       --yes resets without asking; without a terminal, reset needs --yes.
       --purge deletes Ralph's comments on ISSUE and those children instead of leaving reset

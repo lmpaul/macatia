@@ -8,6 +8,7 @@ ralph-kit run --no-review 123  # standard run, even when review_by_default = tru
 ralph-kit run --caffeinate 123 # keep the machine awake until the run ends
 ralph-kit run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
 ralph-kit run --tmux 123       # offer to restart the run in a persistent terminal (tmux)
+ralph-kit run --worktree 123   # run in a run worktree, away from your own checkout
 ```
 
 Each run executes the loop over the runnable children of its run target: a
@@ -277,13 +278,15 @@ provide the sleep lock, as a warning only: a run continues without one.
 named `ralph-kit-<repository name>-<run target>`, where the repository name is
 the part after `owner/` in the configured `repository`, with `.` and `:` replaced
 by `_`. Once the run target passes its startup checks, and before the run branch
-offer, Ralph asks "Where should this run continue?":
+offer (after the run worktree offer with `--worktree`, see below), Ralph asks
+"Where should this run continue?":
 
 - **Restart in ralph-kit-…** (the default) releases the sleep lock, then
-  restarts the run in a new persistent terminal started in the repository root,
-  and attaches this terminal to it. The restarted run has the same `--review`,
-  `--caffeinate` and `--config` flags, never `--tmux`, and the run target, the
-  one picked when the run started without one. When the run ends, the
+  restarts the run in a new persistent terminal started in the repository root
+  (in the run worktree with `--worktree`), and attaches this terminal to it.
+  The restarted run has the same `--review`, `--caffeinate`, `--config` and
+  `--worktree` flags, never `--tmux`, and the run target, the one picked when
+  the run started without one. When the run ends, the
   persistent terminal stays open on your shell. Detach with `Ctrl-b d`; reattach with
   `tmux attach -t ralph-kit-…`.
 - **Continue here** runs in this terminal, as without `--tmux`.
@@ -306,3 +309,129 @@ reading the configuration or GitHub and without taking the sleep lock:
   or stdout is not a terminal.
 
 `ralph-kit check` does not require tmux.
+
+## Run worktree: `--worktree`
+
+`--worktree` runs in a run worktree: a separate checkout of the run target's
+run branch, so you can keep working in your own checkout while the run goes.
+Your checkout may be dirty and on any branch; nothing in it changes, not even
+its local base branch.
+
+The run worktree of run target N is always at
+`<parent of the main checkout>/<main checkout directory name>.worktrees/issue-N`:
+for a repository cloned at `~/code/buyr`, `~/code/buyr.worktrees/issue-123`.
+The main checkout is found through Git, so the path is the same whichever
+checkout of the repository the run starts from.
+
+Once the run target passes its startup checks, in place of the run branch
+offer, and before the `--tmux` question, Ralph fetches the base branch, then
+asks "Create a run worktree for ralph-kit/issue-N at ‹path›?":
+
+- **Create** (the default) adds the run worktree on a new run branch
+  `ralph-kit/issue-N` from `<remote>/<base>`, prepares it with
+  `worktree_setup` (see below), releases the sleep lock, then restarts the run
+  in the run worktree, in this terminal, or in a persistent terminal with
+  `--tmux` (see below). The restarted run has the same `--review`,
+  `--caffeinate`, `--config` and `--worktree` flags, never `--tmux`, and the
+  run target, the one picked when the run started without one. It runs the usual startup checks in the run worktree, reads its
+  configuration and keeps its run diagnostics there, and pushes the run branch.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
+When the run branch already exists, locally, on the remote or both, but is
+checked out nowhere, as after a run without `--worktree`, Ralph asks the same
+question without fetching the base branch, and Create adds the run worktree on
+that run branch, tracking the remote one: a run branch only on the remote is
+checked out tracking it, and a local run branch behind the remote one is
+fast-forwarded. A local run branch that has diverged from the remote one stops
+the run before the question, with nothing rewritten.
+
+When the run worktree already exists at that path on the run branch, as after a
+stopped or interrupted run, Ralph asks "Continue in the existing run worktree at
+‹path›?" instead:
+
+- **Continue** (the default) has the run branch follow the remote one, as the
+  switch to an existing run branch does: a run branch behind the remote one is
+  fast-forwarded, and one that has diverged from it stops the run with nothing
+  rewritten. Ralph then prepares the run worktree and restarts the run in it,
+  as for Create.
+- **Stop**, or Ctrl-C at the prompt, ends the run with nothing changed.
+
+A run started with `--worktree` from inside the run worktree of its run target,
+as the restarted run is, asks nothing, prepares the run worktree and continues
+in place. A stopped run's rerun command keeps `--worktree`, so the same
+command resumes the run from your own checkout or from the run worktree.
+Started from inside the run worktree of another run target, `--worktree` works
+as from your own checkout: the path is always derived from the main checkout.
+
+The run stops with nothing changed:
+
+- without a terminal, naming the run worktree it would create or continue in
+  and the command to run in a terminal to do so;
+- when the selected configuration file is not where the run worktree reads it,
+  `<remote>/<base>` for a new run branch, or the run branch otherwise: commit
+  and push it, or run without `--worktree`;
+- when the run branch is checked out in another checkout, such as your own,
+  naming that checkout: switch it to another branch there, or run without
+  `--worktree`;
+- when the run worktree path already exists, or Git still has a deleted
+  worktree registered there, but not as this repository's run worktree on the
+  run branch; a run branch still checked out in a deleted worktree is named as
+  such, with `git worktree prune` to remove it.
+
+Without ISSUE, the run target is picked first, in your checkout. Without
+`--worktree`, nothing is asked and the run works in your checkout as above.
+
+`ralph-kit reset` removes the run worktree of the run target along with its
+run branch (see [Reset](reset.md)). To keep the run's work but drop its run
+worktree once you are done with it, remove it by hand from your own checkout,
+then delete its run branch:
+
+```sh
+git worktree remove ../buyr.worktrees/issue-123
+git branch -d ralph-kit/issue-123
+```
+
+`git worktree remove` refuses a run worktree with uncommitted changes, and
+`git branch -d` a run branch that is not merged; check them before forcing
+either.
+
+### Preparing the run worktree: `worktree_setup`
+
+A new run worktree holds only what Git tracks: no installed dependencies such
+as `node_modules` or `.venv`. Set `worktree_setup` in the configuration (see
+[Configuration](configuration.md)) to the command that prepares it, for
+instance:
+
+```toml
+worktree_setup = "pnpm install --frozen-lockfile"
+```
+
+or `worktree_setup = "uv sync"`. On every `--worktree` run, Ralph runs it
+through the shell in the run worktree, never in your checkout, with its output
+in the terminal: after Create or Continue, before the restart (and before the
+`--tmux` question), and again in the restarted run, which continues in place,
+after its startup checks and before its clean worktree check and any agent
+session. Without `worktree_setup`, nothing runs.
+
+A non-zero exit stops the run before any agent session, with its exit code:
+fix the command, or run without `--worktree`. The command must leave the run
+worktree clean: what it creates must be ignored by Git, or the run stops with
+`worktree is dirty at startup`. A run without `--worktree` never runs it.
+
+### Combining `--worktree` with `--tmux`
+
+`ralph-kit run --worktree --tmux 123` restarts the run only once, both in a
+persistent terminal and in the run worktree. After Create or Continue, Ralph
+asks "Where should this run continue?" as for `--tmux`:
+
+- **Restart in ralph-kit-…** (the default) starts the persistent terminal in
+  the run worktree, running the restarted command, with `--worktree` and
+  without `--tmux`, which continues in place there.
+- **Continue here** restarts the run in the run worktree, in this terminal.
+- **Stop**, or Ctrl-C at the prompt, ends the run. A run worktree created just
+  before stays, and the next `--worktree` run offers to continue in it.
+
+The `--tmux` refusals apply as without `--worktree`: tmux not found, already
+inside tmux and no terminal stop the run at once, and an existing persistent
+terminal of the run target stops it before the run worktree offer, with
+nothing created.
