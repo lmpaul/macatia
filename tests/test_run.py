@@ -5201,6 +5201,13 @@ class FinalCICorrectionSessionTests(AgentSessionTestCase):
         self.assertEqual((replay.option("--model"), replay.option("--effort")), ("opus", "high"))
         self.assertIn("Final CI correction 1/3", replay.prompt)
         self.assertIn(
+            f"engine failure in the final CI correction session for run target #{PARENT}: ",
+            result.stdout,
+        )
+        self.assertIn(
+            f"(final CI correction session, run target #{PARENT})", self.github.comments(PARENT)[-1]
+        )
+        self.assertIn(
             final_ci_green(self.repository.head(), corrections=1), self.github.comments(PARENT)[-1]
         )
 

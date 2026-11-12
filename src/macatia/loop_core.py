@@ -202,6 +202,12 @@ def agent_profile(state: RunState, role: str) -> AgentProfile:
     return state.config.models[profile]
 
 
+def session_subject(role: str, issue_number: int) -> str:
+    """What a session works on, as messages name it: a final CI correction belongs to the
+    run target, every other session to a child."""
+    return f"run target #{issue_number}" if role == FINAL_CI_CORRECTION else f"child #{issue_number}"
+
+
 def engine_name(engine: str) -> str:
     return "Claude Code" if engine == "claude" else "Codex"
 
@@ -1008,10 +1014,14 @@ class BackupSwitch:
     def summary_line(self, backup: AgentProfile) -> str:
         failed_engine = engine_name(self.failure.engine)
         if not self.took_over:
-            return f"- engine failure: {failed_engine} in the {self.role} session for child #{self.child}\n"
+            return (
+                f"- engine failure: {failed_engine} in the {self.role} session for "
+                f"{session_subject(self.role, self.child)}\n"
+            )
         return (
             f"- backup: {engine_name(backup.engine)} {profile_label(backup)} took over after a "
-            f"{failed_engine} engine failure ({self.role} session, child #{self.child})\n"
+            f"{failed_engine} engine failure ({self.role} session, "
+            f"{session_subject(self.role, self.child)})\n"
         )
 
 
@@ -2599,10 +2609,7 @@ def run_agent(
         FINAL_CI_CORRECTION: FINAL_CI_CORRECTION,
     }[role]
     profile = agent_profile(state, role)
-    # A final CI correction belongs to the run target, not to a child.
-    subject = (
-        f"run target #{issue_number}" if role == FINAL_CI_CORRECTION else f"child #{issue_number}"
-    )
+    subject = session_subject(role, issue_number)
     engine_label = engine_name(profile.engine)
     session_label = profile_label(profile)
     session_directory, record = state.diagnostics.start_session(
@@ -3471,7 +3478,7 @@ def switch_to_backup(
     assert backup is not None and state.diagnostics is not None
     announcement = (
         f"⚠️ {engine_name(failure.engine)} engine failure in the {request.role} session for "
-        f"child #{request.child}: {failure.reason} ({failure.exit})."
+        f"{session_subject(request.role, request.child)}: {failure.reason} ({failure.exit})."
     )
     try:
         if request.role == FINAL_CI_CORRECTION:
