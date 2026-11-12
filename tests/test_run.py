@@ -3506,6 +3506,28 @@ class FinalCICheckTests(VerificationTestCase):
                     self.github.comments(CHILD)[-1],
                 )
 
+    def test_without_local_gates_the_run_recommends_them_at_start_and_proceeds(self):
+        recommendation = (
+            "final_ci_check is on with local_checks = false: nothing verifies the children between "
+            "them, only the final CI check verifies the run's final head. Set local_checks = true to "
+            "run the local gates after each child."
+        )
+        for local_checks in (False, True):
+            with self.subTest(local_checks=local_checks):
+                self.new_final_ci_run(children=(CHILD,), local_checks=local_checks)
+
+                result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
+
+                self.assert_completed(result, sessions=1)
+                if local_checks:
+                    self.assertNotIn(recommendation, result.stdout)
+                    continue
+                self.assertEqual(result.stdout.count(recommendation), 1)
+                # Printed at start, before the first child.
+                self.assertLess(
+                    result.stdout.index(recommendation), result.stdout.index(f"Starting child #{CHILD}.")
+                )
+
     def test_ci_checks_on_makes_final_ci_check_ineffective(self):
         self.repository = RunRepository(self, ci_checks=True, final_ci_check=True)
         self.github = FakeGitHub()

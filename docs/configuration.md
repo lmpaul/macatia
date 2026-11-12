@@ -15,7 +15,9 @@ these requirements, requiring the CLI of each configured engine, so it is the co
 to run when reusing a committed `macatia.toml` on another machine.
 `init` then reads the GitHub repository, default branch, remote and current `gh`
 account, and enables local gates and CI checks when `.github/scripts/quality.py` and
-`.github/quality-gates.json` exist. It asks only for what it could not detect,
+`.github/quality-gates.json` exist. It writes `final_ci_check` (see
+[the final CI check](verification.md#final-ci-check)) with the value it gives
+`ci_checks` and a comment explaining it, without asking. It asks only for what it could not detect,
 plus the agent engine, models and reasoning efforts; lists are navigated with
 the arrow keys. Only installed agent CLIs are offered. Codex models and their supported efforts come from your account's
 catalog (`codex debug models`, with a free-text fallback); Claude Code has no
@@ -74,8 +76,9 @@ remote, each asked with its current value as the default and the detected one (g
 repository, default branch, Git remotes) shown when it differs; without `gh` or `git`
 output, editing still works. After a repository change, the labels missing there are
 offered for creation (Yes / Later), as `init` does, and created once the file is
-written. Verification turns local gates and
-CI checks on or off independently; enabling one without the quality module and
+written. Verification turns local gates,
+CI checks and the final CI check on or off independently, and its summary reads
+`local … · CI … · final CI …`; enabling one without the quality module and
 manifest is accepted with a warning that `macatia check` fails until they exist.
 Reviewed runs by default turns `review_by_default` on or off. Turning it on without a
 review profile first asks for one, as Model profiles does for review; turning it off keeps
@@ -105,20 +108,22 @@ committed from another machine): the error suggests `uv tool upgrade macatia --r
 
 A newer macatia can add a setting. `macatia check` lists the defaulted
 settings the file leaves out other than label roles (`review_by_default`,
-`caffeinate_by_default`, each `child_session_limit` key) as information that
+`caffeinate_by_default`, each `child_session_limit` key, `verification.final_ci_check`) as information that
 does not fail the check, and warns about defaulted label roles.
 `macatia update-config [--config PATH]` writes each defaulted setting the file
 leaves out, with its default value and the comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
 after the last top-level setting, before the first table, each label role at
 the end of `[labels]` with its default name, and a `[child_session_limit]` table
 with `standard` and `reviewed` at the end of the file, or the limit a partial
-table leaves out at the end of that table, without the table's comment. A comment
+table leaves out at the end of that table, without the table's comment, and
+`final_ci_check = false` with its comment at the end of `[verification]`. A comment
 block directly above the next table stays with that table. The rest of the file and its comments
 stay as they are; `[models.review]`, `[models.backup]` and `worktree_setup` are never added. It lists
 each added setting as `key = value`, and with nothing to add says so and writes
 nothing. It refuses when the default name is already another role's label, when
 the labels are not in a `[labels]` table, or when a partial `child_session_limit`
-is written as an inline table or with dotted keys, and then writes nothing. It validates the
+or a `verification` that leaves out `final_ci_check` is written as an inline table
+or with dotted keys, and then writes nothing. It validates the
 completed file before writing it and, like `check`, offers to create the labels
 missing on GitHub (Yes / Later; without a terminal it only prints the command). Commit the file afterwards: a run needs a
 clean working tree.

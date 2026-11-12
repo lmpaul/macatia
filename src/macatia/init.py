@@ -502,6 +502,15 @@ def top_level_setting(key: str, value: bool) -> list[str]:
     return [TOP_LEVEL_COMMENTS[key], f"{key} = {str(value).lower()}"]
 
 
+def final_ci_check_setting(value: bool) -> list[str]:
+    """The lines init writes for final_ci_check under [verification]: its comment, then key = value."""
+    return [
+        "# With ci_checks = false, true checks CI once on the run's final head, before the PR is marked ready;",
+        "# ci_checks = true already checks CI after each child, so this setting then has no effect.",
+        f"final_ci_check = {str(value).lower()}",
+    ]
+
+
 CHILD_SESSION_LIMIT_HEADER = "[child_session_limit]"
 
 
@@ -529,6 +538,8 @@ def configuration(values: dict, root: pathlib.Path) -> MacatiaConfig:
         verification=VerificationConfig(
             local_checks=values["local_checks"],
             ci_checks=values["ci_checks"],
+            # The same value as ci_checks, so turning ci_checks off later keeps CI checked once per run.
+            final_ci_check=values["ci_checks"],
             quality_module=root / QUALITY_MODULE,
             quality_manifest=root / QUALITY_MANIFEST,
         ),
@@ -581,6 +592,8 @@ def render(config: MacatiaConfig, root: pathlib.Path) -> str:
         f"ci_checks = {str(verification.ci_checks).lower()}",
         f"quality_module = {_string(verification.quality_module.relative_to(root).as_posix())}",
         f"quality_manifest = {_string(verification.quality_manifest.relative_to(root).as_posix())}",
+        # Last in the table, where update-config adds it to a configuration that leaves it out.
+        *final_ci_check_setting(verification.final_ci_check),
         "",
         *child_session_limit_table(config.child_session_limits),
     ]

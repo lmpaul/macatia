@@ -33,6 +33,7 @@ from .init import (
     CHILD_SESSION_LIMIT_HEADER,
     TOP_LEVEL_COMMENTS,
     child_session_limit_table,
+    final_ci_check_setting,
     top_level_setting,
 )
 
@@ -41,6 +42,8 @@ TABLE_HEADER = re.compile(r"\s*\[")
 COMMENT = re.compile(r"\s*#")
 DEFAULTS = {field.name: field.default for field in dataclasses.fields(MacatiaConfig)}
 LIMITS_TABLE = "child_session_limit"
+VERIFICATION_TABLE = "verification"
+FINAL_CI_CHECK = "final_ci_check"
 
 
 class UpdateError(RuntimeError):
@@ -135,6 +138,18 @@ def with_limits(text: str, limits: dict[str, int], *, table: bool) -> str:
     return inserted(lines, end, [f"{key} = {limit}" for key, limit in limits.items()])
 
 
+def with_final_ci_check(text: str) -> str:
+    """text with final_ci_check, under its comment, at the end of the [verification] table."""
+    lines = text.splitlines(keepends=True)
+    end = table_end(lines, VERIFICATION_TABLE)
+    if end is None:
+        raise UpdateError(
+            f"cannot add {VERIFICATION_TABLE}.{FINAL_CI_CHECK} to a {VERIFICATION_TABLE} written as an inline table "
+            f"or with dotted keys: add it under [{VERIFICATION_TABLE}] by hand"
+        )
+    return inserted(lines, end, final_ci_check_setting(False))
+
+
 def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
     """The file's text with the defaulted settings added, and each added key with its value; empty when there is none."""
     values = _load_toml(path)
@@ -144,6 +159,9 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
     keys = [key for key in TOP_LEVEL_COMMENTS if key not in values]
     roles = missing_roles(labels)
     limits = missing_limits(values)
+    # A verification that is not a table is the loader's to report.
+    verification = values.get(VERIFICATION_TABLE)
+    final_ci_check = isinstance(verification, dict) and FINAL_CI_CHECK not in verification
     text = path.read_bytes().decode("utf-8")  # Not read_text, which would turn CRLF line endings into LF.
     if keys:
         text = with_top_level(text, keys)
@@ -151,21 +169,28 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         text = with_roles(text, roles)
     if limits:
         text = with_limits(text, limits, table=LIMITS_TABLE in values)
-    if not keys and not roles and not limits:
+    if final_ci_check:
+        text = with_final_ci_check(text)
+    if not keys and not roles and not limits and not final_ci_check:
         return text, {}
     limit_values = {f"{LIMITS_TABLE}.{key}": str(limit) for key, limit in limits.items()}
+    verification_values = {f"{VERIFICATION_TABLE}.{FINAL_CI_CHECK}": "false"} if final_ci_check else {}
     try:
         completed = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
-        raise UpdateError(f"cannot add {', '.join([*keys, *roles, *limit_values])} to this file's layout: add them by hand") from None
+        names = ", ".join([*keys, *roles, *limit_values, *verification_values])
+        raise UpdateError(f"cannot add {names} to this file's layout: add them by hand") from None
     if not set(DEFAULT_LABELS) <= set(completed.get("labels", {})):
         raise UpdateError("no [labels] table to complete: add the missing roles by hand")
     if any(completed.get(key) != DEFAULTS[key] for key in keys):
         raise UpdateError(f"cannot add {', '.join(keys)} before the first table: add {'it' if len(keys) == 1 else 'them'} by hand")
     if limits and any(completed.get(LIMITS_TABLE, {}).get(key) != limit for key, limit in limits.items()):
         raise UpdateError(f"cannot add {', '.join(limit_values)} to this file's layout: add them by hand")
+    if final_ci_check and completed.get(VERIFICATION_TABLE, {}).get(FINAL_CI_CHECK) is not False:
+        raise UpdateError(f"cannot add {', '.join(verification_values)} to this file's layout: add it by hand")
     added = {key: str(DEFAULTS[key]).lower() for key in keys}
-    return text, added | {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()} | limit_values
+    roles_values = {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()}
+    return text, added | roles_values | limit_values | verification_values
 
 
 def load_completed(path: pathlib.Path, root: pathlib.Path) -> tuple[MacatiaConfig, dict[str, str]]:

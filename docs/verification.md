@@ -26,7 +26,12 @@ cumulative draft PR created or reused, but the run does not wait for CI between
 children. Once no runnable child is left, the run waits once for the required CI
 checks of its final head, selected from every path changed since the first child
 base of the run, before the end-of-run summary and marking the pull request
-ready. With `ci_checks = true` it has no effect.
+ready. With `ci_checks = true` it has no effect, and `macatia check` warns about
+it. With `local_checks = false`, nothing verifies the children between them:
+`macatia check` warns and a run prints, at start, a recommendation to set
+`local_checks = true`, then proceeds. `macatia init` writes it with the value it
+gives `ci_checks`; `macatia update-config` adds `final_ci_check = false` to a
+configuration that leaves it out.
 
 Each child's implementation evidence then says its local gates are green for the
 exact head and that CI is verified at the end of the run; with local gates also

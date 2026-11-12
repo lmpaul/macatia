@@ -24,8 +24,10 @@ from . import __version__, keep_awake
 from .agent import engine_help_command_and_flags
 from .config import (
     DIAGNOSTICS_DIRECTORY,
+    INEFFECTIVE_FINAL_CI_CHECK,
     LEGACY_CONFIG_NAME,
     LEGACY_CONFIG_RENAME,
+    LOCAL_GATES_RECOMMENDATION,
     RUN_BRANCH_PREFIX,
     MacatiaConfigError,
     MissingConfigError,
@@ -373,7 +375,8 @@ def check_policy(config, root):
             available = shutil.which(executable) if "/" not in executable else shutil.which(str(root / executable))
             require(available, f"local command not found: {executable}", f"install {executable} or fix the command")
         found.append(f"{len(gates)} local check{'s' if len(gates) > 1 else ''}")
-    if config.ci_checks:
+    # The final CI check selects its required CI checks from the manifest too.
+    if config.ci_checks or config.final_ci_check_active:
         checks = manifest["ci"]["checks"]
         require(checks, "no CI check configured")
         names = [check["name"] for check in checks.values()]
@@ -575,11 +578,15 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
         report.check("Module and manifest", lambda: check_policy(config.verification, root))
     else:
         report.add("off", "Checks", "local and CI checks disabled in macatia.toml")
+    if config.verification.final_ci_check_ineffective:
+        report.add("warn", "Final CI check", INEFFECTIVE_FINAL_CI_CHECK)
+    if config.verification.final_ci_check_without_local_gates:
+        report.add("warn", "Final CI check", LOCAL_GATES_RECOMMENDATION)
 
     reminders = list(REMINDERS)
     if config.verification.local_checks:
         reminders.append("Local check commands run and their results verified")
-    if config.verification.ci_checks:
+    if config.verification.ci_checks or config.verification.final_ci_check_active:
         reminders.append("CI workflow check names confirmed and workflow working")
     checked()
     render(console, report, config.repository, [*reminders, *FINAL_REMINDERS])

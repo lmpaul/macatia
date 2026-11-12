@@ -172,6 +172,68 @@ class ReadinessTests(unittest.TestCase):
                 self.flags(local, ci)
                 self.assertEqual(self.run_check()[0], 0)
 
+    def set_final_ci_check(self, value):
+        text = self.config.read_text()
+        self.config.write_text(text.replace("[verification]\n", f"[verification]\nfinal_ci_check = {str(value).lower()}\n"))
+
+    def final_ci_check_rows(self, output):
+        return " ".join(output.split()).count("! Final CI check")
+
+    def test_final_ci_check_with_ci_checks_warns_that_it_has_no_effect(self):
+        self.set_final_ci_check(True)
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        output = " ".join(output.split())  # The report wraps long details.
+        self.assertIn("! Final CI check final_ci_check has no effect: ci_checks = true already checks CI after each child.", output)
+        self.assertNotIn("local_checks = false", output)
+        self.assertIn("No blockers", output)
+        self.assertIn("1 warning", output)
+
+    def test_final_ci_check_without_local_gates_recommends_them_without_failing(self):
+        self.set_final_ci_check(True)
+        self.flags(False, False)
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        output = " ".join(output.split())
+        self.assertIn(
+            "! Final CI check final_ci_check is on with local_checks = false: nothing verifies the children "
+            "between them, only the final CI check verifies the run's final head. "
+            "Set local_checks = true to run the local gates after each child.",
+            output,
+        )
+        self.assertNotIn("has no effect", output)
+        self.assertIn("1 check CI (not run)", output)
+        self.assertIn("CI workflow check names confirmed", output)
+        self.assertIn("No blockers", output)
+        self.assertIn("1 warning", output)
+
+    def test_final_ci_check_with_local_gates_and_without_ci_checks_gets_no_warning(self):
+        self.set_final_ci_check(True)
+        self.flags(True, False)
+        code, output = self.run_check()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.final_ci_check_rows(output), 0)
+        self.assertIn("1 local check, 1 check CI (not run)", " ".join(output.split()))
+        self.assertNotIn("warning", output)
+
+    def test_final_ci_check_off_gets_no_warning(self):
+        for local, ci in ((True, True), (False, False)):
+            with self.subTest(local=local, ci=ci):
+                self.setUp()
+                self.set_final_ci_check(False)
+                self.flags(local, ci)
+                code, output = self.run_check()
+                self.assertEqual(code, 0, output)
+                self.assertEqual(self.final_ci_check_rows(output), 0)
+
+    def test_an_active_final_ci_check_validates_the_ci_checks(self):
+        self.set_final_ci_check(True)
+        self.flags(True, False)
+        self.policy.write_text(self.policy.read_text().replace("Project CI", "REPLACE_CHECK"))
+        code, output = self.run_check()
+        self.assertEqual(code, 1, output)
+        self.assertIn("CI checks still have placeholders", output)
+
     def test_disabled_policy_is_not_loaded(self):
         self.flags(False, False)
         self.policy.unlink()
@@ -327,6 +389,7 @@ class ReadinessTests(unittest.TestCase):
             "\n[labels]",
             "review_by_default = false\ncaffeinate_by_default = false\n\n[labels]",
         )
+        text = text.replace("ci_checks = true\n", "ci_checks = true\nfinal_ci_check = false\n")
         self.config.write_text(text + "\n[child_session_limit]\nstandard = 5\nreviewed = 9\n")
 
     def test_defaulted_settings_get_one_info_entry_without_failing_the_check(self):
@@ -336,7 +399,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn(
             "ℹ Defaulted settings macatia.toml leaves out caffeinate_by_default,"
             " child_session_limit.reviewed, child_session_limit.standard, review_by_default,"
-            " so their default values are used",
+            " verification.final_ci_check, so their default values are used",
             output,
         )
         self.assertIn("→ macatia update-config writes them", output)

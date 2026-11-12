@@ -28,6 +28,10 @@ Settings the configuration leaves out and that take their default value are
 listed as information (`ℹ`), pointing to `macatia update-config`; they never fail
 the check. Defaulted label roles are a warning instead, since the label may be
 missing on GitHub.
+`final_ci_check = true` is a warning, never a failure, in two cases: with
+`ci_checks = true`, where it has no effect, and with `local_checks = false` and
+`ci_checks = false`, where nothing verifies the children between them; the
+second warning recommends local gates, and a run prints it at start too.
 Labels whose colour differs from their label role's fixed colour are a warning,
 with the `gh label edit … --color …` commands as the fix.
 A nonzero exit code means a blocking check failed. In a terminal, missing labels

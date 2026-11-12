@@ -45,6 +45,7 @@ from .child_cycle import (
 from .commands import MacatiaError, command as run_command
 from .config import (
     DIAGNOSTICS_DIRECTORY,
+    LOCAL_GATES_RECOMMENDATION,
     RUN_BRANCH_PREFIX,
     AgentProfile,
     MacatiaConfig,
@@ -3983,6 +3984,8 @@ def main(
             raise MacatiaError(f"invalid Macatia quality policy: {error}") from error
     if not configuration.verification.has_automated_verification:
         print(mode.unverified_warning, flush=True)
+    if configuration.verification.final_ci_check_without_local_gates:
+        print(f"⚠️ {LOCAL_GATES_RECOMMENDATION}", flush=True)
     parent_issue = arguments.parent_issue
     if parent_issue is None:
         parent_issue = choose_run_target(state)
