@@ -1,0 +1,23 @@
+name: Close outside pull requests
+
+# Macatia does not take contributions (see CONTRIBUTING.md). This closes pull
+# requests opened by anyone who is not the owner, a member or a collaborator.
+# It never checks out the pull request's code, so pull_request_target is safe.
+on:
+  pull_request_target:
+    types: [opened, reopened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  close:
+    if: ${{ !contains(fromJSON('["OWNER", "MEMBER", "COLLABORATOR"]'), github.event.pull_request.author_association) }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: Close the pull request with a note
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_URL: ${{ github.event.pull_request.html_url }}
+        run: |
+          gh pr close "$PR_URL" --comment "Thanks for your interest! Macatia is shared as is and does not take pull requests (see CONTRIBUTING.md). You are welcome to fork it and make it your own."

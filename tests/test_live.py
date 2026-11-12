@@ -1,7 +1,7 @@
 """Opt-in live suite: the only proof of compatibility with the real gh, codex and claude.
 
 Skipped unless MACATIA_LIVE=1. It needs authenticated CLIs and spends tokens;
-see "Live suite" in CONTRIBUTING.md for when and how to run it.
+see "Live suite" in DEVELOPMENT.md for when and how to run it.
 """
 
 import json
@@ -38,7 +38,7 @@ LIVE = os.environ.get("MACATIA_LIVE") == "1"
 REFRESH = os.environ.get("MACATIA_LIVE_REFRESH") == "1"
 SKIP_REASON = (
     "live suite against real gh, codex and claude; set MACATIA_LIVE=1 to run it "
-    "(spends tokens, see 'Live suite' in CONTRIBUTING.md)"
+    "(spends tokens, see 'Live suite' in DEVELOPMENT.md)"
 )
 # A parent issue of this repository whose children and blockers stay in place after they close.
 PARENT = int(os.environ.get("MACATIA_LIVE_PARENT", "5"))

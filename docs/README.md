@@ -17,4 +17,4 @@ The project vocabulary is defined in [GLOSSARY.md](../GLOSSARY.md).
 
 - [Architecture decision records](adr/)
 - [Agent skill configuration](agents/): issue tracker, triage labels and domain docs.
-- [Contributing](../CONTRIBUTING.md): developing macatia and its test suites.
+- [Development](../DEVELOPMENT.md): developing macatia and its test suites.

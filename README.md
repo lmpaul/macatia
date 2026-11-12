@@ -121,8 +121,14 @@ output, comments and docs are defined in [GLOSSARY.md](GLOSSARY.md).
 
 ## Contributing
 
-See [CONTRIBUTING.md](CONTRIBUTING.md) to develop macatia and run its test suites.
+Macatia is shared as is: I use it every day and keep it shaped around my own
+workflow, so I don't take pull requests or feature requests. Fork it and make it
+yours. [DEVELOPMENT.md](DEVELOPMENT.md) explains how to work on a checkout and
+run its test suites.
 
 ## License
 
 [MIT](LICENSE) © PLM STUDIO
+
+The skills under `.agents/skills/` and `.claude/skills/` come from
+[mattpocock/skills](https://github.com/mattpocock/skills), MIT © Matt Pocock.
