@@ -500,6 +500,8 @@ class RunState:
     parent_work_started: bool = False
     # Warnings that did not stop the run, for the terminal summary.
     warnings: list[str] = field(default_factory=list)
+    # The final head the final CI check found green; None until it does.
+    final_ci_green_head: str | None = None
     # The merged pull requests found for a blocker's verified head, or the exhausted
     # retries of their lookup, so the stop report repeats neither the lookup nor its retries.
     blocker_pull_requests: dict[str, list[MergedPullRequest] | InfrastructureRetriesExhausted] = (
@@ -543,6 +545,10 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         assert state.config.backup is not None
         backup_line = state.backup_switch.summary_line(state.config.backup)
     warnings = "".join(f"\n- warning: {warning}" for warning in state.warnings)
+    final_ci_line = (
+        f"- final CI check: CI is green for exact final head `{state.final_ci_green_head}`\n"
+        if state.final_ci_green_head is not None else ""
+    )
     return (
         f"🏁 Macatia summary for {run_target_name(state)}:\n"
         f"- implemented children this run: {state.summary.implemented}\n"
@@ -550,6 +556,7 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         f"- agent sessions: {state.summary.agent_sessions}\n"
         f"- infrastructure retries: {state.summary.infra_retries}\n"
         f"{backup_line}"
+        f"{final_ci_line}"
         f"- total duration: {format_elapsed_duration(elapsed_seconds)}\n"
         f"- phase timings: {phase_summary}\n"
         f"- final outcome: {outcome}"
@@ -695,6 +702,8 @@ def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
             f"Macatia crashed: inspect the run diagnostics in `{directory}`, fix the cause, "
             f"then {rerun_instruction(state)}."
         ]
+    if isinstance(error, FinalCIHandedToHumanReview):
+        return [final_ci_stop_action(state, error)]
     if isinstance(
         error,
         (
@@ -707,6 +716,24 @@ def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
     ):
         return []
     return [f"Fix the stop reason, then {rerun_instruction(state)}."]
+
+
+def final_ci_stop_action(state: RunState, error: FinalCIHandedToHumanReview) -> str:
+    number = error.run_target
+    handoff = handoff_comment_url(state, number) or "no handoff comment found"
+    if error.unavailable:
+        cause = (
+            f"#{number} was handed to human review because CI evidence could not be obtained "
+            "for its final CI check"
+        )
+        fix = "once GitHub Actions is healthy"
+    else:
+        cause = f"#{number} was handed to human review because its final CI check failed"
+        fix = f"resolve what its handoff comment ({handoff}) reports on the run branch"
+    if state.standalone:
+        # A standalone issue stays implemented, so no later run starts on it.
+        return f"{cause}: {fix}, then mark the pull request ready for review."
+    return f"{cause}: {fix}, then {rerun_instruction(state)} to check CI again."
 
 
 def remaining_children(state: RunState, error: BaseException) -> list[RemainingChild]:
@@ -1077,6 +1104,22 @@ class ProductCIFailure(MacatiaError):
         super().__init__(f"canonical CI failed: {diagnostic}")
         self.diagnostic = diagnostic
         self.check_runs = check_runs
+
+
+class CITimeout(MacatiaError):
+    """Canonical CI did not become green for the exact head before the CI wait's deadline."""
+
+
+class FinalCIHandedToHumanReview(MacatiaError):
+    """The final CI check handed the run target to human review, which stops the run.
+
+    `unavailable` is true when CI evidence could not be obtained, false when CI is red.
+    """
+
+    def __init__(self, run_target: int, reason: str, *, unavailable: bool):
+        super().__init__(reason)
+        self.run_target = run_target
+        self.unavailable = unavailable
 
 
 class InfrastructureFailure(MacatiaError):
@@ -3067,7 +3110,7 @@ def wait_for_exact_sha_ci(
             except RuntimeError as error:
                 latest_error = str(error)
             if clock() >= deadline:
-                raise MacatiaError(
+                raise CITimeout(
                     f"canonical CI did not become green for exact head {head_sha}: {latest_error}"
                 )
             progress.update(required_ci_progress(head_sha, check_runs, requirements))
@@ -3153,11 +3196,27 @@ def require_published_exact_head(state: RunState, branch: str, expected_head: st
         raise MacatiaError(f"published branch advanced after {verification_name}")
 
 
+FINAL_CI_EVIDENCE = "CI is verified at the end of the run."
+FINAL_CI_UNCHECKED_EVIDENCE = (
+    "no automated check ran for this child and CI is verified at the end of the run."
+)
+
+
 def verification_evidence(state: RunState, verified_head: str) -> str:
     verification = state.config.verification
     if state.mode.review:
         return reviewed_verification_evidence(state, verified_head)
-    if verification.ci_checks and verification.local_checks:
+    if verification.final_ci_check_active and verification.local_checks:
+        checks = (
+            f"Applicable local gates are green for exact head `{verified_head}`; "
+            f"{FINAL_CI_EVIDENCE}"
+        )
+    elif verification.final_ci_check_active:
+        checks = (
+            f"Implementation completed for exact head `{verified_head}`; "
+            f"{FINAL_CI_UNCHECKED_EVIDENCE}"
+        )
+    elif verification.ci_checks and verification.local_checks:
         checks = f"Applicable local gates and canonical CI are green for exact head `{verified_head}`."
     elif verification.ci_checks:
         checks = f"Canonical CI is green for exact head `{verified_head}`; local gates were explicitly disabled."
@@ -3176,6 +3235,16 @@ def verification_evidence(state: RunState, verified_head: str) -> str:
 
 def reviewed_verification_evidence(state: RunState, reviewed_head: str) -> str:
     verification = state.config.verification
+    if verification.final_ci_check_active and verification.local_checks:
+        return (
+            "Applicable local gates and independent agent review completed for exact "
+            f"head `{reviewed_head}`; {FINAL_CI_EVIDENCE}"
+        )
+    if verification.final_ci_check_active:
+        return (
+            f"Independent agent review completed for exact head `{reviewed_head}`; "
+            f"{FINAL_CI_UNCHECKED_EVIDENCE}"
+        )
     if verification.ci_checks and verification.local_checks:
         return (
             "Applicable local gates and canonical CI are green "
@@ -3395,7 +3464,12 @@ def verify_with_ci(
     state = context.state
     push_and_prepare_draft_pull_request(state, context.branch, context.parent_issue)
     if not state.config.verification.ci_checks:
-        if state.mode.review:
+        if state.config.verification.final_ci_check_active:
+            print(
+                "ℹ️ CI is verified once on the run's final head by the final CI check.",
+                flush=True,
+            )
+        elif state.mode.review:
             print(
                 "ℹ️ Remote CI is disabled; accepting configured local-only "
                 "verification for the published head.",
@@ -3432,6 +3506,100 @@ def verify_with_ci(
                 time.monotonic() - ci_started_at,
                 issue_number=child_number,
             )
+
+
+def final_ci_base(state: RunState) -> str:
+    """Where the final CI check selects required CI checks from: the first child base of this
+    run, or, when this run started no child cycle, the branch's merge base with the base branch."""
+    if state.child_bases:
+        return next(iter(state.child_bases.values())).recorded
+    configuration = state.config
+    for base in (f"refs/remotes/{configuration.remote}/{configuration.base_branch}",
+                 f"refs/heads/{configuration.base_branch}"):
+        found = git(state, "merge-base", "HEAD", base, check=False)
+        if found:
+            return found
+    raise MacatiaError(
+        f"the final CI check found no merge base with {configuration.base_branch}"
+    )
+
+
+def send_run_target_to_human_review(state: RunState, run_target: int, body: str) -> None:
+    """Post a handoff comment on the run target and label it human review.
+
+    A standalone issue stays implemented, as every child does.
+    """
+    state.github.comment_on_issue(run_target, f"{HANDOFF_MARKER}\n{body}")
+    issue = issue_details(state, run_target)
+    human_review = configured_label(state, "human_review")
+    kept = {human_review}
+    if state.standalone:
+        kept.add(configured_label(state, "implemented"))
+    work_started = {configured_label(state, "work_started")} & labels(issue)
+    remove = (lifecycle_labels(state, issue) | work_started) - kept
+    if human_review not in labels(issue) or remove:
+        state.github.edit_issue_labels(run_target, add=human_review, remove=sorted(remove))
+
+
+FINAL_CI_HANDOFF_TAIL = (
+    "The children stay implemented and the cumulative draft PR stays in draft."
+)
+
+
+def run_final_ci_check(context: ChildCycleContext) -> None:
+    """Wait once for the required CI checks of the run's final head.
+
+    Green records the head for the end-of-run summary. Red CI, or CI evidence that cannot be
+    obtained within the infrastructure retries or the CI wait's deadline, hands the run
+    target to human review and stops the run.
+    """
+    state = context.state
+    run_target = context.parent_issue
+    assert context.quality is not None and context.manifest is not None
+    print("🔎 Starting the final CI check on the run's final head.", flush=True)
+    push_and_prepare_draft_pull_request(state, context.branch, run_target)
+    base_sha = final_ci_base(state)
+    head_sha = current_head(state)
+    started_at = time.monotonic()
+    try:
+        context.infrastructure.run(
+            functools.partial(
+                wait_for_exact_sha_ci, state, context.quality, context.manifest, base_sha, head_sha
+            ),
+            initial_delay_seconds=ci_poll_seconds(),
+        )
+    except ProductCIFailure as failure:
+        diagnostic = ci_failure_diagnostic(state, failure, context.manifest, head_sha, run_target)
+        send_run_target_to_human_review(
+            state,
+            run_target,
+            f"Macatia stopped because the final CI check failed for exact final head "
+            f"`{head_sha}`. {FINAL_CI_HANDOFF_TAIL}\n\n"
+            f"Last diagnostic:\n```text\n{diagnostic}\n```",
+        )
+        raise FinalCIHandedToHumanReview(
+            run_target, f"final CI check failed: {failure.diagnostic}", unavailable=False
+        ) from failure
+    except (InfrastructureRetriesExhausted, CITimeout) as error:
+        diagnostic = sanitized_text(str(error))
+        send_run_target_to_human_review(
+            state,
+            run_target,
+            "Macatia stopped because CI evidence could not be obtained for the final CI check "
+            f"of exact final head `{head_sha}`, without changing the implementation. "
+            f"{FINAL_CI_HANDOFF_TAIL} Last infrastructure diagnostic: {diagnostic}",
+        )
+        raise FinalCIHandedToHumanReview(run_target, str(error), unavailable=True) from error
+    finally:
+        if state.diagnostics is not None:
+            state.diagnostics.record_phase(
+                "final_ci_wait",
+                "GitHub Actions wait",
+                time.monotonic() - started_at,
+                issue_number=run_target,
+            )
+    print(f"🟢 The final CI check passed for exact final head {head_sha[:7]}.", flush=True)
+    state.final_ci_green_head = head_sha
 
 
 def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
@@ -3665,9 +3833,8 @@ def run_children(
         resolve_left_agent_working(state, left_agent_working)
         siblings = run_target_children(state, parent_issue)
     update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
-    adapters = state.adapters.child_cycle(
-        ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
-    )
+    context = ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
+    adapters = state.adapters.child_cycle(context)
 
     while True:
         with spinner("Selecting the next runnable child…"):
@@ -3690,6 +3857,8 @@ def run_children(
                 stop_children_for_dependency_deadlock(state, error.children)
                 raise
         if selected_child is None:
+            if state.config.verification.final_ci_check_active:
+                run_final_ci_check(context)
             with spinner(f"Finishing the run on #{parent_issue}…"):
                 # A standalone issue is already implemented: it gets no parent completion.
                 if not state.standalone:

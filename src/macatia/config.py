@@ -78,14 +78,21 @@ class VerificationConfig:
     ci_checks: bool
     quality_module: pathlib.Path
     quality_manifest: pathlib.Path
+    # Asks for one final CI check on the run's final head; ignored when ci_checks is on.
+    final_ci_check: bool = False
+
+    @property
+    def final_ci_check_active(self) -> bool:
+        """Whether the run verifies CI once on its final head instead of after each child."""
+        return self.final_ci_check and not self.ci_checks
 
     @property
     def needs_quality_policy(self) -> bool:
-        return self.ci_checks or self.local_checks
+        return self.ci_checks or self.local_checks or self.final_ci_check_active
 
     @property
     def has_automated_verification(self) -> bool:
-        return self.ci_checks or self.local_checks
+        return self.ci_checks or self.local_checks or self.final_ci_check_active
 
 
 @dataclass(frozen=True)
@@ -376,9 +383,10 @@ def load_config(
         values["verification"],
         "configuration.verification",
         {"local_checks", "ci_checks", "quality_module", "quality_manifest"},
+        {"final_ci_check"},
     )
-    for key in ("local_checks", "ci_checks"):
-        if not isinstance(verification_values[key], bool):
+    for key in ("local_checks", "ci_checks", "final_ci_check"):
+        if key in verification_values and not isinstance(verification_values[key], bool):
             raise MacatiaConfigError(f"configuration.verification.{key} must be a boolean")
 
     return MacatiaConfig(
@@ -397,6 +405,7 @@ def load_config(
         verification=VerificationConfig(
             local_checks=verification_values["local_checks"],
             ci_checks=verification_values["ci_checks"],
+            final_ci_check=verification_values.get("final_ci_check", False),
             quality_module=_relative_path(
                 verification_values["quality_module"],
                 "configuration.verification.quality_module",

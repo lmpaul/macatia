@@ -122,7 +122,10 @@ The loop of a standard run is:
 3. Push the branch and create or reuse the cumulative draft PR. Wait for CI on
    that exact commit when `ci_checks = true`. With `ci_checks = false`, publish
    after the local gates pass without querying CI. On a product CI failure, collect diagnostic evidence, start a
-   fresh CI correction, rerun local gates, push, and wait for CI again.
+   fresh CI correction, rerun local gates, push, and wait for CI again. With
+   `ci_checks = false` and `final_ci_check = true`, the run instead waits for CI
+   once on its final head when no runnable child is left (see
+   [the final CI check](verification.md#final-ci-check)).
 4. Mark the child `implemented` only when the work is complete and verification
    passes, removing every other lifecycle label it carries. Continue with the
    next runnable child. The parent ultimately goes to human review, with
