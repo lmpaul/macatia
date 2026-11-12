@@ -183,6 +183,10 @@ _Avoid_: CI gate, status
 The single wait for CI checks on a run's final head, for a run that does not wait for them after each child. Each child's own CI result then serves only as a hint to the correction that follows a failure.
 _Avoid_: Deferred CI, end-of-run CI, last CI
 
+**Per-child CI history**:
+For each child implemented in a run, in order, the CI state of its verified head (green, red, pending, cancelled, or missing), read when a final CI check fails; its first red child is named as a hint, never as the cause.
+_Avoid_: Blame, culprit
+
 **Quality policy**:
 The repository's quality module and manifest, which define the local gates and required CI checks.
 _Avoid_: Quality config

@@ -3680,6 +3680,22 @@ class FinalCICheckTests(VerificationTestCase):
         for text in (self.sessions.prompts[-1], handoff):
             self.assertIn(f"Per-child CI history:\n\n{history}", text)
 
+    def test_final_ci_history_without_a_child_implemented_in_this_run_names_no_child(self):
+        self.new_final_ci_run(children=(), ci=("failure", "success"))
+        self.github.add_issue(CHILD, parent=PARENT, labels=("implemented",))
+        self.commit_prior_child()
+        git(self.repository.path, "push", "-u", "origin", BRANCH)
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
+
+        self.assert_completed(result, sessions=1)
+        prompt = self.sessions.prompts[-1]
+        self.assertIn(
+            "Per-child CI history:\n\n- no child was implemented in this run\n\n"
+            "Hint, not a certainty: no child's verified head has red CI",
+            prompt,
+        )
+
     def test_unavailable_first_final_ci_reads_no_per_child_ci_history(self):
         self.new_final_ci_run(ci=("cancelled",))
 
@@ -3737,6 +3753,10 @@ class FinalCICheckTests(VerificationTestCase):
                 self.assertEqual(self.roles()[-1], "final CI correction")
                 self.assertEqual(len(self.github.checked_heads), 1)
                 self.assertIn(f"{CANONICAL_CHECK} concluded failure", handoff)
+                self.assertIn("Per-child CI history:", handoff)
+                self.assertIn(
+                    f"Hint, not a certainty: #{SECOND_CHILD} is the first child", handoff
+                )
                 if name == "no changes":
                     self.assertIn("final CI correction did not create a new commit", handoff)
                     self.assertIn("did not create a new commit", result.stderr)
