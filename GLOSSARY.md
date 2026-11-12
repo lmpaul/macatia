@@ -107,7 +107,7 @@ An agent session that independently checks a child's work against its whole issu
 _Avoid_: Review (alone), code review
 
 **Correction session**:
-An agent session that repairs a child's work and must produce a new commit: an issue correction, a local gate correction, or a CI correction. A correction session without a new commit sends the child to human review.
+An agent session that repairs a child's work, or a run's work after its final CI check fails, and must produce a new commit: an issue correction, a local gate correction, a CI correction, or a final CI correction. A correction session without a new commit sends the child, or for a final CI correction the run target, to human review.
 _Avoid_: Fix session, retry
 
 **Issue correction**:
@@ -117,7 +117,11 @@ A correction session that addresses the findings of an implementation, review, o
 A correction session that repairs a failed local gate.
 
 **CI correction**:
-A correction session that repairs a failed CI check.
+A correction session that repairs a CI check that failed on a child's work.
+
+**Final CI correction**:
+A correction session that repairs a CI check that failed in a final CI check; it belongs to the run, not to any child.
+_Avoid_: Run correction, CI correction (for this one)
 
 ## Limits
 
@@ -126,7 +130,7 @@ The maximum number of agent sessions one child may receive in a run, with one va
 _Avoid_: Run budget, ticket budget, session budget, iteration limit, token budget
 
 **Correction limit**:
-The maximum number of correction sessions one child may receive (three), counting issue, local gate, and CI corrections together.
+The maximum number of correction sessions one child may receive (three), counting issue, local gate, and CI corrections together. A run's final CI corrections have their own limit of three, counted toward no child.
 _Avoid_: Attempts, retry limit, issue-correction limit
 
 **Infrastructure retry**:
@@ -174,6 +178,10 @@ _Avoid_: Local check, test step
 **CI check**:
 A required CI result that must pass on the exact published commit.
 _Avoid_: CI gate, status
+
+**Final CI check**:
+The single wait for CI checks on a run's final head, for a run that does not wait for them after each child. Each child's own CI result then serves only as a hint to the correction that follows a failure.
+_Avoid_: Deferred CI, end-of-run CI, last CI
 
 **Quality policy**:
 The repository's quality module and manifest, which define the local gates and required CI checks.
