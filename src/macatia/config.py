@@ -99,6 +99,11 @@ class VerificationConfig:
         return self.final_ci_check and not self.ci_checks
 
     @property
+    def checks_ci(self) -> bool:
+        """Whether the run checks CI, after each child or once on its final head."""
+        return self.ci_checks or self.final_ci_check_active
+
+    @property
     def final_ci_check_ineffective(self) -> bool:
         """Whether final_ci_check is on but ignored, since ci_checks checks CI after each child."""
         return self.final_ci_check and self.ci_checks

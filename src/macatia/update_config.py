@@ -161,7 +161,7 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
     limits = missing_limits(values)
     # A verification that is not a table is the loader's to report.
     verification = values.get(VERIFICATION_TABLE)
-    final_ci_check = isinstance(verification, dict) and FINAL_CI_CHECK not in verification
+    missing_final_ci_check = isinstance(verification, dict) and FINAL_CI_CHECK not in verification
     text = path.read_bytes().decode("utf-8")  # Not read_text, which would turn CRLF line endings into LF.
     if keys:
         text = with_top_level(text, keys)
@@ -169,12 +169,12 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         text = with_roles(text, roles)
     if limits:
         text = with_limits(text, limits, table=LIMITS_TABLE in values)
-    if final_ci_check:
+    if missing_final_ci_check:
         text = with_final_ci_check(text)
-    if not keys and not roles and not limits and not final_ci_check:
+    if not keys and not roles and not limits and not missing_final_ci_check:
         return text, {}
     limit_values = {f"{LIMITS_TABLE}.{key}": str(limit) for key, limit in limits.items()}
-    verification_values = {f"{VERIFICATION_TABLE}.{FINAL_CI_CHECK}": "false"} if final_ci_check else {}
+    verification_values = {f"{VERIFICATION_TABLE}.{FINAL_CI_CHECK}": "false"} if missing_final_ci_check else {}
     try:
         completed = tomllib.loads(text)
     except tomllib.TOMLDecodeError:
@@ -186,7 +186,7 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         raise UpdateError(f"cannot add {', '.join(keys)} before the first table: add {'it' if len(keys) == 1 else 'them'} by hand")
     if limits and any(completed.get(LIMITS_TABLE, {}).get(key) != limit for key, limit in limits.items()):
         raise UpdateError(f"cannot add {', '.join(limit_values)} to this file's layout: add them by hand")
-    if final_ci_check and completed.get(VERIFICATION_TABLE, {}).get(FINAL_CI_CHECK) is not False:
+    if missing_final_ci_check and completed.get(VERIFICATION_TABLE, {}).get(FINAL_CI_CHECK) is not False:
         raise UpdateError(f"cannot add {', '.join(verification_values)} to this file's layout: add it by hand")
     added = {key: str(DEFAULTS[key]).lower() for key in keys}
     roles_values = {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()}

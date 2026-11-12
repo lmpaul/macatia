@@ -376,7 +376,7 @@ def check_policy(config, root):
             require(available, f"local command not found: {executable}", f"install {executable} or fix the command")
         found.append(f"{len(gates)} local check{'s' if len(gates) > 1 else ''}")
     # The final CI check selects its required CI checks from the manifest too.
-    if config.ci_checks or config.final_ci_check_active:
+    if config.checks_ci:
         checks = manifest["ci"]["checks"]
         require(checks, "no CI check configured")
         names = [check["name"] for check in checks.values()]
@@ -586,7 +586,7 @@ def readiness(root, config_path, *, with_review, console, confirm, command, chec
     reminders = list(REMINDERS)
     if config.verification.local_checks:
         reminders.append("Local check commands run and their results verified")
-    if config.verification.ci_checks or config.verification.final_ci_check_active:
+    if config.verification.checks_ci:
         reminders.append("CI workflow check names confirmed and workflow working")
     checked()
     render(console, report, config.repository, [*reminders, *FINAL_REMINDERS])
