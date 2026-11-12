@@ -3386,6 +3386,8 @@ class VerificationConfigurationTests(VerificationTestCase):
 
 SECOND_CHILD = 194
 THIRD_CHILD = 195
+FOURTH_CHILD = 196
+FIFTH_CHILD = 197
 FINAL_CI_GREEN = (
     "- final CI check: CI is green for exact final head `{head}` after {corrections} final CI "
     "correction{plural}\n"
@@ -3600,6 +3602,92 @@ class FinalCICheckTests(VerificationTestCase):
                 self.assertEqual(
                     self.final_ci_corrections_recorded(), [(1, "final CI check", PARENT)]
                 )
+
+    def child_ci_history(self, *states):
+        """The per-child CI history lines of `(child, state)` pairs, each on its verified head."""
+        return "".join(
+            f"- #{child}: {state} on verified head `{self.verified_head(child)}`\n"
+            for child, state in states
+        )
+
+    def verified_head(self, child):
+        evidence = self.github.comments(child)[-1]
+        return re.search(r'"verified_head":"([0-9a-f]{40})"', evidence).group(1)
+
+    def test_every_final_ci_correction_prompt_carries_the_per_child_ci_history(self):
+        self.new_final_ci_run(
+            children=(CHILD, SECOND_CHILD, THIRD_CHILD),
+            ci=("failure", "failure", "success"),
+            child_ci={CHILD: "success", SECOND_CHILD: "failure"},
+        )
+
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 5)
+
+        self.assert_completed(result, sessions=5)
+        history = self.child_ci_history(
+            (CHILD, "green"), (SECOND_CHILD, "red"), (THIRD_CHILD, "red"),
+        )
+        hint = (
+            f"Hint, not a certainty: #{SECOND_CHILD} is the first child whose verified head "
+            "has red CI."
+        )
+        prompts = self.sessions.prompts[3:]
+        self.assertEqual(len(prompts), 2)
+        for prompt in prompts:
+            self.assertIn(f"Per-child CI history:\n\n{history}", prompt)
+            self.assertIn(hint, prompt)
+            self.assertIn("cancelled by workflow concurrency", prompt)
+
+    def test_handoff_after_red_final_ci_carries_the_per_child_ci_history(self):
+        pending = {CANONICAL_CHECK: {"status": "in_progress", "conclusion": None}}
+        children = (CHILD, SECOND_CHILD, THIRD_CHILD, FOURTH_CHILD, FIFTH_CHILD)
+        self.new_final_ci_run(
+            children=children,
+            ci=("failure",),
+            child_ci={
+                CHILD: MacatiaError("command failed (gh api check-runs): HTTP 502"),
+                SECOND_CHILD: "cancelled",
+                THIRD_CHILD: pending,
+                FOURTH_CHILD: {},
+            },
+        )
+
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 8)
+
+        handoff = self.assert_final_ci_stopped(result, "final CI correction limit of 3 exhausted")
+        history = self.child_ci_history(
+            (CHILD, "missing"), (SECOND_CHILD, "cancelled"), (THIRD_CHILD, "pending"),
+            (FOURTH_CHILD, "missing"), (FIFTH_CHILD, "red"),
+        )
+        self.assertIn(f"Per-child CI history:\n\n{history}", handoff)
+        self.assertIn(
+            f"Hint, not a certainty: #{FIFTH_CHILD} is the first child whose verified head "
+            "has red CI.",
+            handoff,
+        )
+        for child in children:
+            self.assertEqual(self.github.labels(child), {"implemented"})
+
+    def test_handoff_after_an_unavailable_re_check_carries_the_per_child_ci_history(self):
+        self.new_final_ci_run(ci=("failure", "cancelled"))
+
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 3)
+
+        # The re-check's CI is unavailable, after a red final CI check: the handoff still
+        # carries the history read when the final CI check first failed.
+        handoff = self.assert_final_ci_stopped(result, "infrastructure retries exhausted")
+        history = self.child_ci_history((CHILD, "green"), (SECOND_CHILD, "red"))
+        for text in (self.sessions.prompts[-1], handoff):
+            self.assertIn(f"Per-child CI history:\n\n{history}", text)
+
+    def test_unavailable_first_final_ci_reads_no_per_child_ci_history(self):
+        self.new_final_ci_run(ci=("cancelled",))
+
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 2)
+
+        handoff = self.assert_final_ci_stopped(result, "infrastructure retries exhausted")
+        self.assertNotIn("Per-child CI history", handoff)
+        self.assertEqual(self.github.child_checked_heads, [])
 
     def test_exhausted_final_ci_corrections_hand_the_parent_to_human_review(self):
         self.new_final_ci_run(ci=("failure",), job_log_output=CI_LOG)

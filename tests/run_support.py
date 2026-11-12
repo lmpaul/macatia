@@ -363,6 +363,10 @@ class FakeGitHub:
     `commit_pulls` maps a commit SHA to the pull requests GitHub associates with
     it, each a `CommitPull`, or to a `MacatiaError` its lookup raises;
     `pull_lookups` keeps each (base, SHA) asked.
+    The verified head of each child's implementation evidence answers its check-runs
+    requests with `child_ci[child]`, a round as above (by default "success"), without
+    consuming `ci` or joining `checked_heads`; `child_checked_heads` keeps each one asked.
+    The latest evidence's head is the exception: as the run's final head, `ci` answers it.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     The open issues listing answers every open issue in the order they were added,
     or raises `open_issues_error` when set.
@@ -379,8 +383,12 @@ class FakeGitHub:
         job_log_error=None,
         job_head_sha=None,
         check_annotation="A check failed.",
+        child_ci=None,
     ):
         self.repository = repository
+        self.child_ci = dict(child_ci or {})
+        self.child_heads = {}
+        self.child_checked_heads = []
         self.login = login
         self.issues = {}
         self.children = {}
@@ -536,6 +544,9 @@ class FakeGitHub:
         ):
             self.interrupt_after_comment_on = None
             raise RunInterrupted(f"interrupted after commenting on #{number}")
+        if evidence := re.search(r'"(?:verified|reviewed)_head":"([0-9a-f]{40})"', body):
+            self.child_heads.pop(evidence.group(1), None)
+            self.child_heads[evidence.group(1)] = number
         if self.after_comment is not None:
             self.after_comment(number, body)
 
@@ -628,10 +639,14 @@ class FakeGitHub:
         self._pull(number).is_draft = False
 
     def check_runs(self, head_sha):
-        self.checked_heads.append(head_sha)
-        if self.before_check_runs is not None:
-            self.before_check_runs(head_sha)
-        ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
+        if head_sha in self.child_heads and head_sha != next(reversed(self.child_heads)):
+            self.child_checked_heads.append(head_sha)
+            ci_round = self.child_ci.get(self.child_heads[head_sha], "success")
+        else:
+            self.checked_heads.append(head_sha)
+            if self.before_check_runs is not None:
+                self.before_check_runs(head_sha)
+            ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
         if isinstance(ci_round, MacatiaError):
             raise ci_round
         checks = ci_round if isinstance(ci_round, dict) else dict.fromkeys(self.check_names, ci_round)

@@ -526,8 +526,10 @@ class RunState:
     final_ci_green_head: str | None = None
     # The final CI corrections this run started, counted toward no child.
     final_ci_corrections: int = 0
-    # The children this run marked implemented, in order.
-    implemented_children: list[int] = field(default_factory=list)
+    # The children this run marked implemented, in order, each with its verified head.
+    implemented_children: dict[int, str] = field(default_factory=dict)
+    # The per-child CI history read when the final CI check first failed; "" until then.
+    final_ci_history: str = ""
     # The merged pull requests found for a blocker's verified head, or the exhausted
     # retries of their lookup, so the stop report repeats neither the lookup nor its retries.
     blocker_pull_requests: dict[str, list[MergedPullRequest] | InfrastructureRetriesExhausted] = (
@@ -2396,10 +2398,9 @@ def start_child_cycle(
     return child_base
 
 
-def mark_child_implemented(state: RunState, child_number: int) -> None:
+def mark_child_implemented(state: RunState, child_number: int, verified_head: str) -> None:
     set_child_lifecycle(state, child_number, "implemented")
-    if child_number not in state.implemented_children:
-        state.implemented_children.append(child_number)
+    state.implemented_children[child_number] = verified_head
 
 
 def recover_published_child(state: RunState, children: Iterable[dict[str, Any]]) -> bool:
@@ -2411,7 +2412,7 @@ def recover_published_child(state: RunState, children: Iterable[dict[str, Any]])
         heads = recoverable_implementation_heads(state, details)
         if heads is None or not heads_are_on_current_branch(state, heads):
             continue
-        mark_child_implemented(state, int(child["number"]))
+        mark_child_implemented(state, int(child["number"]), heads[1])
         return True
     return False
 
@@ -2873,6 +2874,8 @@ belongs to the run, not to any child.
 
 Children implemented in this run: {children}
 
+{state.final_ci_history}
+
 Read the run target and its children with gh as needed. Fix only the failure
 described below. Preserve the existing work and commit the repair: a final CI
 correction without a new commit sends #{run_target} to human review. Do not push
@@ -3045,6 +3048,13 @@ def latest_required_runs(
     return latest_runs
 
 
+# Conclusions of a check run that GitHub did not let finish, as canonical CI treats them.
+CI_INFRASTRUCTURE_CONCLUSIONS = frozenset(
+    {"cancelled", "timed_out", "startup_failure", "stale", "unavailable"}
+)
+CI_GREEN_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
+
+
 def classify_ci_failure(
     head_sha: str,
     check_runs: Iterable[dict[str, Any]],
@@ -3059,17 +3069,10 @@ def classify_ci_failure(
             "no required current-SHA check evidence is available for: "
             + ", ".join(sorted(missing_names)),
         )
-    infrastructure_conclusions = {
-        "cancelled",
-        "timed_out",
-        "startup_failure",
-        "stale",
-        "unavailable",
-    }
     failed_runs = []
     for run in latest_runs.values():
         conclusion = str(run.get("conclusion") or "")
-        if conclusion in infrastructure_conclusions:
+        if conclusion in CI_INFRASTRUCTURE_CONCLUSIONS:
             return InfrastructureFailure(
                 "canonical CI",
                 f"{run.get('name')} concluded {conclusion}",
@@ -3385,7 +3388,7 @@ def publish_success(
     require_published_exact_head(state, branch, verified_head)
     state.github.comment_on_issue(child_number, body)
     require_published_exact_head(state, branch, verified_head)
-    mark_child_implemented(state, child_number)
+    mark_child_implemented(state, child_number, verified_head)
 
 
 def publish_parent_completion(
@@ -3679,10 +3682,13 @@ def run_final_ci_check(context: ChildCycleContext, adapters: ChildCycleAdapters)
                     "Macatia stopped because CI evidence could not be obtained for the final CI "
                     f"check of exact final head `{head_sha}`, without changing the implementation "
                     f"or starting a final CI correction. {FINAL_CI_HANDOFF_TAIL} Last "
-                    f"infrastructure diagnostic: {verdict.diagnostic}",
+                    f"infrastructure diagnostic: {verdict.diagnostic}"
+                    + (f"\n\n{state.final_ci_history}" if state.final_ci_history else ""),
                 )
                 raise FinalCIHandedToHumanReview(run_target, verdict.reason, unavailable=True)
             diagnostic = verdict.diagnostic
+            if not state.final_ci_history:
+                state.final_ci_history = child_ci_history(context, base_sha, head_sha)
             head_sha = final_ci_correction(context, adapters, head_sha, diagnostic=diagnostic)
             while (failure := adapters.run_local_gates(run_target, base_sha, head_sha)) is not None:
                 diagnostic = failure.diagnostic
@@ -3695,7 +3701,7 @@ def run_final_ci_check(context: ChildCycleContext, adapters: ChildCycleAdapters)
             state,
             run_target,
             f"{stop.body} {FINAL_CI_HANDOFF_TAIL}\n\n"
-            f"Last diagnostic:\n```text\n{diagnostic}\n```",
+            f"Last diagnostic:\n```text\n{diagnostic}\n```\n\n{state.final_ci_history}",
         )
         raise FinalCIHandedToHumanReview(
             run_target, str(stop), unavailable=False, cause=stop.cause
@@ -3707,6 +3713,76 @@ def run_final_ci_check(context: ChildCycleContext, adapters: ChildCycleAdapters)
     )
     print(f"🟢 The final CI check passed for exact final head {head_sha[:7]}{after}.", flush=True)
     state.final_ci_green_head = head_sha
+
+
+def child_ci_history(context: ChildCycleContext, base_sha: str, red_head: str) -> str:
+    """The per-child CI history: each child implemented in this run, in order, with the CI
+    state of its verified head, and the first red child named as a hint.
+
+    A child whose verified head is `red_head`, which the final CI check just found red, is red
+    without a lookup. A lookup that fails shows the child as missing, never stopping the run.
+    """
+    state = context.state
+    lines = []
+    first_red = None
+    for child, verified_head in state.implemented_children.items():
+        if verified_head == red_head:
+            ci_state = "red"
+        else:
+            try:
+                ci_state = child_ci_state(context, base_sha, verified_head)
+            except Exception:  # noqa: BLE001 - the history is a hint; a failed read must not stop the run.
+                ci_state = "missing"
+        if ci_state == "red" and first_red is None:
+            first_red = child
+        lines.append(f"- #{child}: {ci_state} on verified head `{verified_head}`")
+    caveat = (
+        "a child's CI run may have been cancelled by workflow concurrency or may still be "
+        "pending, and the failure may come from two children together."
+    )
+    if first_red is not None:
+        hint = (
+            f"Hint, not a certainty: #{first_red} is the first child whose verified head has "
+            f"red CI. Start there, but do not trust it blindly: {caveat}"
+        )
+    else:
+        hint = (
+            "Hint, not a certainty: no child's verified head has red CI, so the history points "
+            f"at no child: {caveat}"
+        )
+    history = "\n".join(lines) or "- no child was implemented in this run"
+    return f"Per-child CI history:\n\n{history}\n\n{hint}"
+
+
+def child_ci_state(context: ChildCycleContext, base_sha: str, verified_head: str) -> str:
+    """The CI state of a child's verified head: green, red, pending, cancelled, or missing.
+
+    Required checks follow the paths changed from the run's first child base to that head.
+    """
+    quality = context.quality
+    assert quality is not None and context.manifest is not None
+    requirements = quality.ci_requirements(
+        context.manifest, quality.changed_paths(base_sha, verified_head)
+    )
+    runs = check_runs_for_head(context.state, verified_head)
+    latest_runs = latest_required_runs(verified_head, runs, requirements)
+    if not latest_runs:
+        return "missing"
+    conclusions = [
+        str(run.get("conclusion") or "") if run.get("status") == "completed" else None
+        for run in latest_runs.values()
+    ]
+    if any(
+        conclusion is not None
+        and conclusion not in CI_GREEN_CONCLUSIONS | CI_INFRASTRUCTURE_CONCLUSIONS
+        for conclusion in conclusions
+    ):
+        return "red"
+    if any(conclusion in CI_INFRASTRUCTURE_CONCLUSIONS for conclusion in conclusions):
+        return "cancelled"
+    if None in conclusions or latest_runs.keys() != required_check_names(requirements):
+        return "pending"
+    return "green"
 
 
 def wait_for_final_ci(

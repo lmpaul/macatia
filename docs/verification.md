@@ -35,12 +35,23 @@ off, it says no automated check ran for the child.
 Red CI starts a **final CI correction**: a correction session that belongs to the
 run, not to any child. It runs on the correction model profile (or the backup
 after an engine failure), never with a review session, and its prompt carries the
-run target, the children implemented in this run, and the sanitized CI diagnostic
-(failed checks and verified job logs). It must commit; its head then passes the
-enabled local gates and a new final CI check. A local gate failure is repaired by
+run target, the children implemented in this run, the sanitized CI diagnostic
+(failed checks and verified job logs), and the **per-child CI history** below.
+It must commit; its head then passes the enabled local gates and a new final CI
+check. A local gate failure is repaired by
 another final CI correction. A run starts at most three final CI corrections,
 counted toward no child's child session limit or correction limit, and records
 each in `run.json` under `final_ci_corrections`.
+
+Every intermediate push still triggers CI on GitHub, so when the final CI check
+first fails the run reads, for each child implemented in this run in order, the CI
+state of its verified head: green, red, pending, cancelled, or missing (no required
+check run, or a lookup that failed; a failed lookup never stops the run). The
+first child whose verified head is red is named as a hint, not a certainty: a
+child's CI run may have been cancelled by workflow concurrency or still be
+pending, and the failure may come from two children together. The history and the
+hint appear in every final CI correction prompt and in the handoff comment when
+the run target goes to human review after a red final CI check.
 
 Green CI adds a line to the end-of-run summary stating CI is green for the exact
 final head and how many final CI corrections it took; the pull request is then
