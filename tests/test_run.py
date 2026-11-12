@@ -5069,22 +5069,28 @@ class StandaloneRunTests(StandaloneRunTestCase):
 
 
 class StandaloneFinalCICheckTests(StandaloneRunTestCase):
-    def test_red_final_ci_hands_the_standalone_issue_to_human_review(self):
-        self.repository = RunRepository(self, ci_checks=False, final_ci_check=True)
-        self.github = FakeGitHub(ci=("failure",))
-        self.github.add_issue(STANDALONE, labels=("ready-for-agent",))
+    def test_red_or_unavailable_final_ci_hands_the_standalone_issue_to_human_review(self):
+        for ci, shown in (
+            ("failure", f"{CANONICAL_CHECK} concluded failure"),
+            ("cancelled", "Last infrastructure diagnostic"),
+        ):
+            with self.subTest(ci):
+                self.repository = RunRepository(self, ci_checks=False, final_ci_check=True)
+                self.github = FakeGitHub(ci=(ci,))
+                self.github.add_issue(STANDALONE, labels=("ready-for-agent",))
 
-        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
+                result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
 
-        self.assertEqual(result.exit_code, 1)
-        self.assertEqual(
-            self.github.labels(STANDALONE), {"implemented", "standalone", "human-review"}
-        )
-        self.assertTrue(self.github.pull_request().is_draft)
-        comments = self.github.comments(STANDALONE)
-        self.assertTrue(comments[-2].startswith(f"{HANDOFF_MARKER}\nMacatia stopped"))
-        self.assertIn(f"{CANONICAL_CHECK} concluded failure", comments[-2])
-        self.assertIn("- final outcome: stopped safely", comments[-1])
+                self.assertEqual(result.exit_code, 1)
+                self.assertEqual(
+                    self.github.labels(STANDALONE), {"implemented", "standalone", "human-review"}
+                )
+                self.assertTrue(self.github.pull_request().is_draft)
+                comments = self.github.comments(STANDALONE)
+                self.assertTrue(comments[-2].startswith(f"{HANDOFF_MARKER}\nMacatia stopped"))
+                self.assertIn(shown, comments[-2])
+                self.assertIn("- final outcome: stopped safely", comments[-1])
+                self.assertIn("then mark the pull request ready for review", comments[-1])
 
     def test_green_final_ci_marks_the_pull_request_ready(self):
         self.repository = RunRepository(self, ci_checks=False, final_ci_check=True)
