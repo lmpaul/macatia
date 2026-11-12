@@ -3386,7 +3386,18 @@ class VerificationConfigurationTests(VerificationTestCase):
 
 SECOND_CHILD = 194
 THIRD_CHILD = 195
-FINAL_CI_GREEN = "- final CI check: CI is green for exact final head `{head}`\n"
+FINAL_CI_GREEN = (
+    "- final CI check: CI is green for exact final head `{head}` after {corrections} final CI "
+    "correction{plural}\n"
+)
+
+
+def final_ci_green(head, corrections=0):
+    """The end-of-run summary line of a green final CI check."""
+    return FINAL_CI_GREEN.format(
+        head=head, corrections=corrections, plural="" if corrections == 1 else "s"
+    )
+
 
 
 class FinalCICheckTests(VerificationTestCase):
@@ -3458,7 +3469,7 @@ class FinalCICheckTests(VerificationTestCase):
                     if mode.review else "Applicable local gates are green for exact head"
                 )
                 self.assertIn(local, self.github.comments(CHILD)[-1])
-                summary = FINAL_CI_GREEN.format(head=head)
+                summary = final_ci_green(head)
                 self.assertIn(summary, result.stdout)
                 self.assertIn(summary, self.github.comments(PARENT)[-1])
                 self.assertIn("- final outcome: completed", self.github.comments(PARENT)[-1])
@@ -3524,7 +3535,10 @@ class FinalCICheckTests(VerificationTestCase):
 
     def test_required_checks_follow_every_path_changed_since_the_first_child_base(self):
         self.new_final_ci_run(
-            ci=({CANONICAL_CHECK: "success", DATABASE_CHECK: "failure"},),
+            ci=(
+                {CANONICAL_CHECK: "success", DATABASE_CHECK: "failure"},
+                {CANONICAL_CHECK: "success", DATABASE_CHECK: "success"},
+            ),
             check_names=(CANONICAL_CHECK, DATABASE_CHECK),
         )
 
@@ -3532,29 +3546,180 @@ class FinalCICheckTests(VerificationTestCase):
             loop_core.STANDARD_RUN,
             ScriptedResult("committed", path=PERSISTENCE_PATH),
             ScriptedResult("committed", path=FRONTEND_PATH),
+            ScriptedResult("committed"),
         )
 
-        handoff = self.assert_final_ci_stopped(result, "final CI check failed")
-        self.assertIn(f"{DATABASE_CHECK} concluded failure", handoff)
+        self.assert_completed(result, sessions=3)
+        self.assertIn(f"{DATABASE_CHECK} concluded failure", self.sessions.prompts[-1])
 
-    def test_red_final_ci_hands_the_parent_to_human_review_with_the_diagnostic(self):
+    def final_ci_corrections_recorded(self):
+        """The final CI corrections the run diagnostics record, as (attempt, failure, run target)."""
+        record = json.loads((self.repository.diagnostics() / "run.json").read_text())
+        return [
+            (correction["attempt"], correction["failure"], correction["run_target"])
+            for correction in record.get("final_ci_corrections", [])
+        ]
+
+    def test_red_final_ci_is_repaired_by_a_final_ci_correction_without_review(self):
+        for mode in MODES:
+            with self.subTest(mode.diagnostics_label):
+                self.new_final_ci_run(ci=("failure", "success"), job_log_output=CI_LOG)
+
+                result = self.start(
+                    mode, *passing_child_results(mode) * 2, ScriptedResult("committed")
+                )
+
+                child_sessions = len(passing_child_results(mode)) * 2
+                self.assert_completed(result, sessions=child_sessions + 1)
+                self.assertEqual(
+                    self.roles()[child_sessions:], ["final CI correction"],
+                    "no review session runs around a final CI correction",
+                )
+                request = self.sessions.requests[-1]
+                self.assertEqual((request.child, request.correction), (PARENT, 1))
+                red_head, green_head = self.github.checked_heads
+                self.assertEqual(green_head, self.repository.head())
+                self.assertEqual(self.repository.commits_since(red_head), [green_head])
+                self.assertEqual(self.repository.pushed_head(), green_head)
+                prompt = self.sessions.prompts[-1]
+                self.assertIn(f"for parent #{PARENT}.", prompt)
+                self.assertIn("Final CI correction 1/3", prompt)
+                self.assertIn(f"Children implemented in this run: #{CHILD}, #{SECOND_CHILD}\n", prompt)
+                self.assertIn("Sanitized CI diagnostic:", prompt)
+                self.assertIn(f"{CANONICAL_CHECK} concluded failure", prompt)
+                self.assertIn("[REDACTED]", prompt)
+                self.assertNotIn("ci-secret", prompt)
+                for child in (CHILD, SECOND_CHILD):
+                    self.assertEqual(self.github.labels(child), {"implemented"})
+                summary = final_ci_green(green_head, corrections=1)
+                self.assertIn(summary, result.stdout)
+                self.assertIn(summary, self.github.comments(PARENT)[-1])
+                self.assertIn("parent-completion", self.github.comments(PARENT)[-2])
+                self.assertFalse(self.github.pull_request().is_draft)
+                self.assertIn(f"🔧 Starting final CI correction 1/3 for #{PARENT}.", result.stdout)
+                self.assertEqual(
+                    self.final_ci_corrections_recorded(), [(1, "final CI check", PARENT)]
+                )
+
+    def test_exhausted_final_ci_corrections_hand_the_parent_to_human_review(self):
         self.new_final_ci_run(ci=("failure",), job_log_output=CI_LOG)
 
-        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedResult("committed"))
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 5)
 
-        handoff = self.assert_final_ci_stopped(result, "final CI check failed")
+        handoff = self.assert_final_ci_stopped(result, "final CI correction limit of 3 exhausted")
         head = self.repository.head()
-        self.assertEqual(self.roles(), ["implementation", "implementation"])
-        self.assertEqual(self.github.checked_heads, [head])
-        self.assertIn(f"exact final head `{head}`", handoff)
+        self.assertEqual(self.roles(), ["implementation"] * 2 + ["final CI correction"] * 3)
+        self.assertEqual([request.correction for request in self.sessions.requests[2:]], [1, 2, 3])
+        self.assertIn("Final CI correction 3/3", self.sessions.prompts[-1])
+        self.assertEqual(len(self.github.checked_heads), 4)
+        self.assertEqual(self.github.checked_heads[-1], head)
+        self.assertIn(f"exact final head `{head}` after 3 final CI corrections", handoff)
         self.assertIn("Last diagnostic:", handoff)
         self.assertIn(f"{CANONICAL_CHECK} concluded failure", handoff)
         self.assertIn("[REDACTED]", handoff)
         self.assertNotIn("ci-secret", handoff)
-        self.assertIn(f"#{PARENT} was handed to human review because its final CI check failed", result.stderr)
+        self.assertIn(
+            f"#{PARENT} was handed to human review because its final CI corrections were exhausted",
+            result.stderr,
+        )
+        self.assertIn("- agent sessions: 5\n", self.github.comments(PARENT)[-1])
         self.assertNotIn("🎉", result.stdout)
         self.assertEqual(
-            [evidence["issue_number"] for evidence in self.repository.ci_evidence()], [PARENT]
+            [evidence["issue_number"] for evidence in self.repository.ci_evidence()], [PARENT] * 4
+        )
+        self.assertEqual(
+            self.final_ci_corrections_recorded(),
+            [(attempt, "final CI check", PARENT) for attempt in (1, 2, 3)],
+        )
+
+    def test_final_ci_correction_without_a_new_commit_hands_the_parent_to_human_review(self):
+        for name, correction in (
+            ("no changes", ScriptedResult("no_changes")),
+            ("blocked", ScriptedResult("blocked", "Needs a repository secret.")),
+        ):
+            with self.subTest(name):
+                self.new_final_ci_run(ci=("failure",))
+
+                result = self.start(
+                    loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedResult("committed"),
+                    correction,
+                )
+
+                handoff = self.assert_final_ci_stopped(result, "")
+                self.assertEqual(self.roles()[-1], "final CI correction")
+                self.assertEqual(len(self.github.checked_heads), 1)
+                self.assertIn(f"{CANONICAL_CHECK} concluded failure", handoff)
+                if name == "no changes":
+                    self.assertIn("final CI correction did not create a new commit", handoff)
+                    self.assertIn("did not create a new commit", result.stderr)
+                else:
+                    self.assertIn("reported blocked: Needs a repository secret.", handoff)
+
+    def test_local_gate_failure_after_a_final_ci_correction_is_repaired_within_the_same_budget(self):
+        self.repository = RunRepository(
+            self, local_gate_results=("pass", "pass", "fail", "pass"),
+            ci_checks=False, final_ci_check=True,
+        )
+        self.github = FakeGitHub(ci=("failure", "success"))
+        self.github.add_issue(PARENT)
+        for child in (CHILD, SECOND_CHILD):
+            self.github.add_issue(child, parent=PARENT)
+
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 4)
+
+        self.assert_completed(result, sessions=4)
+        self.assertEqual(self.roles(), ["implementation"] * 2 + ["final CI correction"] * 2)
+        gate_prompt = self.sessions.prompts[-1]
+        self.assertIn("Final CI correction 2/3", gate_prompt)
+        self.assertIn("`fixture quality gate` local gate", gate_prompt)
+        self.assertIn("Sanitized local-gate diagnostic:", gate_prompt)
+        self.assertIn("fixture gate failed:", gate_prompt)
+        head = self.repository.head()
+        self.assertEqual(self.github.checked_heads[-1], head)
+        self.assertEqual(self.repository.local_gate_heads()[-1], head)
+        self.assertIn(final_ci_green(head, corrections=2), self.github.comments(PARENT)[-1])
+        self.assertEqual(
+            [failure for _attempt, failure, _target in self.final_ci_corrections_recorded()],
+            ["final CI check", "local gate fixture quality gate"],
+        )
+
+    def test_final_ci_corrections_count_toward_no_child_limits(self):
+        # The child exhausts its correction limit and its child session limit.
+        self.repository = RunRepository(
+            self, local_gate_results=("fail", "fail", "fail", "pass"),
+            ci_checks=False, final_ci_check=True,
+        )
+        set_child_session_limit(self.repository, standard=4)
+        self.github = FakeGitHub(ci=("failure", "failure", "success"))
+        self.github.add_issue(PARENT)
+        self.github.add_issue(CHILD, parent=PARENT)
+
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 6)
+
+        self.assert_completed(result, sessions=6)
+        self.assertEqual(
+            self.roles(),
+            ["implementation"] + ["local gate correction"] * 3 + ["final CI correction"] * 2,
+        )
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        self.assertIn(
+            final_ci_green(self.repository.head(), corrections=2), self.github.comments(PARENT)[-1]
+        )
+
+    def test_unavailable_ci_on_a_re_check_consumes_no_final_ci_correction(self):
+        self.new_final_ci_run(ci=("failure", "cancelled"))
+
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 3)
+
+        handoff = self.assert_final_ci_stopped(result, "infrastructure retries exhausted")
+        self.assertEqual(self.roles(), ["implementation"] * 2 + ["final CI correction"])
+        self.assertIn("CI evidence could not be obtained", handoff)
+        self.assertIn("without changing the implementation or starting a final CI correction", handoff)
+        self.assertIn(f"exact final head `{self.repository.head()}`", handoff)
+        self.assertEqual(self.final_ci_corrections_recorded(), [(1, "final CI check", PARENT)])
+        self.assertIn(
+            f"#{PARENT} was handed to human review because CI evidence could not be obtained",
+            result.stderr,
         )
 
     def test_unavailable_final_ci_hands_the_parent_to_human_review(self):
@@ -3621,7 +3786,7 @@ class FinalCICheckTests(VerificationTestCase):
 
         self.assert_completed(result, sessions=0)
         self.assertEqual(self.github.checked_heads, [head])
-        self.assertIn(FINAL_CI_GREEN.format(head=head), self.github.comments(PARENT)[-1])
+        self.assertIn(final_ci_green(head), self.github.comments(PARENT)[-1])
         self.assertFalse(self.github.pull_request().is_draft)
 
 
@@ -4977,6 +5142,69 @@ class BackupTakeoverTests(AgentSessionTestCase):
 STANDALONE = PARENT
 
 
+class FinalCICorrectionSessionTests(AgentSessionTestCase):
+    """Final CI corrections through Macatia's real session handling."""
+
+    def new_final_ci_run(self, *, backup=False):
+        self.repository = RunRepository(
+            self, ci_checks=False, final_ci_check=True, engines={"correction": "claude"}
+        )
+        if backup:
+            self.repository.edit_configuration(
+                "\n[verification]", f"\n[models.backup]\n{BACKUP_PROFILE}\n\n[verification]"
+            )
+        # The child alone exhausts its child session limit.
+        set_child_session_limit(self.repository, standard=1)
+        self.github = FakeGitHub(ci=("failure", "success"))
+        self.github.add_issue(PARENT)
+        self.github.add_issue(CHILD, parent=PARENT)
+
+    def test_final_ci_correction_runs_on_the_correction_profile(self):
+        self.new_final_ci_run()
+
+        result = self.start_engine(
+            loop_core.STANDARD_RUN, EngineResult("committed"), EngineResult("committed")
+        )
+
+        self.assert_completed(result, sessions=2)
+        self.assertEqual(self.engine.engines(), ["codex", "claude"])
+        correction = self.engine.calls[1]
+        self.assertEqual(correction.option("--model"), "claude-correction")
+        self.assertIn("Final CI correction 1/3", correction.prompt)
+        self.assertIn(
+            f"🤖 Starting Claude Code final CI correction session (Terra - Medium) for run target "
+            f"#{PARENT}.",
+            result.stdout,
+        )
+        record = self.repository.session_records()[-1]
+        self.assertEqual(
+            (record["role"], record["issue_number"], record["model"]),
+            ("final CI correction", PARENT, "claude-correction"),
+        )
+        self.assertIn(
+            final_ci_green(self.repository.head(), corrections=1), self.github.comments(PARENT)[-1]
+        )
+
+    def test_engine_failure_of_a_final_ci_correction_is_replayed_by_the_backup(self):
+        self.new_final_ci_run(backup=True)
+
+        result = self.start_engine(
+            loop_core.STANDARD_RUN,
+            EngineResult("committed"),
+            EngineResult(is_error=True, commit=False),
+            EngineResult("committed"),
+        )
+
+        self.assert_completed(result, sessions=3)
+        failed, replay = self.engine.calls[1:]
+        self.assertEqual(failed.option("--model"), "claude-correction")
+        self.assertEqual((replay.option("--model"), replay.option("--effort")), ("opus", "high"))
+        self.assertIn("Final CI correction 1/3", replay.prompt)
+        self.assertIn(
+            final_ci_green(self.repository.head(), corrections=1), self.github.comments(PARENT)[-1]
+        )
+
+
 class StandaloneRunTestCase(VerificationTestCase):
     """A run on a standalone issue: the issue itself is the run's only child."""
 
@@ -5070,16 +5298,18 @@ class StandaloneRunTests(StandaloneRunTestCase):
 
 class StandaloneFinalCICheckTests(StandaloneRunTestCase):
     def test_red_or_unavailable_final_ci_hands_the_standalone_issue_to_human_review(self):
-        for ci, shown in (
-            ("failure", f"{CANONICAL_CHECK} concluded failure"),
-            ("cancelled", "Last infrastructure diagnostic"),
+        for ci, shown, corrections in (
+            ("failure", f"{CANONICAL_CHECK} concluded failure", 3),
+            ("cancelled", "Last infrastructure diagnostic", 0),
         ):
             with self.subTest(ci):
                 self.repository = RunRepository(self, ci_checks=False, final_ci_check=True)
                 self.github = FakeGitHub(ci=(ci,))
                 self.github.add_issue(STANDALONE, labels=("ready-for-agent",))
 
-                result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
+                result = self.start(
+                    loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * (1 + corrections)
+                )
 
                 self.assertEqual(result.exit_code, 1)
                 self.assertEqual(
@@ -5091,6 +5321,13 @@ class StandaloneFinalCICheckTests(StandaloneRunTestCase):
                 self.assertIn(shown, comments[-2])
                 self.assertIn("- final outcome: stopped safely", comments[-1])
                 self.assertIn("then mark the pull request ready for review", comments[-1])
+                self.assertEqual(
+                    [request.role for request in self.sessions.requests],
+                    ["implementation"] + ["final CI correction"] * corrections,
+                )
+                self.assertEqual(
+                    {request.child for request in self.sessions.requests}, {STANDALONE}
+                )
 
     def test_green_final_ci_marks_the_pull_request_ready(self):
         self.repository = RunRepository(self, ci_checks=False, final_ci_check=True)
@@ -5100,7 +5337,7 @@ class StandaloneFinalCICheckTests(StandaloneRunTestCase):
         self.assert_standalone_implemented(result, sessions=1)
         head = self.repository.head()
         self.assertEqual(self.github.checked_heads, [head])
-        self.assertIn(FINAL_CI_GREEN.format(head=head), self.github.comments(STANDALONE)[-1])
+        self.assertIn(final_ci_green(head), self.github.comments(STANDALONE)[-1])
 
 
 class StandaloneStartTests(StandaloneRunTestCase):

@@ -100,6 +100,9 @@ RESET_MARKER_PREFIX = "<!-- macatia-reset: "
 # Persisted in handoff comments by both run modes, so its value must never change.
 # Handoff comments posted before it existed carry no marker.
 HANDOFF_MARKER = "<!-- macatia-handoff -->"
+FINAL_CI_CORRECTION = "final CI correction"
+# The final CI corrections one run may start, counted toward no child's limits.
+MAX_FINAL_CI_CORRECTIONS = 3
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
@@ -194,6 +197,7 @@ def agent_profile(state: RunState, role: str) -> AgentProfile:
         "local gate correction": "correction",
         "issue correction": "correction",
         "CI correction": "correction",
+        FINAL_CI_CORRECTION: "correction",
     }[role]
     return state.config.models[profile]
 
@@ -320,6 +324,18 @@ class DiagnosticRecorder:
                 "reasoning_effort": backup.reasoning_effort,
             },
         }
+        self._write_json(self.directory / "run.json", self.run_record)
+
+    def record_final_ci_correction(
+        self, attempt: int, run_target: int, failure: str, head_sha: str
+    ) -> None:
+        """Record that a final CI correction started, for which failure, on which head."""
+        self.run_record.setdefault("final_ci_corrections", []).append({
+            "attempt": attempt,
+            "run_target": run_target,
+            "failure": failure,
+            "head_sha": head_sha,
+        })
         self._write_json(self.directory / "run.json", self.run_record)
 
     def record_phase(
@@ -502,6 +518,10 @@ class RunState:
     warnings: list[str] = field(default_factory=list)
     # The final head the final CI check found green; None until it does.
     final_ci_green_head: str | None = None
+    # The final CI corrections this run started, counted toward no child.
+    final_ci_corrections: int = 0
+    # The children this run marked implemented, in order.
+    implemented_children: list[int] = field(default_factory=list)
     # The merged pull requests found for a blocker's verified head, or the exhausted
     # retries of their lookup, so the stop report repeats neither the lookup nor its retries.
     blocker_pull_requests: dict[str, list[MergedPullRequest] | InfrastructureRetriesExhausted] = (
@@ -546,7 +566,9 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         backup_line = state.backup_switch.summary_line(state.config.backup)
     warnings = "".join(f"\n- warning: {warning}" for warning in state.warnings)
     final_ci_line = (
-        f"- final CI check: CI is green for exact final head `{state.final_ci_green_head}`\n"
+        f"- final CI check: CI is green for exact final head `{state.final_ci_green_head}` "
+        f"after {state.final_ci_corrections} final CI "
+        f"correction{'' if state.final_ci_corrections == 1 else 's'}\n"
         if state.final_ci_green_head is not None else ""
     )
     return (
@@ -728,7 +750,7 @@ def final_ci_stop_action(state: RunState, error: FinalCIHandedToHumanReview) -> 
         )
         fix = "once GitHub Actions is healthy"
     else:
-        cause = f"#{number} was handed to human review because its final CI check failed"
+        cause = f"#{number} was handed to human review because {error.cause}"
         fix = f"resolve what its handoff comment ({handoff}) reports on the run branch"
     if state.standalone:
         # A standalone issue stays implemented, so no later run starts on it.
@@ -1113,13 +1135,22 @@ class CITimeout(MacatiaError):
 class FinalCIHandedToHumanReview(MacatiaError):
     """The final CI check handed the run target to human review, which stops the run.
 
-    `unavailable` is true when CI evidence could not be obtained, false when CI is red.
+    `unavailable` is true when CI evidence could not be obtained, false otherwise; `cause`
+    completes "#N was handed to human review because …" when CI evidence was obtained.
     """
 
-    def __init__(self, run_target: int, reason: str, *, unavailable: bool):
+    def __init__(
+        self,
+        run_target: int,
+        reason: str,
+        *,
+        unavailable: bool,
+        cause: str = "its final CI check failed",
+    ):
         super().__init__(reason)
         self.run_target = run_target
         self.unavailable = unavailable
+        self.cause = cause
 
 
 class InfrastructureFailure(MacatiaError):
@@ -2357,6 +2388,8 @@ def start_child_cycle(
 
 def mark_child_implemented(state: RunState, child_number: int) -> None:
     set_child_lifecycle(state, child_number, "implemented")
+    if child_number not in state.implemented_children:
+        state.implemented_children.append(child_number)
 
 
 def recover_published_child(state: RunState, children: Iterable[dict[str, Any]]) -> bool:
@@ -2563,8 +2596,13 @@ def run_agent(
         "local gate correction": "local gate correction",
         "issue correction": "issue correction",
         "CI correction": "CI correction",
+        FINAL_CI_CORRECTION: FINAL_CI_CORRECTION,
     }[role]
     profile = agent_profile(state, role)
+    # A final CI correction belongs to the run target, not to a child.
+    subject = (
+        f"run target #{issue_number}" if role == FINAL_CI_CORRECTION else f"child #{issue_number}"
+    )
     engine_label = engine_name(profile.engine)
     session_label = profile_label(profile)
     session_directory, record = state.diagnostics.start_session(
@@ -2584,13 +2622,13 @@ def run_agent(
         output_path = pathlib.Path(temporary_directory) / "result.json"
         try:
             print(
-                f"🤖 Starting {engine_label} {session_kind} session ({session_label}) for child "
-                f"#{issue_number}.",
+                f"🤖 Starting {engine_label} {session_kind} session ({session_label}) for "
+                f"{subject}.",
                 flush=True,
             )
             with spinner(Elapsed(
-                f"{engine_label} {session_kind} session ({session_label}) running for child "
-                f"#{issue_number}"
+                f"{engine_label} {session_kind} session ({session_label}) running for "
+                f"{subject}"
             )):
                 completed = state.adapters.run_engine(
                     state.repository_root,
@@ -2628,8 +2666,8 @@ def run_agent(
                 )
             change = f"; {diff_stats(state, before_head, after_head)}" if commits else ""
             print(
-                f"🤖 {engine_label} {session_kind} session ({session_label}) finished for child "
-                f"#{issue_number} in "
+                f"🤖 {engine_label} {session_kind} session ({session_label}) finished for "
+                f"{subject} in "
                 f"{format_elapsed_duration(round(time.monotonic() - started_at))} "
                 f"(outcome: {result['outcome']}; commits: {len(commits)}{change}).",
                 flush=True,
@@ -2795,6 +2833,45 @@ Preserve the existing work and commit the repair: a correction without a new com
 sends the child to human review. Do not push or change GitHub issue or pull request state.
 
 Sanitized CI diagnostic:
+
+```text
+{diagnostic}
+```
+
+Return a result that matches the supplied JSON schema.
+
+{agent_result_guidance(state)}"""
+
+
+def final_ci_correction_prompt(
+    state: RunState, run_target: int, attempt: int, gate_description: str, diagnostic: str
+) -> str:
+    """The prompt of a final CI correction: a failed final CI check, or, when
+    `gate_description` is set, a local gate that failed after an earlier final CI correction."""
+    children = ", ".join(f"#{child}" for child in state.implemented_children) or "none"
+    if gate_description:
+        failure = (
+            f"the failing `{gate_description}` local gate on the run's final head, after an "
+            "earlier final CI correction"
+        )
+        diagnostic_name = "local-gate"
+    else:
+        failure = "the failing CI check of the run's final CI check"
+        diagnostic_name = "CI"
+    return f"""Repair {failure} for {run_target_name(state)}.
+
+Final CI correction {attempt}/{MAX_FINAL_CI_CORRECTIONS}: the run implemented every
+runnable child of #{run_target} and CI failed on its final head. This correction
+belongs to the run, not to any child.
+
+Children implemented in this run: {children}
+
+Read the run target and its children with gh as needed. Fix only the failure
+described below. Preserve the existing work and commit the repair: a final CI
+correction without a new commit sends #{run_target} to human review. Do not push
+or change GitHub issue or pull request state.
+
+Sanitized {diagnostic_name} diagnostic:
 
 ```text
 {diagnostic}
@@ -3391,13 +3468,19 @@ def switch_to_backup(
     git(state, "clean", "-fd")
     session_limit = state.child_session_limit
     backup = state.config.backup
-    assert session_limit is not None and backup is not None and state.diagnostics is not None
+    assert backup is not None and state.diagnostics is not None
     announcement = (
         f"⚠️ {engine_name(failure.engine)} engine failure in the {request.role} session for "
         f"child #{request.child}: {failure.reason} ({failure.exit})."
     )
     try:
-        session_limit.start(request.role)
+        if request.role == FINAL_CI_CORRECTION:
+            # The replay is the same final CI correction: it counts toward no child.
+            assert state.summary.session_total is not None
+            state.summary.session_total.count += 1
+        else:
+            assert session_limit is not None
+            session_limit.start(request.role)
     except ChildSessionLimitExhausted as error:
         state.backup_switch = BackupSwitch(failure, request.role, request.child, took_over=False)
         print(announcement, flush=True)
@@ -3429,6 +3512,10 @@ def session_request_prompt(state: RunState, request: SessionRequest) -> str:
         )
     if request.role == "CI correction":
         return ci_correction_prompt(state, request.child, request.correction, request.diagnostic)
+    if request.role == FINAL_CI_CORRECTION:
+        return final_ci_correction_prompt(
+            state, request.child, request.correction, request.gate, request.diagnostic
+        )
     raise MacatiaError(f"unknown agent session role: {request.role}")
 
 
@@ -3546,20 +3633,83 @@ FINAL_CI_HANDOFF_TAIL = (
 )
 
 
-def run_final_ci_check(context: ChildCycleContext) -> None:
-    """Wait once for the required CI checks of the run's final head.
+class _FinalCIStop(Exception):
+    """Ends the final CI corrections: the run target goes to human review."""
 
-    Green records the head for the end-of-run summary. Red CI, or CI evidence that cannot be
-    obtained within the infrastructure retries or the CI wait's deadline, hands the run
-    target to human review and stops the run.
+    def __init__(self, reason: str, cause: str, body: str):
+        super().__init__(reason)
+        self.cause = cause
+        self.body = body
+
+
+def run_final_ci_check(context: ChildCycleContext, adapters: ChildCycleAdapters) -> None:
+    """Verify CI once on the run's final head, repairing red CI with final CI corrections.
+
+    Green records the head for the end-of-run summary. Red CI starts a final CI correction,
+    at most MAX_FINAL_CI_CORRECTIONS per run, counted toward no child and never reviewed;
+    its head must pass the enabled local gates (repaired within the same budget) and a new
+    final CI check. CI evidence that cannot be obtained, a correction without a new commit,
+    or the exhausted budget hands the run target to human review and stops the run.
     """
     state = context.state
     run_target = context.parent_issue
     assert context.quality is not None and context.manifest is not None
     print("🔎 Starting the final CI check on the run's final head.", flush=True)
-    push_and_prepare_draft_pull_request(state, context.branch, run_target)
     base_sha = final_ci_base(state)
+    # A backup switch during a final CI correction must not charge the last child.
+    state.child_session_limit = None
     head_sha = current_head(state)
+    diagnostic = ""
+    try:
+        while True:
+            verdict = wait_for_final_ci(context, base_sha, head_sha)
+            if verdict is None:
+                break
+            if isinstance(verdict, CIUnavailable):
+                send_run_target_to_human_review(
+                    state,
+                    run_target,
+                    "Macatia stopped because CI evidence could not be obtained for the final CI "
+                    f"check of exact final head `{head_sha}`, without changing the implementation "
+                    f"or starting a final CI correction. {FINAL_CI_HANDOFF_TAIL} Last "
+                    f"infrastructure diagnostic: {verdict.diagnostic}",
+                )
+                raise FinalCIHandedToHumanReview(run_target, verdict.reason, unavailable=True)
+            diagnostic = verdict.diagnostic
+            head_sha = final_ci_correction(context, adapters, head_sha, diagnostic=diagnostic)
+            while (failure := adapters.run_local_gates(run_target, base_sha, head_sha)) is not None:
+                diagnostic = failure.diagnostic
+                head_sha = final_ci_correction(
+                    context, adapters, head_sha,
+                    gate=failure.description, diagnostic=failure.diagnostic,
+                )
+    except _FinalCIStop as stop:
+        send_run_target_to_human_review(
+            state,
+            run_target,
+            f"{stop.body} {FINAL_CI_HANDOFF_TAIL}\n\n"
+            f"Last diagnostic:\n```text\n{diagnostic}\n```",
+        )
+        raise FinalCIHandedToHumanReview(
+            run_target, str(stop), unavailable=False, cause=stop.cause
+        ) from stop
+    corrections = state.final_ci_corrections
+    after = (
+        f" after {corrections} final CI correction{'' if corrections == 1 else 's'}"
+        if corrections else ""
+    )
+    print(f"🟢 The final CI check passed for exact final head {head_sha[:7]}{after}.", flush=True)
+    state.final_ci_green_head = head_sha
+
+
+def wait_for_final_ci(
+    context: ChildCycleContext, base_sha: str, head_sha: str
+) -> CIFailure | CIUnavailable | None:
+    """Publish head_sha and wait for the CI checks the run's changes since base_sha require."""
+    state = context.state
+    run_target = context.parent_issue
+    assert context.manifest is not None
+    push_and_prepare_draft_pull_request(state, context.branch, run_target)
     started_at = time.monotonic()
     try:
         context.infrastructure.run(
@@ -3569,27 +3719,11 @@ def run_final_ci_check(context: ChildCycleContext) -> None:
             initial_delay_seconds=ci_poll_seconds(),
         )
     except ProductCIFailure as failure:
-        diagnostic = ci_failure_diagnostic(state, failure, context.manifest, head_sha, run_target)
-        send_run_target_to_human_review(
-            state,
-            run_target,
-            f"Macatia stopped because the final CI check failed for exact final head "
-            f"`{head_sha}`. {FINAL_CI_HANDOFF_TAIL}\n\n"
-            f"Last diagnostic:\n```text\n{diagnostic}\n```",
+        return CIFailure(
+            ci_failure_diagnostic(state, failure, context.manifest, head_sha, run_target)
         )
-        raise FinalCIHandedToHumanReview(
-            run_target, f"final CI check failed: {failure.diagnostic}", unavailable=False
-        ) from failure
     except (InfrastructureRetriesExhausted, CITimeout) as error:
-        diagnostic = sanitized_text(str(error))
-        send_run_target_to_human_review(
-            state,
-            run_target,
-            "Macatia stopped because CI evidence could not be obtained for the final CI check "
-            f"of exact final head `{head_sha}`, without changing the implementation. "
-            f"{FINAL_CI_HANDOFF_TAIL} Last infrastructure diagnostic: {diagnostic}",
-        )
-        raise FinalCIHandedToHumanReview(run_target, str(error), unavailable=True) from error
+        return CIUnavailable(str(error), sanitized_text(str(error)))
     finally:
         if state.diagnostics is not None:
             state.diagnostics.record_phase(
@@ -3598,8 +3732,75 @@ def run_final_ci_check(context: ChildCycleContext) -> None:
                 time.monotonic() - started_at,
                 issue_number=run_target,
             )
-    print(f"🟢 The final CI check passed for exact final head {head_sha[:7]}.", flush=True)
-    state.final_ci_green_head = head_sha
+    return None
+
+
+def final_ci_correction(
+    context: ChildCycleContext,
+    adapters: ChildCycleAdapters,
+    head_sha: str,
+    *,
+    diagnostic: str,
+    gate: str = "",
+) -> str:
+    """Start one final CI correction and return the head it committed.
+
+    Raises _FinalCIStop when the budget is exhausted or the correction leaves the run's
+    work incomplete.
+    """
+    state = context.state
+    run_target = context.parent_issue
+    if state.final_ci_corrections >= MAX_FINAL_CI_CORRECTIONS:
+        failed = f"the {gate} local gate failed" if gate else "the final CI check failed"
+        raise _FinalCIStop(
+            f"final CI correction limit of {MAX_FINAL_CI_CORRECTIONS} exhausted",
+            f"its final CI corrections were exhausted ({MAX_FINAL_CI_CORRECTIONS})",
+            f"Macatia stopped because {failed} for exact final head `{head_sha}` after "
+            f"{MAX_FINAL_CI_CORRECTIONS} final CI corrections, the limit for one run.",
+        )
+    state.final_ci_corrections += 1
+    attempt = state.final_ci_corrections
+    assert state.summary.session_total is not None
+    state.summary.session_total.count += 1
+    if state.diagnostics is not None:
+        state.diagnostics.record_final_ci_correction(
+            attempt, run_target, f"local gate {gate}" if gate else "final CI check", head_sha
+        )
+    print(
+        f"🔧 Starting final CI correction {attempt}/{MAX_FINAL_CI_CORRECTIONS} "
+        f"for #{run_target}.",
+        flush=True,
+    )
+    request = SessionRequest(
+        FINAL_CI_CORRECTION, run_target, correction=attempt, gate=gate, diagnostic=diagnostic
+    )
+    try:
+        result = adapters.run_session(request)
+    except ChildWorkRejected as error:
+        raise _FinalCIStop(
+            str(error),
+            f"its final CI correction was rejected: {error}",
+            f"Macatia stopped because {error}.",
+        ) from error
+    if result.outcome in {"blocked", "failed", "needs_correction"}:
+        findings = (
+            f"\n\nRemaining findings:\n{format_findings(result.findings)}"
+            if result.findings else ""
+        )
+        raise _FinalCIStop(
+            f"{FINAL_CI_CORRECTION} stopped with {result.outcome}: {result.summary}",
+            f"its final CI correction reported {result.outcome}",
+            f"Macatia stopped because the {FINAL_CI_CORRECTION} reported {result.outcome}: "
+            f"{result.summary}{findings}",
+        )
+    if not result.commits:
+        raise _FinalCIStop(
+            "Final CI correction did not create a new commit",
+            "its final CI correction did not create a new commit",
+            f"Macatia stopped because the {FINAL_CI_CORRECTION} did not create a new commit; "
+            "a correction session must commit its repair.",
+        )
+    return result.head
 
 
 def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
@@ -3858,7 +4059,7 @@ def run_children(
                 raise
         if selected_child is None:
             if state.config.verification.final_ci_check_active:
-                run_final_ci_check(context)
+                run_final_ci_check(context, adapters)
             with spinner(f"Finishing the run on #{parent_issue}…"):
                 # A standalone issue is already implemented: it gets no parent completion.
                 if not state.standalone:

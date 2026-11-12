@@ -30,13 +30,28 @@ ready. With `ci_checks = true` it has no effect.
 
 Each child's implementation evidence then says its local gates are green for the
 exact head and that CI is verified at the end of the run; with local gates also
-off, it says no automated check ran for the child. Green CI adds a line to the
-end-of-run summary stating CI is green for the exact final head. Red CI, or CI
-evidence that cannot be obtained within the infrastructure retries or the CI
-wait's timeout, sends the run target (the standalone issue itself, for a
-standalone run) to human review with a handoff comment holding the sanitized
-diagnostic; the children stay implemented and the pull request stays a draft. A
-stopped, deadlocked, or interrupted run makes no final CI check.
+off, it says no automated check ran for the child.
+
+Red CI starts a **final CI correction**: a correction session that belongs to the
+run, not to any child. It runs on the correction model profile (or the backup
+after an engine failure), never with a review session, and its prompt carries the
+run target, the children implemented in this run, and the sanitized CI diagnostic
+(failed checks and verified job logs). It must commit; its head then passes the
+enabled local gates and a new final CI check. A local gate failure is repaired by
+another final CI correction. A run starts at most three final CI corrections,
+counted toward no child's child session limit or correction limit, and records
+each in `run.json` under `final_ci_corrections`.
+
+Green CI adds a line to the end-of-run summary stating CI is green for the exact
+final head and how many final CI corrections it took; the pull request is then
+marked ready. Three final CI corrections exhausted, or a final CI correction that
+makes no new commit or reports `blocked`, `failed`, or `needs_correction`, sends
+the run target (the standalone issue itself, for a standalone run) to human review
+with a handoff comment holding the last diagnostic. CI evidence that cannot be
+obtained within the infrastructure retries or the CI wait's timeout does the same
+without starting a final CI correction. In every case the children stay
+implemented and the pull request stays a draft. A stopped, deadlocked, or
+interrupted run makes no final CI check.
 
 ## Quality policy
 
