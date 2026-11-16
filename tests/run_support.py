@@ -59,8 +59,9 @@ class RunRepository:
 
     The fixture policy has one local gate. By default it always passes; with
     `local_gate_results` ("pass" or "fail" per call, the last repeats) it runs
-    the scripted gate in `fixtures/local_gate.py`. With both verification paths
+    the scripted gate in `fixtures/local_gate.py`. With every verification path
     disabled, no quality policy is installed, so a run that loads it fails.
+    `final_ci_check` writes that key under `[verification]`; None leaves it out.
     `engines` maps a model profile to the engine it uses, or to None to leave
     the profile without an `engine` key; other profiles use Codex.
 
@@ -70,13 +71,17 @@ class RunRepository:
     templates = {}
 
     def __init__(
-        self, test_case, *, local_gate_results=None, local_checks=True, ci_checks=True, engines=None
+        self, test_case, *, local_gate_results=None, local_checks=True, ci_checks=True,
+        final_ci_check=None, engines=None,
     ):
         self.local_gate_command = SCRIPTED_LOCAL_GATE if local_gate_results is not None else ["true"]
-        setup = (local_checks, ci_checks, tuple((engines or {}).items()), tuple(self.local_gate_command))
+        setup = (
+            local_checks, ci_checks, final_ci_check, tuple((engines or {}).items()),
+            tuple(self.local_gate_command),
+        )
         if setup not in self.templates:
             self.templates[setup] = RepositoryTemplate(
-                local_checks, ci_checks, engines or {}, self.local_gate_command
+                local_checks, ci_checks, engines or {}, self.local_gate_command, final_ci_check
             )
         template = self.templates[setup]
         directory = tempfile.TemporaryDirectory()
@@ -150,7 +155,7 @@ class RunRepository:
 class RepositoryTemplate:
     """One fixture repository and its bare `origin`, built with Git and kept for the test process."""
 
-    def __init__(self, local_checks, ci_checks, engines, local_gate_command):
+    def __init__(self, local_checks, ci_checks, engines, local_gate_command, final_ci_check=None):
         self.directory = tempfile.TemporaryDirectory()
         self.root = pathlib.Path(self.directory.name)
         path = self.root / "repository"
@@ -165,14 +170,16 @@ class RepositoryTemplate:
         flags = "local_checks = true\nci_checks = true"
         assert flags in configuration, "the fixture configuration enables both verification paths"
         configuration = configuration.replace(
-            flags, f"local_checks = {str(local_checks).lower()}\nci_checks = {str(ci_checks).lower()}"
+            flags,
+            f"local_checks = {str(local_checks).lower()}\nci_checks = {str(ci_checks).lower()}"
+            + ("" if final_ci_check is None else f"\nfinal_ci_check = {str(final_ci_check).lower()}"),
         )
         for profile, engine in engines.items():
             configuration = configure_engine(configuration, profile, engine)
         (path / "macatia.toml").write_text(configuration, encoding="utf-8")
         # Run diagnostics are deliberately not ignored here: the run must ignore them itself.
         (path / ".gitignore").write_text("__pycache__/\n*.py[cod]\n", encoding="utf-8")
-        if local_checks or ci_checks:
+        if local_checks or ci_checks or final_ci_check:
             scripts = path / ".github" / "scripts"
             scripts.mkdir(parents=True)
             shutil.copyfile(FIXTURES / "quality.py", scripts / "quality.py")
@@ -356,6 +363,10 @@ class FakeGitHub:
     `commit_pulls` maps a commit SHA to the pull requests GitHub associates with
     it, each a `CommitPull`, or to a `MacatiaError` its lookup raises;
     `pull_lookups` keeps each (base, SHA) asked.
+    The verified head of each child's implementation evidence answers its check-runs
+    requests with `child_ci[child]`, a round as above (by default "success"), without
+    consuming `ci` or joining `checked_heads`; `child_checked_heads` keeps each one asked.
+    The latest evidence's head is the exception: as the run's final head, `ci` answers it.
     `opened_for` keeps the configured repository each run opened GitHub access for.
     The open issues listing answers every open issue in the order they were added,
     or raises `open_issues_error` when set.
@@ -372,8 +383,12 @@ class FakeGitHub:
         job_log_error=None,
         job_head_sha=None,
         check_annotation="A check failed.",
+        child_ci=None,
     ):
         self.repository = repository
+        self.child_ci = dict(child_ci or {})
+        self.child_heads = {}
+        self.child_checked_heads = []
         self.login = login
         self.issues = {}
         self.children = {}
@@ -529,6 +544,9 @@ class FakeGitHub:
         ):
             self.interrupt_after_comment_on = None
             raise RunInterrupted(f"interrupted after commenting on #{number}")
+        if evidence := re.search(r'"(?:verified|reviewed)_head":"([0-9a-f]{40})"', body):
+            self.child_heads.pop(evidence.group(1), None)
+            self.child_heads[evidence.group(1)] = number
         if self.after_comment is not None:
             self.after_comment(number, body)
 
@@ -621,10 +639,14 @@ class FakeGitHub:
         self._pull(number).is_draft = False
 
     def check_runs(self, head_sha):
-        self.checked_heads.append(head_sha)
-        if self.before_check_runs is not None:
-            self.before_check_runs(head_sha)
-        ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
+        if head_sha in self.child_heads and head_sha != next(reversed(self.child_heads)):
+            self.child_checked_heads.append(head_sha)
+            ci_round = self.child_ci.get(self.child_heads[head_sha], "success")
+        else:
+            self.checked_heads.append(head_sha)
+            if self.before_check_runs is not None:
+                self.before_check_runs(head_sha)
+            ci_round = self.ci.pop(0) if len(self.ci) > 1 else self.ci[0]
         if isinstance(ci_round, MacatiaError):
             raise ci_round
         checks = ci_round if isinstance(ci_round, dict) else dict.fromkeys(self.check_names, ci_round)

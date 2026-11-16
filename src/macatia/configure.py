@@ -110,7 +110,10 @@ SECTIONS: dict[str, tuple[Callable[[MacatiaConfig], str], Callable[[str], bool]]
     ),
     "Trusted authors": (lambda config: ", ".join(sorted(config.trusted_authors)), lambda key: key == "trusted_authors"),
     "Verification": (
-        lambda config: f"local {_on(config.verification.local_checks)} · CI {_on(config.verification.ci_checks)}",
+        lambda config: (
+            f"local {_on(config.verification.local_checks)} · CI {_on(config.verification.ci_checks)}"
+            f" · final CI {_on(config.verification.final_ci_check)}"
+        ),
         lambda key: key.startswith("verification."),
     ),
     "Git": (
@@ -154,6 +157,7 @@ def _toml_values(config: MacatiaConfig, root: pathlib.Path) -> dict[str, str]:
     keys |= {
         "verification.local_checks": str(verification.local_checks).lower(),
         "verification.ci_checks": str(verification.ci_checks).lower(),
+        "verification.final_ci_check": str(verification.final_ci_check).lower(),
         "verification.quality_module": verification.quality_module.relative_to(root).as_posix(),
         "verification.quality_manifest": verification.quality_manifest.relative_to(root).as_posix(),
     }
@@ -344,6 +348,9 @@ def _edit_backup(prompter: Prompter, config: MacatiaConfig, state: EditState) ->
             prompter.say(f"  ✓ backup: {_profile_summary(profile)}")
 
 
+VERIFICATION_FIELDS = {"Local checks": "local_checks", "CI checks": "ci_checks", "Final CI check": "final_ci_check"}
+
+
 def _edit_verification(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     while True:
         verification = config.verification
@@ -352,13 +359,18 @@ def _edit_verification(prompter: Prompter, config: MacatiaConfig, state: EditSta
             [
                 ("Local checks", f"{_on(verification.local_checks)}, the local gates after each session"),
                 ("CI checks", f"{_on(verification.ci_checks)}, the CI checks of the draft PR"),
+                (
+                    "Final CI check",
+                    f"{_on(verification.final_ci_check)}, the CI checks of the run's final head, "
+                    "when CI checks are off",
+                ),
                 (BACK, ""),
             ],
             BACK,
         )
         if answer == BACK:
             return config
-        field = "local_checks" if answer == "Local checks" else "ci_checks"
+        field = VERIFICATION_FIELDS[answer]
         enabled = not getattr(verification, field)
         config = dataclasses.replace(config, verification=dataclasses.replace(verification, **{field: enabled}))
         prompter.say(f"  {answer} {_on(enabled)}")

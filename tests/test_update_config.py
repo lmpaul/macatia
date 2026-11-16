@@ -37,6 +37,12 @@ LIMITS_COMMENT = """\
 # bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.
 """
 LIMITS = "\n[child_session_limit]\n" + LIMITS_COMMENT + "standard = 5\nreviewed = 9\n"
+MANIFEST = 'quality_manifest = ".github/quality-gates.json"\n'
+FINAL_CI_CHECK = """\
+# With ci_checks = false, true checks CI once on the run's final head, before the PR is marked ready;
+# ci_checks = true already checks CI after each child, so this setting then has no effect.
+final_ci_check = false
+"""
 
 
 class UpdateConfigTests(unittest.TestCase):
@@ -49,7 +55,7 @@ class UpdateConfigTests(unittest.TestCase):
         self.labels = list(ALL_LABELS)
         self.commands = []
         self.declare_top_level_settings()
-        self.config.write_text(self.config.read_text() + LIMITS)
+        self.config.write_text(self.config.read_text().replace(MANIFEST, MANIFEST + FINAL_CI_CHECK) + LIMITS)
 
     def command(self, *args):
         self.commands.append(args)
@@ -247,6 +253,51 @@ class UpdateConfigTests(unittest.TestCase):
             '✓ macatia.toml: added standalone = "standalone"\n',
             output,
         )
+
+    def test_a_missing_final_ci_check_is_added_at_the_end_of_verification_with_its_comment(self):
+        declared = self.config.read_text()
+        text = declared.replace(FINAL_CI_CHECK, "")
+        self.config.write_text(text)
+        self.assertIn("verification.final_ci_check", config.load_config(self.config, self.root).defaulted_settings)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.config.read_text(), declared)
+        self.assertEqual(
+            [line for line in output.splitlines() if "added" in line],
+            ["✓ macatia.toml: added verification.final_ci_check = false"],
+        )
+        self.assertIn("Commit macatia.toml", output)
+        completed = config.load_config(self.config, self.root)
+        self.assertFalse(completed.verification.final_ci_check)
+        self.assertNotIn("verification.final_ci_check", completed.defaulted_settings)
+
+    def test_a_declared_final_ci_check_is_kept(self):
+        text = self.config.read_text().replace("final_ci_check = false\n", "final_ci_check = true\n")
+        self.config.write_text(text)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.config.read_text(), text)
+        self.assertIn("nothing to add", output)
+
+    def test_a_verification_without_a_table_header_is_left_for_a_fix_by_hand(self):
+        text = self.config.read_text().replace(FINAL_CI_CHECK, "")
+        start = text.index("[verification]\n")
+        end = text.index("\n[child_session_limit]")
+        dotted = "".join(f"verification.{line}\n" for line in text[start:end].splitlines()[1:] if line)
+        text = text[:start] + text[end + 1:]
+        text = text.replace("[labels]\n", dotted + "\n[labels]\n")
+        self.config.write_text(text)
+        self.assertIn("verification.final_ci_check", config.load_config(self.config, self.root).defaulted_settings)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 1)
+        self.assertIn("cannot add verification.final_ci_check to a verification written as an inline table or with dotted keys", output)
+        self.assertEqual(self.config.read_text(), text)
 
     def test_optional_model_profiles_left_out_stay_absent(self):
         text = self.config.read_text()

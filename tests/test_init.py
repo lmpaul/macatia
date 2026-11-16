@@ -74,6 +74,9 @@ local_checks = false
 ci_checks = false
 quality_module = ".github/scripts/quality.py"
 quality_manifest = ".github/quality-gates.json"
+# With ci_checks = false, true checks CI once on the run's final head, before the PR is marked ready;
+# ci_checks = true already checks CI after each child, so this setting then has no effect.
+final_ci_check = false
 
 [child_session_limit]
 # The most agent sessions one child may receive in a run. The correction limit (three corrections)
@@ -138,6 +141,9 @@ local_checks = true
 ci_checks = false
 quality_module = "tools/policy/quality.py"
 quality_manifest = "tools/policy/gates.json"
+# With ci_checks = false, true checks CI once on the run's final head, before the PR is marked ready;
+# ci_checks = true already checks CI after each child, so this setting then has no effect.
+final_ci_check = true
 
 [child_session_limit]
 # The most agent sessions one child may receive in a run. The correction limit (three corrections)
@@ -220,6 +226,7 @@ class InitTests(unittest.TestCase):
         self.assertEqual(config.models["review"].reasoning_effort, "high")
         self.assertEqual(config.models["correction"], config.models["implementation"])
         self.assertFalse(config.verification.local_checks or config.verification.ci_checks)
+        self.assertFalse(config.verification.final_ci_check)
         self.assertFalse(config.review_by_default)
         self.assertFalse(config.caffeinate_by_default)
 
@@ -558,7 +565,17 @@ class InitTests(unittest.TestCase):
         (self.root / init.QUALITY_MODULE).write_text("")
         (self.root / init.QUALITY_MANIFEST).write_text("{}")
         config = self.run_init(answers=[""] * 8)
+        self.assertEqual(len(self.prompts), 8)  # No question about the final CI check.
         self.assertTrue(config.verification.local_checks and config.verification.ci_checks)
+        # final_ci_check takes the value given to ci_checks, under its comment.
+        self.assertTrue(config.verification.final_ci_check)
+        self.assertIn(
+            'quality_manifest = ".github/quality-gates.json"\n'
+            "# With ci_checks = false, true checks CI once on the run's final head, before the PR is marked ready;\n"
+            "# ci_checks = true already checks CI after each child, so this setting then has no effect.\n"
+            "final_ci_check = true\n",
+            (self.root / "macatia.toml").read_text(),
+        )
 
     def test_existing_config_is_kept_before_any_question(self):
         (self.root / "macatia.toml").write_text("keep")

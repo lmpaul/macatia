@@ -45,6 +45,7 @@ from .child_cycle import (
 from .commands import MacatiaError, command as run_command
 from .config import (
     DIAGNOSTICS_DIRECTORY,
+    LOCAL_GATES_RECOMMENDATION,
     RUN_BRANCH_PREFIX,
     AgentProfile,
     MacatiaConfig,
@@ -100,6 +101,9 @@ RESET_MARKER_PREFIX = "<!-- macatia-reset: "
 # Persisted in handoff comments by both run modes, so its value must never change.
 # Handoff comments posted before it existed carry no marker.
 HANDOFF_MARKER = "<!-- macatia-handoff -->"
+FINAL_CI_CORRECTION = "final CI correction"
+# The final CI corrections one run may start, counted toward no child's limits.
+MAX_FINAL_CI_CORRECTIONS = 3
 OUTCOME_SCHEMA_PATH = pathlib.Path(__file__).with_name("outcome-schema.json")
 OUTCOMES = {"committed", "no_changes", "needs_correction", "blocked", "failed"}
 AGENT_RESULT_GUIDANCE = """Use committed or no_changes only when the requested work is complete.
@@ -194,8 +198,15 @@ def agent_profile(state: RunState, role: str) -> AgentProfile:
         "local gate correction": "correction",
         "issue correction": "correction",
         "CI correction": "correction",
+        FINAL_CI_CORRECTION: "correction",
     }[role]
     return state.config.models[profile]
+
+
+def session_subject(role: str, issue_number: int) -> str:
+    """What a session works on, as messages name it: a final CI correction belongs to the
+    run target, every other session to a child."""
+    return f"run target #{issue_number}" if role == FINAL_CI_CORRECTION else f"child #{issue_number}"
 
 
 def engine_name(engine: str) -> str:
@@ -320,6 +331,18 @@ class DiagnosticRecorder:
                 "reasoning_effort": backup.reasoning_effort,
             },
         }
+        self._write_json(self.directory / "run.json", self.run_record)
+
+    def record_final_ci_correction(
+        self, attempt: int, run_target: int, failure: str, head_sha: str
+    ) -> None:
+        """Record that a final CI correction started, for which failure, on which head."""
+        self.run_record.setdefault("final_ci_corrections", []).append({
+            "attempt": attempt,
+            "run_target": run_target,
+            "failure": failure,
+            "head_sha": head_sha,
+        })
         self._write_json(self.directory / "run.json", self.run_record)
 
     def record_phase(
@@ -500,6 +523,14 @@ class RunState:
     parent_work_started: bool = False
     # Warnings that did not stop the run, for the terminal summary.
     warnings: list[str] = field(default_factory=list)
+    # The final head the final CI check found green; None until it does.
+    final_ci_green_head: str | None = None
+    # The final CI corrections this run started, counted toward no child.
+    final_ci_corrections: int = 0
+    # The children this run marked implemented, in order, each with its verified head.
+    implemented_children: dict[int, str] = field(default_factory=dict)
+    # The per-child CI history read when the final CI check first failed; "" until then.
+    final_ci_history: str = ""
     # The merged pull requests found for a blocker's verified head, or the exhausted
     # retries of their lookup, so the stop report repeats neither the lookup nor its retries.
     blocker_pull_requests: dict[str, list[MergedPullRequest] | InfrastructureRetriesExhausted] = (
@@ -543,6 +574,12 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         assert state.config.backup is not None
         backup_line = state.backup_switch.summary_line(state.config.backup)
     warnings = "".join(f"\n- warning: {warning}" for warning in state.warnings)
+    final_ci_line = (
+        f"- final CI check: CI is green for exact final head `{state.final_ci_green_head}` "
+        f"after {state.final_ci_corrections} final CI "
+        f"correction{'' if state.final_ci_corrections == 1 else 's'}\n"
+        if state.final_ci_green_head is not None else ""
+    )
     return (
         f"🏁 Macatia summary for {run_target_name(state)}:\n"
         f"- implemented children this run: {state.summary.implemented}\n"
@@ -550,6 +587,7 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         f"- agent sessions: {state.summary.agent_sessions}\n"
         f"- infrastructure retries: {state.summary.infra_retries}\n"
         f"{backup_line}"
+        f"{final_ci_line}"
         f"- total duration: {format_elapsed_duration(elapsed_seconds)}\n"
         f"- phase timings: {phase_summary}\n"
         f"- final outcome: {outcome}"
@@ -695,6 +733,8 @@ def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
             f"Macatia crashed: inspect the run diagnostics in `{directory}`, fix the cause, "
             f"then {rerun_instruction(state)}."
         ]
+    if isinstance(error, FinalCIHandedToHumanReview):
+        return [final_ci_stop_action(state, error)]
     if isinstance(
         error,
         (
@@ -707,6 +747,24 @@ def run_stop_actions(state: RunState, error: BaseException) -> list[str]:
     ):
         return []
     return [f"Fix the stop reason, then {rerun_instruction(state)}."]
+
+
+def final_ci_stop_action(state: RunState, error: FinalCIHandedToHumanReview) -> str:
+    number = error.run_target
+    handoff = handoff_comment_url(state, number) or "no handoff comment found"
+    if error.unavailable:
+        cause = (
+            f"#{number} was handed to human review because CI evidence could not be obtained "
+            "for its final CI check"
+        )
+        fix = "once GitHub Actions is healthy"
+    else:
+        cause = f"#{number} was handed to human review because {error.cause}"
+        fix = f"resolve what its handoff comment ({handoff}) reports on the run branch"
+    if state.standalone:
+        # A standalone issue stays implemented, so no later run starts on it.
+        return f"{cause}: {fix}, then mark the pull request ready for review."
+    return f"{cause}: {fix}, then {rerun_instruction(state)} to check CI again."
 
 
 def remaining_children(state: RunState, error: BaseException) -> list[RemainingChild]:
@@ -959,10 +1017,14 @@ class BackupSwitch:
     def summary_line(self, backup: AgentProfile) -> str:
         failed_engine = engine_name(self.failure.engine)
         if not self.took_over:
-            return f"- engine failure: {failed_engine} in the {self.role} session for child #{self.child}\n"
+            return (
+                f"- engine failure: {failed_engine} in the {self.role} session for "
+                f"{session_subject(self.role, self.child)}\n"
+            )
         return (
             f"- backup: {engine_name(backup.engine)} {profile_label(backup)} took over after a "
-            f"{failed_engine} engine failure ({self.role} session, child #{self.child})\n"
+            f"{failed_engine} engine failure ({self.role} session, "
+            f"{session_subject(self.role, self.child)})\n"
         )
 
 
@@ -1077,6 +1139,31 @@ class ProductCIFailure(MacatiaError):
         super().__init__(f"canonical CI failed: {diagnostic}")
         self.diagnostic = diagnostic
         self.check_runs = check_runs
+
+
+class CITimeout(MacatiaError):
+    """Canonical CI did not become green for the exact head before the CI wait's deadline."""
+
+
+class FinalCIHandedToHumanReview(MacatiaError):
+    """The final CI check handed the run target to human review, which stops the run.
+
+    `unavailable` is true when CI evidence could not be obtained, false otherwise; `cause`
+    completes "#N was handed to human review because …" when CI evidence was obtained.
+    """
+
+    def __init__(
+        self,
+        run_target: int,
+        reason: str,
+        *,
+        unavailable: bool,
+        cause: str = "its final CI check failed",
+    ):
+        super().__init__(reason)
+        self.run_target = run_target
+        self.unavailable = unavailable
+        self.cause = cause
 
 
 class InfrastructureFailure(MacatiaError):
@@ -2312,8 +2399,9 @@ def start_child_cycle(
     return child_base
 
 
-def mark_child_implemented(state: RunState, child_number: int) -> None:
+def mark_child_implemented(state: RunState, child_number: int, verified_head: str) -> None:
     set_child_lifecycle(state, child_number, "implemented")
+    state.implemented_children[child_number] = verified_head
 
 
 def recover_published_child(state: RunState, children: Iterable[dict[str, Any]]) -> bool:
@@ -2325,7 +2413,7 @@ def recover_published_child(state: RunState, children: Iterable[dict[str, Any]])
         heads = recoverable_implementation_heads(state, details)
         if heads is None or not heads_are_on_current_branch(state, heads):
             continue
-        mark_child_implemented(state, int(child["number"]))
+        mark_child_implemented(state, int(child["number"]), heads[1])
         return True
     return False
 
@@ -2520,8 +2608,10 @@ def run_agent(
         "local gate correction": "local gate correction",
         "issue correction": "issue correction",
         "CI correction": "CI correction",
+        FINAL_CI_CORRECTION: FINAL_CI_CORRECTION,
     }[role]
     profile = agent_profile(state, role)
+    subject = session_subject(role, issue_number)
     engine_label = engine_name(profile.engine)
     session_label = profile_label(profile)
     session_directory, record = state.diagnostics.start_session(
@@ -2541,13 +2631,13 @@ def run_agent(
         output_path = pathlib.Path(temporary_directory) / "result.json"
         try:
             print(
-                f"🤖 Starting {engine_label} {session_kind} session ({session_label}) for child "
-                f"#{issue_number}.",
+                f"🤖 Starting {engine_label} {session_kind} session ({session_label}) for "
+                f"{subject}.",
                 flush=True,
             )
             with spinner(Elapsed(
-                f"{engine_label} {session_kind} session ({session_label}) running for child "
-                f"#{issue_number}"
+                f"{engine_label} {session_kind} session ({session_label}) running for "
+                f"{subject}"
             )):
                 completed = state.adapters.run_engine(
                     state.repository_root,
@@ -2585,8 +2675,8 @@ def run_agent(
                 )
             change = f"; {diff_stats(state, before_head, after_head)}" if commits else ""
             print(
-                f"🤖 {engine_label} {session_kind} session ({session_label}) finished for child "
-                f"#{issue_number} in "
+                f"🤖 {engine_label} {session_kind} session ({session_label}) finished for "
+                f"{subject} in "
                 f"{format_elapsed_duration(round(time.monotonic() - started_at))} "
                 f"(outcome: {result['outcome']}; commits: {len(commits)}{change}).",
                 flush=True,
@@ -2762,6 +2852,47 @@ Return a result that matches the supplied JSON schema.
 {agent_result_guidance(state)}"""
 
 
+def final_ci_correction_prompt(
+    state: RunState, run_target: int, attempt: int, gate_description: str, diagnostic: str
+) -> str:
+    """The prompt of a final CI correction: a failed final CI check, or, when
+    `gate_description` is set, a local gate that failed after an earlier final CI correction."""
+    children = ", ".join(f"#{child}" for child in state.implemented_children) or "none"
+    if gate_description:
+        failure = (
+            f"the failing `{gate_description}` local gate on the run's final head, after an "
+            "earlier final CI correction"
+        )
+        diagnostic_name = "local-gate"
+    else:
+        failure = "the failing CI check of the run's final CI check"
+        diagnostic_name = "CI"
+    return f"""Repair {failure} for {run_target_name(state)}.
+
+Final CI correction {attempt}/{MAX_FINAL_CI_CORRECTIONS}: the run implemented every
+runnable child of #{run_target} and CI failed on its final head. This correction
+belongs to the run, not to any child.
+
+Children implemented in this run: {children}
+
+{state.final_ci_history}
+
+Read the run target and its children with gh as needed. Fix only the failure
+described below. Preserve the existing work and commit the repair: a final CI
+correction without a new commit sends #{run_target} to human review. Do not push
+or change GitHub issue or pull request state.
+
+Sanitized {diagnostic_name} diagnostic:
+
+```text
+{diagnostic}
+```
+
+Return a result that matches the supplied JSON schema.
+
+{agent_result_guidance(state)}"""
+
+
 def run_local_gates(
     state: RunState,
     quality: Any,
@@ -2918,6 +3049,13 @@ def latest_required_runs(
     return latest_runs
 
 
+# Conclusions of a check run that GitHub did not let finish, as canonical CI treats them.
+CI_INFRASTRUCTURE_CONCLUSIONS = frozenset(
+    {"cancelled", "timed_out", "startup_failure", "stale", "unavailable"}
+)
+CI_GREEN_CONCLUSIONS = frozenset({"success", "neutral", "skipped"})
+
+
 def classify_ci_failure(
     head_sha: str,
     check_runs: Iterable[dict[str, Any]],
@@ -2932,17 +3070,10 @@ def classify_ci_failure(
             "no required current-SHA check evidence is available for: "
             + ", ".join(sorted(missing_names)),
         )
-    infrastructure_conclusions = {
-        "cancelled",
-        "timed_out",
-        "startup_failure",
-        "stale",
-        "unavailable",
-    }
     failed_runs = []
     for run in latest_runs.values():
         conclusion = str(run.get("conclusion") or "")
-        if conclusion in infrastructure_conclusions:
+        if conclusion in CI_INFRASTRUCTURE_CONCLUSIONS:
             return InfrastructureFailure(
                 "canonical CI",
                 f"{run.get('name')} concluded {conclusion}",
@@ -3067,7 +3198,7 @@ def wait_for_exact_sha_ci(
             except RuntimeError as error:
                 latest_error = str(error)
             if clock() >= deadline:
-                raise MacatiaError(
+                raise CITimeout(
                     f"canonical CI did not become green for exact head {head_sha}: {latest_error}"
                 )
             progress.update(required_ci_progress(head_sha, check_runs, requirements))
@@ -3153,11 +3284,27 @@ def require_published_exact_head(state: RunState, branch: str, expected_head: st
         raise MacatiaError(f"published branch advanced after {verification_name}")
 
 
+FINAL_CI_EVIDENCE = "CI is verified at the end of the run."
+FINAL_CI_UNCHECKED_EVIDENCE = (
+    "no automated check ran for this child and CI is verified at the end of the run."
+)
+
+
 def verification_evidence(state: RunState, verified_head: str) -> str:
     verification = state.config.verification
     if state.mode.review:
         return reviewed_verification_evidence(state, verified_head)
-    if verification.ci_checks and verification.local_checks:
+    if verification.final_ci_check_active and verification.local_checks:
+        checks = (
+            f"Applicable local gates are green for exact head `{verified_head}`; "
+            f"{FINAL_CI_EVIDENCE}"
+        )
+    elif verification.final_ci_check_active:
+        checks = (
+            f"Implementation completed for exact head `{verified_head}`; "
+            f"{FINAL_CI_UNCHECKED_EVIDENCE}"
+        )
+    elif verification.ci_checks and verification.local_checks:
         checks = f"Applicable local gates and canonical CI are green for exact head `{verified_head}`."
     elif verification.ci_checks:
         checks = f"Canonical CI is green for exact head `{verified_head}`; local gates were explicitly disabled."
@@ -3176,6 +3323,16 @@ def verification_evidence(state: RunState, verified_head: str) -> str:
 
 def reviewed_verification_evidence(state: RunState, reviewed_head: str) -> str:
     verification = state.config.verification
+    if verification.final_ci_check_active and verification.local_checks:
+        return (
+            "Applicable local gates and independent agent review completed for exact "
+            f"head `{reviewed_head}`; {FINAL_CI_EVIDENCE}"
+        )
+    if verification.final_ci_check_active:
+        return (
+            f"Independent agent review completed for exact head `{reviewed_head}`; "
+            f"{FINAL_CI_UNCHECKED_EVIDENCE}"
+        )
     if verification.ci_checks and verification.local_checks:
         return (
             "Applicable local gates and canonical CI are green "
@@ -3232,7 +3389,7 @@ def publish_success(
     require_published_exact_head(state, branch, verified_head)
     state.github.comment_on_issue(child_number, body)
     require_published_exact_head(state, branch, verified_head)
-    mark_child_implemented(state, child_number)
+    mark_child_implemented(state, child_number, verified_head)
 
 
 def publish_parent_completion(
@@ -3322,13 +3479,19 @@ def switch_to_backup(
     git(state, "clean", "-fd")
     session_limit = state.child_session_limit
     backup = state.config.backup
-    assert session_limit is not None and backup is not None and state.diagnostics is not None
+    assert backup is not None and state.diagnostics is not None
     announcement = (
         f"⚠️ {engine_name(failure.engine)} engine failure in the {request.role} session for "
-        f"child #{request.child}: {failure.reason} ({failure.exit})."
+        f"{session_subject(request.role, request.child)}: {failure.reason} ({failure.exit})."
     )
     try:
-        session_limit.start(request.role)
+        if request.role == FINAL_CI_CORRECTION:
+            # The replay is the same final CI correction: it counts toward no child.
+            assert state.summary.session_total is not None
+            state.summary.session_total.count += 1
+        else:
+            assert session_limit is not None
+            session_limit.start(request.role)
     except ChildSessionLimitExhausted as error:
         state.backup_switch = BackupSwitch(failure, request.role, request.child, took_over=False)
         print(announcement, flush=True)
@@ -3360,6 +3523,10 @@ def session_request_prompt(state: RunState, request: SessionRequest) -> str:
         )
     if request.role == "CI correction":
         return ci_correction_prompt(state, request.child, request.correction, request.diagnostic)
+    if request.role == FINAL_CI_CORRECTION:
+        return final_ci_correction_prompt(
+            state, request.child, request.correction, request.gate, request.diagnostic
+        )
     raise MacatiaError(f"unknown agent session role: {request.role}")
 
 
@@ -3395,7 +3562,12 @@ def verify_with_ci(
     state = context.state
     push_and_prepare_draft_pull_request(state, context.branch, context.parent_issue)
     if not state.config.verification.ci_checks:
-        if state.mode.review:
+        if state.config.verification.final_ci_check_active:
+            print(
+                "ℹ️ CI is verified once on the run's final head by the final CI check.",
+                flush=True,
+            )
+        elif state.mode.review:
             print(
                 "ℹ️ Remote CI is disabled; accepting configured local-only "
                 "verification for the published head.",
@@ -3432,6 +3604,287 @@ def verify_with_ci(
                 time.monotonic() - ci_started_at,
                 issue_number=child_number,
             )
+
+
+def final_ci_base(state: RunState) -> str:
+    """Where the final CI check selects required CI checks from: the first child base of this
+    run, or, when this run started no child cycle, the branch's merge base with the base branch."""
+    if state.child_bases:
+        return next(iter(state.child_bases.values())).recorded
+    configuration = state.config
+    for base in (f"refs/remotes/{configuration.remote}/{configuration.base_branch}",
+                 f"refs/heads/{configuration.base_branch}"):
+        found = git(state, "merge-base", "HEAD", base, check=False)
+        if found:
+            return found
+    raise MacatiaError(
+        f"the final CI check found no merge base with {configuration.base_branch}"
+    )
+
+
+def send_run_target_to_human_review(state: RunState, run_target: int, body: str) -> None:
+    """Post a handoff comment on the run target and label it human review.
+
+    A standalone issue stays implemented, as every child does.
+    """
+    state.github.comment_on_issue(run_target, f"{HANDOFF_MARKER}\n{body}")
+    issue = issue_details(state, run_target)
+    human_review = configured_label(state, "human_review")
+    kept = {human_review}
+    if state.standalone:
+        kept.add(configured_label(state, "implemented"))
+    work_started = {configured_label(state, "work_started")} & labels(issue)
+    remove = (lifecycle_labels(state, issue) | work_started) - kept
+    if human_review not in labels(issue) or remove:
+        state.github.edit_issue_labels(run_target, add=human_review, remove=sorted(remove))
+
+
+FINAL_CI_HANDOFF_TAIL = (
+    "The children stay implemented and the cumulative draft PR stays in draft."
+)
+
+
+class _FinalCIStop(Exception):
+    """Ends the final CI corrections: the run target goes to human review."""
+
+    def __init__(self, reason: str, cause: str, body: str):
+        super().__init__(reason)
+        self.cause = cause
+        self.body = body
+
+
+def run_final_ci_check(context: ChildCycleContext, adapters: ChildCycleAdapters) -> None:
+    """Verify CI once on the run's final head, repairing red CI with final CI corrections.
+
+    Green records the head for the end-of-run summary. Red CI starts a final CI correction,
+    at most MAX_FINAL_CI_CORRECTIONS per run, counted toward no child and never reviewed;
+    its head must pass the enabled local gates (repaired within the same budget) and a new
+    final CI check. CI evidence that cannot be obtained, a correction without a new commit,
+    or the exhausted budget hands the run target to human review and stops the run.
+    """
+    state = context.state
+    run_target = context.parent_issue
+    assert context.quality is not None and context.manifest is not None
+    print("🔎 Starting the final CI check on the run's final head.", flush=True)
+    base_sha = final_ci_base(state)
+    # A backup switch during a final CI correction must not charge the last child.
+    state.child_session_limit = None
+    head_sha = current_head(state)
+    diagnostic = ""
+    try:
+        while True:
+            verdict = wait_for_final_ci(context, base_sha, head_sha)
+            if verdict is None:
+                break
+            if isinstance(verdict, CIUnavailable):
+                send_run_target_to_human_review(
+                    state,
+                    run_target,
+                    "Macatia stopped because CI evidence could not be obtained for the final CI "
+                    f"check of exact final head `{head_sha}`, without changing the implementation "
+                    f"or starting a final CI correction. {FINAL_CI_HANDOFF_TAIL} Last "
+                    f"infrastructure diagnostic: {verdict.diagnostic}"
+                    + (f"\n\n{state.final_ci_history}" if state.final_ci_history else ""),
+                )
+                raise FinalCIHandedToHumanReview(run_target, verdict.reason, unavailable=True)
+            diagnostic = verdict.diagnostic
+            if not state.final_ci_history:
+                state.final_ci_history = child_ci_history(context, base_sha, head_sha)
+            head_sha = final_ci_correction(context, adapters, head_sha, diagnostic=diagnostic)
+            while (failure := adapters.run_local_gates(run_target, base_sha, head_sha)) is not None:
+                diagnostic = failure.diagnostic
+                head_sha = final_ci_correction(
+                    context, adapters, head_sha,
+                    gate=failure.description, diagnostic=failure.diagnostic,
+                )
+    except _FinalCIStop as stop:
+        send_run_target_to_human_review(
+            state,
+            run_target,
+            f"{stop.body} {FINAL_CI_HANDOFF_TAIL}\n\n"
+            f"Last diagnostic:\n```text\n{diagnostic}\n```\n\n{state.final_ci_history}",
+        )
+        raise FinalCIHandedToHumanReview(
+            run_target, str(stop), unavailable=False, cause=stop.cause
+        ) from stop
+    corrections = state.final_ci_corrections
+    after = (
+        f" after {corrections} final CI correction{'' if corrections == 1 else 's'}"
+        if corrections else ""
+    )
+    print(f"🟢 The final CI check passed for exact final head {head_sha[:7]}{after}.", flush=True)
+    state.final_ci_green_head = head_sha
+
+
+def child_ci_history(context: ChildCycleContext, base_sha: str, red_head: str) -> str:
+    """The per-child CI history: each child implemented in this run, in order, with the CI
+    state of its verified head, and the first red child named as a hint.
+
+    A child whose verified head is `red_head`, which the final CI check just found red, is red
+    without a lookup. A lookup that fails shows the child as missing, never stopping the run.
+    """
+    state = context.state
+    lines = []
+    first_red = None
+    for child, verified_head in state.implemented_children.items():
+        if verified_head == red_head:
+            ci_state = "red"
+        else:
+            try:
+                ci_state = child_ci_state(context, base_sha, verified_head)
+            except Exception:  # noqa: BLE001 - the history is a hint; a failed read must not stop the run.
+                ci_state = "missing"
+        if ci_state == "red" and first_red is None:
+            first_red = child
+        lines.append(f"- #{child}: {ci_state} on verified head `{verified_head}`")
+    caveat = (
+        "a child's CI run may have been cancelled by workflow concurrency or may still be "
+        "pending, and the failure may come from two children together."
+    )
+    if first_red is not None:
+        hint = (
+            f"Hint, not a certainty: #{first_red} is the first child whose verified head has "
+            f"red CI. Start there, but do not trust it blindly: {caveat}"
+        )
+    else:
+        hint = (
+            "Hint, not a certainty: no child's verified head has red CI, so the history points "
+            f"at no child: {caveat}"
+        )
+    history = "\n".join(lines) or "- no child was implemented in this run"
+    return f"Per-child CI history:\n\n{history}\n\n{hint}"
+
+
+def child_ci_state(context: ChildCycleContext, base_sha: str, verified_head: str) -> str:
+    """The CI state of a child's verified head: green, red, pending, cancelled, or missing.
+
+    Required checks follow the paths changed from the run's first child base to that head.
+    """
+    quality = context.quality
+    assert quality is not None and context.manifest is not None
+    requirements = quality.ci_requirements(
+        context.manifest, quality.changed_paths(base_sha, verified_head)
+    )
+    runs = check_runs_for_head(context.state, verified_head)
+    latest_runs = latest_required_runs(verified_head, runs, requirements)
+    if not latest_runs:
+        return "missing"
+    conclusions = [
+        str(run.get("conclusion") or "") if run.get("status") == "completed" else None
+        for run in latest_runs.values()
+    ]
+    if any(
+        conclusion is not None
+        and conclusion not in CI_GREEN_CONCLUSIONS | CI_INFRASTRUCTURE_CONCLUSIONS
+        for conclusion in conclusions
+    ):
+        return "red"
+    if any(conclusion in CI_INFRASTRUCTURE_CONCLUSIONS for conclusion in conclusions):
+        return "cancelled"
+    if None in conclusions or latest_runs.keys() != required_check_names(requirements):
+        return "pending"
+    return "green"
+
+
+def wait_for_final_ci(
+    context: ChildCycleContext, base_sha: str, head_sha: str
+) -> CIFailure | CIUnavailable | None:
+    """Publish head_sha and wait for the CI checks the run's changes since base_sha require."""
+    state = context.state
+    run_target = context.parent_issue
+    assert context.manifest is not None
+    push_and_prepare_draft_pull_request(state, context.branch, run_target)
+    started_at = time.monotonic()
+    try:
+        context.infrastructure.run(
+            functools.partial(
+                wait_for_exact_sha_ci, state, context.quality, context.manifest, base_sha, head_sha
+            ),
+            initial_delay_seconds=ci_poll_seconds(),
+        )
+    except ProductCIFailure as failure:
+        return CIFailure(
+            ci_failure_diagnostic(state, failure, context.manifest, head_sha, run_target)
+        )
+    except (InfrastructureRetriesExhausted, CITimeout) as error:
+        return CIUnavailable(str(error), sanitized_text(str(error)))
+    finally:
+        if state.diagnostics is not None:
+            state.diagnostics.record_phase(
+                "final_ci_wait",
+                "GitHub Actions wait",
+                time.monotonic() - started_at,
+                issue_number=run_target,
+            )
+    return None
+
+
+def final_ci_correction(
+    context: ChildCycleContext,
+    adapters: ChildCycleAdapters,
+    head_sha: str,
+    *,
+    diagnostic: str,
+    gate: str = "",
+) -> str:
+    """Start one final CI correction and return the head it committed.
+
+    Raises _FinalCIStop when the budget is exhausted or the correction leaves the run's
+    work incomplete.
+    """
+    state = context.state
+    run_target = context.parent_issue
+    if state.final_ci_corrections >= MAX_FINAL_CI_CORRECTIONS:
+        failed = f"the {gate} local gate failed" if gate else "the final CI check failed"
+        raise _FinalCIStop(
+            f"final CI correction limit of {MAX_FINAL_CI_CORRECTIONS} exhausted",
+            f"its final CI corrections were exhausted ({MAX_FINAL_CI_CORRECTIONS})",
+            f"Macatia stopped because {failed} for exact final head `{head_sha}` after "
+            f"{MAX_FINAL_CI_CORRECTIONS} final CI corrections, the limit for one run.",
+        )
+    state.final_ci_corrections += 1
+    attempt = state.final_ci_corrections
+    assert state.summary.session_total is not None
+    state.summary.session_total.count += 1
+    if state.diagnostics is not None:
+        state.diagnostics.record_final_ci_correction(
+            attempt, run_target, f"local gate {gate}" if gate else "final CI check", head_sha
+        )
+    print(
+        f"🔧 Starting final CI correction {attempt}/{MAX_FINAL_CI_CORRECTIONS} "
+        f"for #{run_target}.",
+        flush=True,
+    )
+    request = SessionRequest(
+        FINAL_CI_CORRECTION, run_target, correction=attempt, gate=gate, diagnostic=diagnostic
+    )
+    try:
+        result = adapters.run_session(request)
+    except ChildWorkRejected as error:
+        raise _FinalCIStop(
+            str(error),
+            f"its final CI correction was rejected: {error}",
+            f"Macatia stopped because {error}.",
+        ) from error
+    if result.outcome in {"blocked", "failed", "needs_correction"}:
+        findings = (
+            f"\n\nRemaining findings:\n{format_findings(result.findings)}"
+            if result.findings else ""
+        )
+        raise _FinalCIStop(
+            f"{FINAL_CI_CORRECTION} stopped with {result.outcome}: {result.summary}",
+            f"its final CI correction reported {result.outcome}",
+            f"Macatia stopped because the {FINAL_CI_CORRECTION} reported {result.outcome}: "
+            f"{result.summary}{findings}",
+        )
+    if not result.commits:
+        raise _FinalCIStop(
+            "Final CI correction did not create a new commit",
+            "its final CI correction did not create a new commit",
+            f"Macatia stopped because the {FINAL_CI_CORRECTION} did not create a new commit; "
+            "a correction session must commit its repair.",
+        )
+    return result.head
 
 
 def real_child_cycle_adapters(context: ChildCycleContext) -> ChildCycleAdapters:
@@ -3531,6 +3984,8 @@ def main(
             raise MacatiaError(f"invalid Macatia quality policy: {error}") from error
     if not configuration.verification.has_automated_verification:
         print(mode.unverified_warning, flush=True)
+    if configuration.verification.final_ci_check_without_local_gates:
+        print(f"⚠️ {LOCAL_GATES_RECOMMENDATION}", flush=True)
     parent_issue = arguments.parent_issue
     if parent_issue is None:
         parent_issue = choose_run_target(state)
@@ -3665,9 +4120,8 @@ def run_children(
         resolve_left_agent_working(state, left_agent_working)
         siblings = run_target_children(state, parent_issue)
     update_run_summary(state, parent_issue, siblings, session_total, infrastructure)
-    adapters = state.adapters.child_cycle(
-        ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
-    )
+    context = ChildCycleContext(state, quality, manifest, branch, parent_issue, infrastructure)
+    adapters = state.adapters.child_cycle(context)
 
     while True:
         with spinner("Selecting the next runnable child…"):
@@ -3690,6 +4144,8 @@ def run_children(
                 stop_children_for_dependency_deadlock(state, error.children)
                 raise
         if selected_child is None:
+            if state.config.verification.final_ci_check_active:
+                run_final_ci_check(context, adapters)
             with spinner(f"Finishing the run on #{parent_issue}…"):
                 # A standalone issue is already implemented: it gets no parent completion.
                 if not state.standalone:

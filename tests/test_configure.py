@@ -138,7 +138,7 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(lines[0], "1)   Model profiles  (implementation claude/sonnet medium · review claude/opus high · correction = implementation)")
         self.assertTrue(lines[1].startswith("2)   Backup  (codex/codex-large medium)"))
         self.assertTrue(lines[2].startswith("3)   Trusted authors  (octocat)"))
-        self.assertEqual(lines[3], "4)   Verification  (local off · CI off)")
+        self.assertEqual(lines[3], "4)   Verification  (local off · CI off · final CI off)")
         self.assertEqual(lines[4], "5)   Git  (acme/widget · trunk · origin)")
         self.assertEqual(lines[5], "6)   Reviewed runs by default  (off)")
         self.assertEqual(lines[6], "7)   Keep the machine awake by default  (off)")
@@ -148,7 +148,7 @@ class ConfigureTests(unittest.TestCase):
     def test_quit_without_saving_writes_nothing(self):
         written = self.run_configure(answers=["4", "1", "2", "", "11"])
         self.assertFalse(written)
-        self.assertIn("* Verification  (local on · CI on)", self.menu())
+        self.assertIn("* Verification  (local on · CI on · final CI off)", self.menu())
         self.assertIn("Nothing written.", self.output.getvalue())
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
 
@@ -171,9 +171,20 @@ class ConfigureTests(unittest.TestCase):
         output = self.output.getvalue()
         self.assertIn("⚠ quality.py and quality-gates.json missing: `macatia check` will fail until they exist.", output)
         self.assertIn("Changes:\n  verification.ci_checks: false → true\n", output)
-        self.assertEqual(self.read(), DEFAULT_CONFIGURATION.replace("ci_checks = false", "ci_checks = true"))
+        self.assertEqual(self.read(), DEFAULT_CONFIGURATION.replace("ci_checks = false\n", "ci_checks = true\n"))
         self.assertIn("Next step: commit macatia.toml, then run `macatia check`.", output)
         self.assertEqual(sorted(path.name for path in self.root.iterdir()), [".git", "macatia.toml"])
+
+    def test_verification_toggles_the_final_ci_check(self):
+        self.assertTrue(self.run_configure(answers=["4", "3", "", "10"]))
+        output = self.output.getvalue()
+        self.assertIn("3) Final CI check  (off, the CI checks of the run's final head, when CI checks are off)", output)
+        self.assertIn("  Final CI check on\n", output)
+        self.assertIn("* Verification  (local off · CI off · final CI on)", self.menu())
+        self.assertIn("⚠ quality.py and quality-gates.json missing: `macatia check` will fail until they exist.", output)
+        self.assertIn("Changes:\n  verification.final_ci_check: false → true\n", output)
+        self.assertEqual(self.read(), DEFAULT_CONFIGURATION.replace("final_ci_check = false\n", "final_ci_check = true\n"))
+        self.assertTrue(load_config(self.root / "macatia.toml", self.root).verification.final_ci_check)
 
     def test_no_warning_when_the_quality_policy_exists(self):
         (self.root / ".github/scripts").mkdir(parents=True)
@@ -194,7 +205,7 @@ class ConfigureTests(unittest.TestCase):
     def test_a_configuration_without_review_stays_without_it(self):
         self.write(WITHOUT_REVIEW)
         self.run_configure(answers=["4", "2", "", "10"])
-        self.assertEqual(self.read(), WITHOUT_REVIEW.replace("ci_checks = false", "ci_checks = true"))
+        self.assertEqual(self.read(), WITHOUT_REVIEW.replace("ci_checks = false\n", "ci_checks = true\n"))
 
     def test_comments_the_renderer_would_not_write_are_announced_once(self):
         self.write("# Tuned by hand\n" + DEFAULT_CONFIGURATION.replace('remote = "origin"', 'remote = "origin"  # fork'))
