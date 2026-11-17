@@ -47,7 +47,7 @@ uv tool install git+https://github.com/lmpaul/macatia # installs `macatia` on PA
 uv tool upgrade macatia --reinstall                   # pick up the latest commit
 ```
 
-Pin a release with `git+https://github.com/lmpaul/macatia@v0.7.0`.
+Pin a release with `git+https://github.com/lmpaul/macatia@v0.8.0`.
 
 Each repository Macatia works on also needs an `implement` skill checked in, under
 `.claude/skills/` for Claude Code or `.agents/skills/` for Codex. See
