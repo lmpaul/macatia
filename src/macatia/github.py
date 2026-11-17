@@ -206,7 +206,7 @@ class GitHub:
             "--state",
             "open",
             "--json",
-            "number,isDraft,url",
+            "number,isDraft,url,mergeable",
         )
 
     def open_pull_requests_by_title(self, base: str, titles: set[str]) -> list[dict[str, Any]]:

@@ -3727,6 +3727,22 @@ class FinalCICheckTests(VerificationTestCase):
         self.assertNotIn("Per-child CI history", handoff)
         self.assertEqual(self.github.child_checked_heads, [])
 
+    def test_a_conflicting_pull_request_hands_the_final_ci_check_to_human_review(self):
+        self.new_final_ci_run(ci=({},), pull_mergeable="CONFLICTING")
+
+        result = self.start(loop_core.STANDARD_RUN, *[ScriptedResult("committed")] * 2)
+
+        handoff = self.assert_final_ci_stopped(
+            result, "canonical CI cannot start: pull request #1 conflicts with main"
+        )
+        self.assertIn("set `base_branch` in `macatia.toml`", handoff)
+        self.assertEqual(len(self.github.checked_heads), 1)
+        self.assertIn(
+            f"#{PARENT} was handed to human review because its pull request conflicts with "
+            "main, so GitHub Actions started no CI",
+            result.stderr,
+        )
+
     def test_exhausted_final_ci_corrections_hand_the_parent_to_human_review(self):
         self.new_final_ci_run(ci=("failure",), job_log_output=CI_LOG)
 
@@ -4517,6 +4533,35 @@ class StopSummaryTests(VerificationTestCase):
             "be obtained within the infrastructure retries: once GitHub Actions is healthy, "
             f"relabel it ready-for-agent, then run `macatia run {PARENT}` again.",
         )
+
+    def test_a_conflicting_pull_request_stops_without_infrastructure_retries(self):
+        self.new_child_run(ci=({},), pull_mergeable="CONFLICTING")
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
+
+        self.assert_not_implemented(result, "pull request #1 conflicts with main")
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.assertEqual(len(self.github.checked_heads), 1)
+        handoff = self.github.comments(CHILD)[-1]
+        self.assertIn("pull request #1 conflicts with `main`", handoff)
+        self.assertIn("set `base_branch` in `macatia.toml`", handoff)
+        self.assert_stop_summary(
+            result,
+            "- agent sessions: 1\n- infrastructure retries: 0\n",
+            "Stop reason: canonical CI cannot start: pull request #1 conflicts with main",
+            f"Next action:\n- #{CHILD} was handed to human review because its pull request "
+            "conflicts with main, so GitHub Actions started no CI: merge main into the run "
+            "branch, or set `base_branch` in `macatia.toml` if main is the wrong base, then "
+            f"relabel it ready-for-agent and run `macatia run {PARENT}` again.",
+        )
+
+    def test_a_pull_request_whose_mergeability_is_unknown_keeps_retrying(self):
+        self.new_child_run(ci=({},), pull_mergeable="UNKNOWN")
+
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("committed"))
+
+        self.assert_not_implemented(result, "infrastructure retries exhausted")
+        self.assertEqual(len(self.github.checked_heads), 4)
 
     def test_crash_names_the_exception_and_points_to_the_run_diagnostics(self):
         with self.assertRaises(ValueError):

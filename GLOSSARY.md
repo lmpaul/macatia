@@ -134,7 +134,7 @@ The maximum number of correction sessions one child may receive (three), countin
 _Avoid_: Attempts, retry limit, issue-correction limit
 
 **Infrastructure retry**:
-A repeated remote operation (GitHub, CI polling) that does not count toward the child session limit.
+A repeated remote operation (GitHub, CI polling) that does not count toward the child session limit. Missing CI on a pull request that conflicts with its base is not retried: GitHub Actions never starts it.
 _Avoid_: Retry (alone), correction
 
 **Engine**:

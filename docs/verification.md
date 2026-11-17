@@ -18,6 +18,19 @@ CI and no local test commands. Macatia still pushes a draft pull request, verifi
 that the completed commit is the published one, and leaves merge authority to a
 human.
 
+## A pull request that conflicts with its base
+
+GitHub Actions starts no `pull_request` workflow for a pull request that
+conflicts with its base branch, so its required checks never report. When a CI
+wait finds required checks missing and GitHub reports the run branch's pull
+request as conflicting, Macatia stops at once, without infrastructure retries:
+the child (or, during the final CI check, the run target) goes to human review
+with a handoff comment naming the pull request and the base branch. Merge the
+base branch into the run branch or, when the base is the wrong one, set
+`base_branch` in `macatia.toml` and retarget the pull request, then run again.
+While GitHub has not yet computed whether the pull request can merge, missing
+checks go through the infrastructure retries as before.
+
 ## Final CI check
 
 `verification.final_ci_check` (a TOML boolean, `false` when absent) asks for a
@@ -65,7 +78,8 @@ makes no new commit or reports `blocked`, `failed`, or `needs_correction`, sends
 the run target (the standalone issue itself, for a standalone run) to human review
 with a handoff comment holding the last diagnostic. CI evidence that cannot be
 obtained within the infrastructure retries or the CI wait's timeout does the same
-without starting a final CI correction. In every case the children stay
+without starting a final CI correction, as does a pull request that conflicts with
+its base. In every case the children stay
 implemented and the pull request stays a draft. A stopped, deadlocked, or
 interrupted run makes no final CI check.
 

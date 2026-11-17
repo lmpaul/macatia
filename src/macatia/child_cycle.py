@@ -66,6 +66,17 @@ class CIUnavailable:
 
 
 @dataclass(frozen=True)
+class CIConflict:
+    """The pull request conflicts with its base, so GitHub Actions started no CI for it.
+
+    `body` is the handoff comment, which says how to unblock the pull request.
+    """
+
+    reason: str
+    body: str
+
+
+@dataclass(frozen=True)
 class ChildCycleAdapters:
     run_session: Callable[[SessionRequest], SessionResult]
     # (child, gate base, head_sha) -> None when every local gate that applies to the
@@ -73,7 +84,7 @@ class ChildCycleAdapters:
     run_local_gates: Callable[[int, str, str], GateFailure | None]
     # (child, gate base, head_sha) -> None once head_sha is published and every CI
     # check required by the paths changed since the gate base is green.
-    verify_ci: Callable[[int, str, str], CIFailure | CIUnavailable | None]
+    verify_ci: Callable[[int, str, str], CIFailure | CIUnavailable | CIConflict | None]
     # (child, comment body)
     hand_to_human_review: Callable[[int, str], None]
 
@@ -89,6 +100,7 @@ class HandoffCause(Enum):
 
     CHILD_SESSION_LIMIT = "child session limit"
     INFRASTRUCTURE = "infrastructure"
+    PULL_REQUEST_CONFLICT = "pull request conflict"
 
 
 @dataclass(frozen=True)
@@ -276,6 +288,12 @@ class _ChildCycle:
                     "implementation or consuming another agent session. This child remains open "
                     f"for human review. Last infrastructure diagnostic: {verdict.diagnostic}",
                     HandoffCause.INFRASTRUCTURE,
+                )
+            if isinstance(verdict, CIConflict):
+                raise HumanReviewStop(
+                    verdict.reason,
+                    f"{verdict.body} This child remains open for human review.",
+                    HandoffCause.PULL_REQUEST_CONFLICT,
                 )
             try:
                 verified_head = self.correct_ci(verdict.diagnostic)

@@ -301,6 +301,7 @@ class PullRequest:
     is_draft: bool = True
     comments: list[str] = field(default_factory=list)
     state: str = "open"
+    mergeable: str = "MERGEABLE"
     # The comments as the issue comments listing returns them, for those that list them.
     comment_records: list[dict] = field(default_factory=list)
 
@@ -367,6 +368,8 @@ class FakeGitHub:
     requests with `child_ci[child]`, a round as above (by default "success"), without
     consuming `ci` or joining `checked_heads`; `child_checked_heads` keeps each one asked.
     The latest evidence's head is the exception: as the run's final head, `ci` answers it.
+    A draft pull request the run creates reports `pull_mergeable` as its mergeability
+    (MERGEABLE, CONFLICTING, or UNKNOWN).
     `opened_for` keeps the configured repository each run opened GitHub access for.
     The open issues listing answers every open issue in the order they were added,
     or raises `open_issues_error` when set.
@@ -384,8 +387,10 @@ class FakeGitHub:
         job_head_sha=None,
         check_annotation="A check failed.",
         child_ci=None,
+        pull_mergeable="MERGEABLE",
     ):
         self.repository = repository
+        self.pull_mergeable = pull_mergeable
         self.child_ci = dict(child_ci or {})
         self.child_heads = {}
         self.child_checked_heads = []
@@ -575,6 +580,7 @@ class FakeGitHub:
                 "number": pull.number,
                 "isDraft": pull.is_draft,
                 "url": f"https://github.test/{self.repository}/pull/{pull.number}",
+                "mergeable": pull.mergeable,
             }
             for pull in self.pull_requests
             if pull.head == head and pull.base == base and pull.state == "open"
@@ -629,7 +635,10 @@ class FakeGitHub:
 
     def create_draft_pull_request(self, base, head, title, body):
         self.pull_requests.append(
-            PullRequest(len(self.pull_requests) + 1, base, head, title, body)
+            PullRequest(
+                len(self.pull_requests) + 1, base, head, title, body,
+                mergeable=self.pull_mergeable,
+            )
         )
 
     def mark_pull_request_draft(self, number):

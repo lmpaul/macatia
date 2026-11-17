@@ -32,6 +32,7 @@ from .child_cycle import (
     ChildSessionLimit,
     ChildSessionLimitExhausted,
     ChildWorkRejected,
+    CIConflict,
     CIFailure,
     CIUnavailable,
     GateFailure,
@@ -845,6 +846,14 @@ def remaining_children(state: RunState, error: BaseException) -> list[RemainingC
                     "obtained within the infrastructure retries: once GitHub Actions is "
                     f"healthy, relabel it {ready_label}, then {rerun}."
                 )
+            elif cause is HandoffCause.PULL_REQUEST_CONFLICT:
+                base = state.config.base_branch
+                action = (
+                    f"#{number} was handed to human review because "
+                    f"{pull_request_conflict_cause(state)}: merge {base} into the run branch, "
+                    f"or set `base_branch` in `macatia.toml` if {base} is the wrong base, then "
+                    f"relabel it {ready_label} and {rerun}."
+                )
             else:
                 action = (
                     f"#{number} was handed to human review: resolve what its handoff comment "
@@ -1173,6 +1182,50 @@ class InfrastructureFailure(MacatiaError):
         super().__init__(f"{operation} infrastructure failure: {diagnostic}")
         self.operation = operation
         self.diagnostic = diagnostic
+
+
+class PullRequestConflict(MacatiaError):
+    """The run branch's pull request conflicts with its base, so GitHub Actions started no
+    `pull_request` workflow for it: retrying cannot bring CI evidence."""
+
+    def __init__(self, number: int, base: str, head_sha: str):
+        super().__init__(f"canonical CI cannot start: pull request #{number} conflicts with {base}")
+        self.number = number
+        self.base = base
+        self.head_sha = head_sha
+
+    def verdict(self) -> CIConflict:
+        return CIConflict(
+            str(self),
+            f"Macatia stopped because pull request #{self.number} conflicts with `{self.base}`: "
+            "GitHub Actions starts no `pull_request` workflow for a pull request that conflicts "
+            f"with its base, so no required check ran for exact head `{self.head_sha}`. Merge "
+            f"`{self.base}` into the run branch or, if `{self.base}` is not the branch this work "
+            "should merge into, set `base_branch` in `macatia.toml` and retarget the pull request.",
+        )
+
+
+def pull_request_conflict_cause(state: RunState) -> str:
+    """Completes "#N was handed to human review because …" after a PullRequestConflict."""
+    return (
+        f"its pull request conflicts with {state.config.base_branch}, "
+        "so GitHub Actions started no CI"
+    )
+
+
+def require_mergeable_pull_request(state: RunState, head_sha: str) -> None:
+    """Raise PullRequestConflict when the run branch's pull request conflicts with its base.
+
+    A failed lookup raises nothing: it only explains missing CI, so the infrastructure
+    retries still decide.
+    """
+    assert state.branch is not None
+    try:
+        pull = open_pull_request(state, state.branch)
+    except MacatiaError:
+        return
+    if pull is not None and pull.get("mergeable") == "CONFLICTING":
+        raise PullRequestConflict(int(pull["number"]), state.config.base_branch, head_sha)
 
 
 class InfrastructureRetriesExhausted(MacatiaError):
@@ -3185,6 +3238,10 @@ def wait_for_exact_sha_ci(
             if current_head(state) != head_sha:
                 raise MacatiaError("branch advanced while waiting for canonical CI")
             check_runs = check_runs_for_head(state, head_sha)
+            if required_check_names(requirements) - latest_required_runs(
+                head_sha, check_runs, requirements
+            ).keys():
+                require_mergeable_pull_request(state, head_sha)
             classified_failure = classify_ci_failure(head_sha, check_runs, requirements)
             if classified_failure is not None:
                 raise classified_failure
@@ -3557,7 +3614,7 @@ def check_local_gates(
 
 def verify_with_ci(
     context: ChildCycleContext, child_number: int, base_sha: str, head_sha: str
-) -> CIFailure | CIUnavailable | None:
+) -> CIFailure | CIUnavailable | CIConflict | None:
     """Child cycle adapter: publish head_sha and wait for its required CI checks."""
     state = context.state
     push_and_prepare_draft_pull_request(state, context.branch, context.parent_issue)
@@ -3596,6 +3653,8 @@ def verify_with_ci(
         )
     except InfrastructureRetriesExhausted as error:
         return CIUnavailable(str(error), error.failure.diagnostic)
+    except PullRequestConflict as conflict:
+        return conflict.verdict()
     finally:
         if state.diagnostics is not None:
             state.diagnostics.record_phase(
@@ -3687,6 +3746,14 @@ def run_final_ci_check(context: ChildCycleContext, adapters: ChildCycleAdapters)
                     + (f"\n\n{state.final_ci_history}" if state.final_ci_history else ""),
                 )
                 raise FinalCIHandedToHumanReview(run_target, verdict.reason, unavailable=True)
+            if isinstance(verdict, CIConflict):
+                send_run_target_to_human_review(
+                    state, run_target, f"{verdict.body} {FINAL_CI_HANDOFF_TAIL}"
+                )
+                raise FinalCIHandedToHumanReview(
+                    run_target, verdict.reason, unavailable=False,
+                    cause=pull_request_conflict_cause(state),
+                )
             diagnostic = verdict.diagnostic
             if not state.final_ci_history:
                 state.final_ci_history = child_ci_history(context, base_sha, head_sha)
@@ -3788,7 +3855,7 @@ def child_ci_state(context: ChildCycleContext, base_sha: str, verified_head: str
 
 def wait_for_final_ci(
     context: ChildCycleContext, base_sha: str, head_sha: str
-) -> CIFailure | CIUnavailable | None:
+) -> CIFailure | CIUnavailable | CIConflict | None:
     """Publish head_sha and wait for the CI checks the run's changes since base_sha require."""
     state = context.state
     run_target = context.parent_issue
@@ -3808,6 +3875,8 @@ def wait_for_final_ci(
         )
     except (InfrastructureRetriesExhausted, CITimeout) as error:
         return CIUnavailable(str(error), sanitized_text(str(error)))
+    except PullRequestConflict as conflict:
+        return conflict.verdict()
     finally:
         if state.diagnostics is not None:
             state.diagnostics.record_phase(
