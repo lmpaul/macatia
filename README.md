@@ -6,6 +6,9 @@ loop around the agent: one fresh session per sub-issue, your tests and CI as
 the judge, a correction session when they fail, and a stop that hands the issue
 back to you when it can't converge. Nothing merges without a human.
 
+🇫🇷 [Video introduction, in French](https://www.youtube.com/watch?v=-XvVbPuDPrM):
+what Macatia does and the ideas it is built on.
+
 Macatia was called ralph-kit until 0.7.0, after the "Ralph" loop technique of
 running a coding agent over and over against the same plan.
 
