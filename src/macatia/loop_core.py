@@ -3007,14 +3007,38 @@ def send_started_child_to_human_review(state: RunState, child_number: int, body:
     """Hand a child whose child cycle started to human review, saying its commits stay.
 
     A child relabelled ready-for-agent resumes from its recorded child base, so the
-    commits on the branch count as its work.
+    commits on the branch count as its work. Commits not yet published are pushed
+    first, with the cumulative draft PR, so a human can review them; a failed push
+    still hands the child over, saying where the commits are.
     """
+    unpublished = publish_unpublished_commits(state)
     send_child_to_human_review(
         state,
         child_number,
         f"{body}\n\nThis child's commits stay on the branch and will count as its work "
-        f"if it is relabelled `{configured_label(state, 'ready_for_agent')}`.",
+        f"if it is relabelled `{configured_label(state, 'ready_for_agent')}`.{unpublished}",
     )
+
+
+def publish_unpublished_commits(state: RunState) -> str:
+    """Push the run branch and prepare its cumulative draft PR when a child cycle of this run
+    left commits no remote branch has; return a leading-space sentence for the handoff
+    comment if the push failed."""
+    branch = state.branch
+    if state.working_child is None or branch is None or state.summary.parent is None:
+        return ""
+    remote_branches = f"--remotes={state.config.remote}"
+    if not git(state, "rev-list", "--max-count=1", "HEAD", "--not", remote_branches):
+        return ""
+    try:
+        push_and_prepare_draft_pull_request(state, branch, state.summary.parent)
+    except MacatiaError as error:
+        print(f"Macatia could not push {branch}: {error}", file=sys.stderr, flush=True)
+        return (
+            f" Macatia could not push them: `{branch}` at `{current_head(state)}` "
+            "exists only in the run's local checkout."
+        )
+    return ""
 
 
 def stop_children_for_dependency_deadlock(

@@ -37,9 +37,13 @@ and `blocked` or `failed` results stop the run and leave the child open with
 outstanding findings and, for local gate or CI failures, the last diagnostic.
 Every handoff comment for a child whose child cycle started also says that the
 child's commits stay on the branch and will count as its work if it is
-relabelled `ready-for-agent`. Every handoff comment starts with a hidden
-machine-readable marker, in both run modes; handoff comments posted before
-Macatia wrote that marker carry none.
+relabelled `ready-for-agent`. When the run stops on a child, or is interrupted,
+before that child's commits were published, Macatia first pushes the run branch
+and opens the cumulative draft PR if there is none, so a human can review the
+unverified commits there. If the push fails, the child is still handed over and
+its handoff comment says the commits exist only in the run's local checkout.
+Every handoff comment starts with a hidden machine-readable marker, in both run
+modes; handoff comments posted before Macatia wrote that marker carry none.
 
 Macatia publishes implementation evidence and adds `implemented` only after the
 issue review and configured verification succeed for the final commit. A child

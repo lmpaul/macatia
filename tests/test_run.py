@@ -3936,6 +3936,74 @@ class FinalCICheckTests(VerificationTestCase):
         self.assertFalse(self.github.pull_request().is_draft)
 
 
+class HandoffPublicationTests(VerificationTestCase):
+    """A child handed to human review before its work was published gets it pushed in a draft PR."""
+
+    def assert_published_in_a_draft_pull_request(self):
+        self.assertEqual(self.repository.pushed_head(), self.repository.head())
+        pull = self.github.pull_request()
+        self.assertIsNotNone(pull)
+        self.assertTrue(pull.is_draft)
+        self.assertEqual(pull.head, BRANCH)
+
+    def test_handoff_before_verification_pushes_the_commits_and_opens_the_draft_pull_request(self):
+        for name, run_options, results in (
+            ("blocked", {}, [ScriptedResult("blocked", "Needs a product decision.", commit=True)]),
+            ("local gate", {"local_gate_results": ("fail",)}, [ScriptedResult("committed")] * 4),
+        ):
+            with self.subTest(name):
+                self.new_child_run(**run_options)
+
+                result = self.start(loop_core.STANDARD_RUN, *results)
+
+                self.assertEqual(result.exit_code, 1, result.stderr)
+                self.assertEqual(self.github.labels(CHILD), {"human-review"})
+                self.assert_published_in_a_draft_pull_request()
+                self.assertIn(COMMITS_STAY, self.github.comments(CHILD)[-1])
+                self.assertIn(f"⬆️  Pushing {BRANCH} to origin.", result.stdout)
+
+    def test_interruption_before_verification_pushes_the_commits(self):
+        self.new_child_run(local_gate_results=("fail",))
+
+        result = self.start(
+            loop_core.STANDARD_RUN, ScriptedResult("committed"), ScriptedSignal(signal.SIGINT)
+        )
+
+        self.assertEqual(result.exit_code, 130, result.stderr)
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.assert_published_in_a_draft_pull_request()
+
+    def test_handoff_without_unpushed_commits_pushes_nothing(self):
+        result = self.start(loop_core.STANDARD_RUN, ScriptedResult("blocked", "Needs a decision."))
+
+        self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.assertNotIn("Pushing", result.stdout)
+        self.assertIsNone(self.github.pull_request())
+
+    def test_failed_push_still_hands_the_child_over_and_says_the_commits_are_local(self):
+        def break_the_remote(request):
+            git(self.repository.path, "remote", "set-url", "origin", "/nonexistent/origin.git")
+
+        self.before_session = break_the_remote
+
+        result = self.start(
+            loop_core.STANDARD_RUN, ScriptedResult("blocked", "Needs a decision.", commit=True)
+        )
+
+        self.assertEqual(result.exit_code, 1, result.stderr)
+        self.assertIn("Stop reason: implementation stopped with blocked", result.stderr)
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+        self.assertIsNone(self.github.pull_request())
+        handoff = self.github.comments(CHILD)[-1]
+        self.assertIn(
+            f"Macatia could not push them: `{BRANCH}` at `{self.repository.head()}` "
+            "exists only in the run's local checkout.",
+            handoff,
+        )
+        self.assertIn(f"Macatia could not push {BRANCH}", result.stderr)
+
+
 class HandoffRedactionTests(VerificationTestCase):
     def test_handoff_comments_keep_the_last_diagnostic_redacted(self):
         corrections = [ScriptedResult("committed")] * 4
@@ -4727,6 +4795,12 @@ class OutcomeContractTests(AgentSessionTestCase):
         self.assertEqual(self.repository.pushed_head(), self.repository.base_sha)
         self.assertIn(f"`{self.repository.base_sha}`", evidence)
 
+    def assert_handed_over_commits_published(self):
+        """The commits of the child handed to human review are pushed in the draft PR."""
+        self.assertEqual(self.repository.pushed_head(), self.repository.head())
+        self.assertNotEqual(self.repository.head(), self.repository.base_sha)
+        self.assertTrue(self.github.pull_request().is_draft)
+
     def test_failed_session_with_a_commit_is_a_terminal_stop(self):
         result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("failed", "The build tool crashed.", commit=True))
 
@@ -4736,7 +4810,7 @@ class OutcomeContractTests(AgentSessionTestCase):
             "implementation reported failed: The build tool crashed.",
         )
         self.assertEqual(len(self.engine.calls), 1)
-        self.assertIsNone(self.github.pull_request())
+        self.assert_handed_over_commits_published()
 
     def test_claimed_commit_without_a_git_commit_hands_the_child_to_human_review(self):
         result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("committed", commit=False))
@@ -4755,7 +4829,9 @@ class OutcomeContractTests(AgentSessionTestCase):
         result = self.start_engine(loop_core.STANDARD_RUN, EngineResult("committed", dirty=True))
 
         self.assert_handed_to_human_review(result, "worktree is dirty after implementation")
-        self.assertIsNone(self.github.pull_request())
+        self.assert_handed_over_commits_published()
+        pushed_files = git(self.repository.origin, "ls-tree", "-r", "--name-only", BRANCH)
+        self.assertNotIn("uncommitted-agent-output.txt", pushed_files)
         self.assertTrue((self.repository.path / "uncommitted-agent-output.txt").is_file())
         (record,) = self.repository.session_records()
         self.assertEqual(record["structured_result"]["outcome"], "committed")
@@ -5620,6 +5696,11 @@ class StandaloneStopTests(StandaloneRunTestCase):
         self.assertEqual(self.github.labels(STANDALONE), {"human-review", "standalone"})
         self.assertIn(COMMITS_STAY, self.github.reports(STANDALONE)[-2])
         self.assertIn("- final outcome: stopped safely", self.github.comments(STANDALONE)[-1])
+        self.assertEqual(self.repository.pushed_head(), self.repository.head())
+        pull = self.github.pull_request()
+        self.assertTrue(pull.is_draft)
+        self.assertEqual(pull.title, f"Implement Macatia issue #{STANDALONE}")
+        self.assertIn("- final outcome: stopped safely", pull.comments[-1])
 
         self.github.edit_issue_labels(STANDALONE, add="ready-for-agent", remove=["human-review"])
         result = self.start(loop_core.STANDARD_RUN, *passing_child_results(loop_core.STANDARD_RUN))
