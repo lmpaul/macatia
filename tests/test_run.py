@@ -4510,7 +4510,7 @@ class ChildSessionLimitTests(VerificationTestCase):
         handoff = self.github.comments(child)[-1]
         self.assertTrue(handoff.startswith(
             f"{HANDOFF_MARKER}\nMacatia stopped before {role} because the child session limit of {limit} "
-            f"({mode} run) was exhausted. This child remains open for human review."
+            f"({mode}) was exhausted. This child remains open for human review."
         ), handoff)
         self.assertIn(COMMITS_STAY, handoff)
         summary = self.github.comments(PARENT)[-1]
@@ -4549,7 +4549,7 @@ class ChildSessionLimitTests(VerificationTestCase):
         result = self.start(loop_core.STANDARD_RUN, *[findings] * 3)
 
         handoff = self.assert_child_session_limit_stop(
-            result, CHILD, role="issue correction", limit=3, mode="standard", sessions=3
+            result, CHILD, role="issue correction", limit=3, mode="standard run or final review", sessions=3
         )
         self.assertIn("Last diagnostic:\n```text\n- Handle empty carts.\n```", handoff)
         self.assertEqual(self.session_children(), [CHILD] * 3)
@@ -4560,7 +4560,7 @@ class ChildSessionLimitTests(VerificationTestCase):
         set_child_session_limit(self.repository, standard=1)
         result = self.start(loop_core.STANDARD_RUN, findings)
         self.assert_child_session_limit_stop(
-            result, CHILD, role="issue correction", limit=1, mode="standard", sessions=1
+            result, CHILD, role="issue correction", limit=1, mode="standard run or final review", sessions=1
         )
         self.github.edit_issue_labels(CHILD, add="ready-for-agent", remove=["human-review"])
 
@@ -4588,7 +4588,7 @@ class ChildSessionLimitTests(VerificationTestCase):
         result = self.start(loop_core.REVIEWED_RUN, ScriptedResult("committed"), findings)
 
         self.assert_child_session_limit_stop(
-            result, CHILD, role="issue correction", limit=2, mode="reviewed", sessions=2
+            result, CHILD, role="issue correction", limit=2, mode="child review", sessions=2
         )
 
     def test_run_reviewed_by_the_setting_uses_the_reviewed_limit(self):
@@ -4601,7 +4601,7 @@ class ChildSessionLimitTests(VerificationTestCase):
         result = start_run(self.repository, self.github, self.sessions, PARENT)
 
         self.assert_child_session_limit_stop(
-            result, CHILD, role="issue correction", limit=2, mode="reviewed", sessions=2
+            result, CHILD, role="issue correction", limit=2, mode="child review", sessions=2
         )
 
     def test_no_review_uses_the_standard_limit_despite_the_setting(self):
@@ -4613,7 +4613,7 @@ class ChildSessionLimitTests(VerificationTestCase):
         result = start_run(self.repository, self.github, self.sessions, "--no-review", PARENT)
 
         self.assert_child_session_limit_stop(
-            result, CHILD, role="issue correction", limit=1, mode="standard", sessions=1
+            result, CHILD, role="issue correction", limit=1, mode="standard run or final review", sessions=1
         )
 
     def test_a_key_left_out_of_the_table_keeps_its_default(self):
@@ -5513,7 +5513,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
         self.assert_handed_to_human_review(
             result,
             "child session limit exhausted before review",
-            "child session limit of 2 (reviewed run) was exhausted",
+            "child session limit of 2 (child review) was exhausted",
         )
         self.assertEqual(self.engine.engines(), ["codex", "claude"])
 
@@ -5530,7 +5530,7 @@ class BackupTakeoverTests(AgentSessionTestCase):
             result,
             "child session limit exhausted before implementation",
             "Macatia stopped before implementation because the child session limit of 1 "
-            "(standard run) was exhausted.",
+            "(standard run or final review) was exhausted.",
             "implementation exited non-zero without a committed outcome",
         )
         self.assertEqual(self.engine.engines(), ["codex"])

@@ -179,7 +179,7 @@ macatia check --config review.toml
 
 - `[child_session_limit]` is an optional table with two optional integer keys:
   `standard` (5 when missing, at least 1) and `reviewed` (9 when missing, at
-  least 2, so a reviewed run can always reach its review session), the child
+  least 2, so a run in child review can always reach its review session), the child
   session limit of a standard run and of a reviewed run in child review. A run
   uses the value of its mode: `reviewed` with `--review` or
   `review_by_default = true` in child review, `standard` with `--no-review`, in

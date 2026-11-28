@@ -45,7 +45,7 @@ that lookup stops the run as an error.
 
 A run target without sub-issues is a standalone issue: the run's only child is
 the issue itself, and it goes through the same loop as any child (child cycle,
-corrections, review session in a reviewed run, implementation evidence,
+corrections, review session in a run in child review, implementation evidence,
 cumulative draft PR). At startup, before the run branch is offered and before
 anything is written on GitHub, a standalone issue must be authored by a trusted
 author, open, and a ready child: its only triage label and only lifecycle label
@@ -58,7 +58,7 @@ branch. Otherwise the run is refused with the reason, such as
 `standalone issue #42 waits on #41, neither closed nor implemented on this branch`.
 A run on the base branch offers `macatia/issue-<N>` as for a parent, and the
 issue, as its run's only child, gets the child session limit (by default five
-sessions in a standard run, nine in a reviewed run). The draft PR is titled
+sessions in a standard run or a run in final review, nine in a run in child review). The draft PR is titled
 `Implement Macatia issue #N`, still requires a human merge and carries no closing keyword. Once
 the issue is implemented, it carries only the `implemented` lifecycle label and
 its implementation evidence, the PR is marked ready, and the terminal summary is
@@ -164,7 +164,7 @@ resumed from `agent-working` included, so relabelling a handed-off child
 `ready-for-agent` and rerunning gives it the full limit again. The limit counts
 sessions, not tokens or time. A child that exhausts its limit is handed to
 human review and stops the run, with a handoff comment such as "Macatia stopped
-before review because the child session limit of 9 (reviewed run) was
+before review because the child session limit of 9 (child review) was
 exhausted.", followed by the last diagnostic or remaining findings; the next
 action is to relabel it `ready-for-agent`, then rerun. The run summary and the
 parent completion still report the total number of agent sessions the run used.
