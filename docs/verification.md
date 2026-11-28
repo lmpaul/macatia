@@ -83,6 +83,11 @@ its base. In every case the children stay
 implemented and the pull request stays a draft. A stopped, deadlocked, or
 interrupted run makes no final CI check.
 
+A run in final review waits for CI on its final head after its final review
+session whenever that session committed and `ci_checks = true`, as well as with
+an active final CI check; the wait and its final CI corrections then follow the
+rules above (see [the final review stage](run.md#the-final-review-stage)).
+
 ## Quality policy
 
 The quality policy (quality module and manifest) is required whenever local

@@ -2719,10 +2719,15 @@ class ReviewModeTests(StartupRejectionTestCase):
         review_profile = re.search(r"\[models\.review\]\n.*?\n\n", configuration, flags=re.S).group(0)
         self.repository.edit_configuration(review_profile, "")
 
-    def assert_completed_as_a_standard_run(self, result):
-        """Every child got exactly the standard run's loop: one session, standard evidence."""
-        self.assert_completed(result, sessions=1)
+    def assert_completed_as_a_standard_run(self, result, *, final_review=False):
+        """Every child got exactly the standard run's loop: one session, standard evidence; a
+        run in final review then adds its final review session."""
+        self.assert_completed(result, sessions=1 + final_review)
         self.assertNotIn("Review the exact", self.sessions.prompts[0])
+        self.assertEqual(
+            [request.role for request in self.sessions.requests],
+            ["implementation", *(["final review"] if final_review else [])],
+        )
         self.assertIn(
             loop_core.STANDARD_RUN.implementation_evidence_prefix, self.github.comments(CHILD)[-1]
         )
@@ -2738,9 +2743,11 @@ class ReviewModeTests(StartupRejectionTestCase):
                 if by_setting:
                     set_review_by_default(self.repository)
 
-                result = self.start_with(flags, *passing_child_results(loop_core.STANDARD_RUN))
+                result = self.start_with(
+                    flags, *passing_child_results(loop_core.STANDARD_RUN), ScriptedResult("no_changes")
+                )
 
-                self.assert_completed_as_a_standard_run(result)
+                self.assert_completed_as_a_standard_run(result, final_review=True)
                 self.assertEqual(result.stdout.count(FINAL_REVIEW_NOTICE), 1)
                 self.assertNotIn(CHILD_REVIEW_NOTICE, result.stdout)
                 self.assertLess(result.stdout.index(FINAL_REVIEW_NOTICE), result.stdout.index("▶️"))
@@ -2762,12 +2769,13 @@ class ReviewModeTests(StartupRejectionTestCase):
         set_review_mode(self.repository)
         worst_case = worst_case_child_results(loop_core.STANDARD_RUN)
 
-        result = self.start_with(("--review",), *worst_case)
+        result = self.start_with(("--review",), *worst_case, ScriptedResult("no_changes"))
 
-        self.assert_completed(result, sessions=len(worst_case))
+        self.assert_completed(result, sessions=len(worst_case) + 1)
         self.assertEqual(
             [request.role for request in self.sessions.requests],
-            ["implementation", "issue correction", "issue correction", "issue correction"],
+            ["implementation", "issue correction", "issue correction", "issue correction",
+             "final review"],
         )
         self.assertIn(
             loop_core.STANDARD_RUN.implementation_evidence_prefix, self.github.comments(CHILD)[-1]
@@ -2783,13 +2791,15 @@ class ReviewModeTests(StartupRejectionTestCase):
             self.start_with(("--review",), *passing_child_results(loop_core.STANDARD_RUN))
         self.assertEqual(self.github.labels(CHILD), {"agent-working"})
         confirm = ScriptedConfirm(STOP)
-        self.sessions = ScriptedSessions(self.repository)
+        self.sessions = ScriptedSessions(self.repository, ScriptedResult("no_changes"))
 
         result = start_run(
             self.repository, self.github, self.sessions, "--review", PARENT, confirm=confirm
         )
 
-        self.assert_completed(result, sessions=0)
+        # The recovered child needs no session; the run's work then gets its final review.
+        self.assert_completed(result, sessions=1)
+        self.assertEqual([request.role for request in self.sessions.requests], ["final review"])
         self.assertEqual(confirm.questions, [])
         self.assertEqual(self.github.labels(CHILD), {"implemented"})
 
@@ -4114,6 +4124,288 @@ class FinalCICheckTests(VerificationTestCase):
         self.assertEqual(self.github.checked_heads, [head])
         self.assertIn(final_ci_green(head), self.github.comments(PARENT)[-1])
         self.assertFalse(self.github.pull_request().is_draft)
+
+
+# Pinned here: final review evidence is persisted in GitHub comments, so its marker never changes.
+FINAL_REVIEW_EVIDENCE_PREFIX = "<!-- macatia-final-review-evidence: "
+CLEAN_FINAL_REVIEW = "Reviewed the whole work; nothing is left."
+
+
+def final_review_evidence_head(body):
+    """The reviewed head a final review evidence comment records, or None."""
+    match = re.search(re.escape(FINAL_REVIEW_EVIDENCE_PREFIX) + r"(\{.*?\}) -->", body)
+    return json.loads(match.group(1))["final_review_head"] if match else None
+
+
+class FinalReviewTests(VerificationTestCase):
+    """A reviewed run in final review: one final review session once every child is implemented."""
+
+    def new_final_review_run(self, *, children=(CHILD, SECOND_CHILD), **options):
+        self.repository = RunRepository(self, **options)
+        set_review_mode(self.repository)
+        self.github = FakeGitHub()
+        self.github.add_issue(PARENT)
+        for child in children:
+            self.github.add_issue(child, parent=PARENT)
+
+    def setUp(self):
+        self.new_final_review_run()
+
+    def start_final_review(self, *results, run_target=PARENT):
+        self.sessions = ScriptedSessions(self.repository, *results)
+        self.sessions.before_session = self.before_session
+        return start_run(self.repository, self.github, self.sessions, "--review", run_target)
+
+    def observe_pull_request_when_evidence_is_posted(self):
+        """Record whether the PR was a draft when the final review evidence was posted."""
+        self.drafts_at_evidence = []
+
+        def observe(number, body):
+            if FINAL_REVIEW_EVIDENCE_PREFIX in body:
+                self.drafts_at_evidence.append(self.github.pull_request().is_draft)
+
+        self.github.after_comment = observe
+
+    def final_review_evidence(self, number=PARENT):
+        return [
+            body for body in self.github.comments(number) if FINAL_REVIEW_EVIDENCE_PREFIX in body
+        ]
+
+    def test_clean_final_review_posts_evidence_for_the_reviewed_head_then_marks_the_pr_ready(self):
+        self.observe_pull_request_when_evidence_is_posted()
+
+        result = self.start_final_review(
+            ScriptedResult("committed"), ScriptedResult("committed"),
+            ScriptedResult("no_changes", CLEAN_FINAL_REVIEW),
+        )
+
+        self.assert_completed(result, sessions=3)
+        self.assertEqual(self.roles(), ["implementation", "implementation", "final review"])
+        self.assertEqual(self.sessions.requests[-1].child, PARENT)
+        head = self.repository.head()
+        (evidence,) = self.final_review_evidence()
+        self.assertEqual(final_review_evidence_head(evidence), head)
+        self.assertIn(CLEAN_FINAL_REVIEW, evidence)
+        self.assertEqual(self.drafts_at_evidence, [True])
+        self.assertFalse(self.github.pull_request().is_draft)
+        parent_comments = self.github.comments(PARENT)
+        self.assertIn(loop_core.STANDARD_RUN.parent_completion_marker, parent_comments[-2])
+        self.assertIn("This run used 3 agent sessions", parent_comments[-2])
+        self.assertLess(parent_comments.index(evidence), len(parent_comments) - 2)
+        line = f"- final review: no finding left for reviewed head `{head}`\n"
+        for summary in (result.stdout, parent_comments[-1], self.github.pull_request().comments[-1]):
+            self.assertIn(line, summary)
+            self.assertIn("- agent sessions: 3\n", summary)
+            self.assertIn("- final outcome: completed", summary)
+        self.assertIn(loop_core.STANDARD_RUN.terminal_summary_marker, parent_comments[-1])
+        for child in (CHILD, SECOND_CHILD):
+            self.assertEqual(self.github.labels(child), {"implemented"})
+        record = json.loads((self.repository.diagnostics() / "run.json").read_text())
+        self.assertEqual(
+            record["final_review"],
+            [{"run_target": PARENT, "outcome": "no_changes", "reviewed_head": head,
+              "summary": CLEAN_FINAL_REVIEW}],
+        )
+        self.assertIn(f"🔎 Starting the final review of #{PARENT}'s whole work.", result.stdout)
+
+    def test_final_review_runs_on_the_review_profile(self):
+        self.new_final_review_run(children=(CHILD,), engines={"review": "claude"})
+        engine = ScriptedEngine(
+            self.repository, EngineResult("committed"), EngineResult("no_changes")
+        )
+
+        result = start_run(self.repository, self.github, engine, "--review", PARENT)
+
+        self.assert_completed(result, sessions=2)
+        self.assertEqual(engine.engines(), ["codex", "claude"])
+        self.assertIn(
+            f"Starting Claude Code final review session (Sol - High) for run target #{PARENT}.",
+            result.stdout,
+        )
+        records = self.repository.session_records()
+        self.assertEqual(
+            [(record["role"], record["issue_number"]) for record in records],
+            [("implementation", CHILD), ("final review", PARENT)],
+        )
+
+    def test_no_final_review_when_the_run_stops_before_every_child_is_implemented(self):
+        blocked = ScriptedResult("blocked", "Needs a product decision.")
+        for name, results, extra in (
+            ("handed to human review", (blocked,), ()),
+            ("child session limit", (
+                ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True),
+            ), ("limit",)),
+            ("dependency deadlock", (ScriptedResult("committed"),), ("deadlock",)),
+            ("interrupted", (KeyboardInterrupt(),), ()),
+        ):
+            with self.subTest(name):
+                self.new_final_review_run(children=(CHILD,))
+                if "limit" in extra:
+                    set_child_session_limit(self.repository, standard=1)
+                if "deadlock" in extra:
+                    self.github.add_issue(SECOND_CHILD, parent=PARENT, blocked_by=[THIRD_CHILD])
+                    self.github.add_issue(THIRD_CHILD, parent=PARENT, blocked_by=[SECOND_CHILD])
+
+                result = self.start_final_review(*results)
+
+                self.assertNotEqual(result.exit_code, 0)
+                self.assertNotIn("final review", self.roles())
+                self.assertEqual(self.final_review_evidence(), [])
+                self.assertNotIn("Starting the final review", result.stdout)
+                self.assertNotIn("- final review:", self.github.comments(PARENT)[-1])
+                pull = self.github.pull_request()
+                self.assertTrue(pull is None or pull.is_draft)
+
+    def test_final_review_commits_rerun_local_gates_and_wait_for_ci_on_the_final_head(self):
+        for name, options in (
+            ("ci_checks", {"ci_checks": True}),
+            ("final_ci_check", {"ci_checks": False, "final_ci_check": True}),
+        ):
+            with self.subTest(name):
+                self.new_final_review_run(**options)
+
+                result = self.start_final_review(
+                    ScriptedResult("committed"), ScriptedResult("committed"),
+                    ScriptedResult("committed", "Fixed a gap across both children."),
+                )
+
+                self.assert_completed(result, sessions=3)
+                head = self.repository.head()
+                reviewed_child_head = self.repository.commits_since(self.repository.base_sha)[-2]
+                self.assertEqual(self.repository.local_gate_heads()[-2:], [reviewed_child_head, head])
+                self.assertEqual(self.github.checked_heads[-1], head)
+                self.assertEqual(self.repository.pushed_head(), head)
+                (evidence,) = self.final_review_evidence()
+                self.assertEqual(final_review_evidence_head(evidence), head)
+                # The final review comes before the CI wait on the head it reviewed.
+                self.assertLess(
+                    result.stdout.index("Starting the final review"),
+                    result.stdout.index("Starting the final CI check"),
+                )
+                self.assertIn(final_ci_green(head), result.stdout)
+                self.assertFalse(self.github.pull_request().is_draft)
+
+    def test_red_ci_after_final_review_commits_is_repaired_by_a_final_ci_correction(self):
+        # The first two rounds answer the children's CI, the third the reviewed head.
+        self.new_final_review_run()
+        self.github.ci = ["success", "success", "failure", "success"]
+
+        result = self.start_final_review(
+            ScriptedResult("committed"), ScriptedResult("committed"),
+            ScriptedResult("committed", "Fixed a gap."), ScriptedResult("committed"),
+        )
+
+        self.assert_completed(result, sessions=4)
+        self.assertEqual(self.roles()[2:], ["final review", "final CI correction"])
+        self.assertIn(final_ci_green(self.repository.head(), corrections=1), result.stdout)
+
+    def test_final_review_without_commits_waits_for_no_more_ci_after_per_child_ci(self):
+        result = self.start_final_review(
+            ScriptedResult("committed"), ScriptedResult("committed"), ScriptedResult("no_changes"),
+        )
+
+        self.assert_completed(result, sessions=3)
+        self.assertEqual(len(self.github.checked_heads), 2)
+        self.assertEqual(len(self.repository.local_gate_heads()), 2)
+        self.assertNotIn("final CI check", result.stdout)
+
+    def test_prompt_names_every_child_the_commit_range_and_each_implementation_evidence(self):
+        self.new_final_review_run(children=())
+        earlier_head = self.commit_prior_child()
+        git(self.repository.path, "push", "-u", "origin", BRANCH)
+        self.github.add_issue(
+            CLOSED_BLOCKER, parent=PARENT, state="closed", labels=(),
+            comments=[legacy_implementation_evidence(self.repository.base_sha, earlier_head)],
+        )
+        self.github.add_issue(
+            SECOND_CHILD, parent=PARENT, labels=("implemented",),
+            comments=[
+                implementation_evidence(loop_core.REVIEWED_RUN, earlier_head),
+                {"author": {"login": "outside-contributor"},
+                 "body": implementation_evidence(loop_core.STANDARD_RUN, "f" * 40)["body"]},
+            ],
+        )
+        self.github.add_issue(CHILD, parent=PARENT)
+
+        result = self.start_final_review(ScriptedResult("committed"), ScriptedResult("no_changes"))
+
+        self.assert_completed(result, sessions=2)
+        prompt = self.sessions.prompts[-1]
+        request = self.sessions.requests[-1]
+        head = self.repository.head()
+        self.assertEqual((request.base_sha, request.head_sha), (self.repository.base_sha, head))
+        self.assertIn(f"Review the whole work of parent #{PARENT} (GitHub issue #{PARENT}).", prompt)
+        self.assertIn(f"Review the exact `{self.repository.base_sha}..{head}`\ncommit range", prompt)
+        self.assertIn(f"- #{CLOSED_BLOCKER} Issue {CLOSED_BLOCKER} (closed)\n", prompt)
+        self.assertIn(f"- #{SECOND_CHILD} Issue {SECOND_CHILD} (open, implemented)\n", prompt)
+        self.assertIn(f"- #{CHILD} Issue {CHILD} (open, implemented)\n", prompt)
+        self.assertIn(
+            f"    Macatia verified implementation commits `{self.repository.base_sha}..{earlier_head}`",
+            prompt,
+        )
+        self.assertIn(
+            f'    {loop_core.ORIGINAL_EVIDENCE_PREFIX}{{"implementation_head":"{earlier_head}"', prompt
+        )
+        self.assertNotIn("f" * 40, prompt, "untrusted evidence is left out")
+        child_evidence = self.github.comments(CHILD)[-1]
+        self.assertIn(child_evidence.splitlines()[1], prompt)
+        self.assertIn("Report as findings only the gaps that\nremain.", prompt)
+
+    def test_findings_hand_the_run_target_to_human_review_with_the_pr_in_draft(self):
+        result = self.start_final_review(
+            ScriptedResult("committed"), ScriptedResult("committed"),
+            ScriptedResult("needs_correction", "One gap remains.", findings=("Handle refunds.",)),
+        )
+
+        self.assertEqual(result.exit_code, 1)
+        for child in (CHILD, SECOND_CHILD):
+            self.assertEqual(self.github.labels(child), {"implemented"})
+        self.assertEqual(self.github.labels(PARENT), {"human-review"})
+        self.assertTrue(self.github.pull_request().is_draft)
+        self.assertEqual(self.final_review_evidence(), [])
+        parent_comments = self.github.comments(PARENT)
+        handoff = parent_comments[-2]
+        self.assertTrue(handoff.startswith(f"{HANDOFF_MARKER}\nMacatia stopped"), handoff)
+        self.assertIn("Handle refunds.", handoff)
+        self.assertIn("children stay implemented", handoff)
+        self.assertFalse(any("parent-completion" in body for body in parent_comments))
+        summary = parent_comments[-1]
+        self.assertIn("- final review: its final review session reported needs_correction\n", summary)
+        self.assertIn("- agent sessions: 3\n", summary)
+        self.assertIn("- final outcome: stopped safely", summary)
+        self.assertIn(f"#{PARENT} was handed to human review because its final review", summary)
+
+    def test_local_gate_failure_after_final_review_commits_hands_the_run_target_over(self):
+        self.new_final_review_run(children=(CHILD,), local_gate_results=("pass", "fail"))
+
+        result = self.start_final_review(ScriptedResult("committed"), ScriptedResult("committed"))
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.github.labels(PARENT), {"human-review"})
+        self.assertIn("local gate failed on the commits of the final review", self.github.comments(PARENT)[-2])
+        child_head, reviewed_head = self.repository.local_gate_heads()
+        self.assertEqual(reviewed_head, self.repository.head())
+        self.assertEqual(self.github.checked_heads, [child_head])
+        self.assertEqual(self.repository.pushed_head(), self.repository.head())
+        self.assertEqual(self.final_review_evidence(), [])
+
+    def test_standalone_issue_gets_final_review_evidence_then_a_ready_pr(self):
+        self.new_final_review_run(children=())
+        self.github.add_issue(STANDALONE)
+        self.observe_pull_request_when_evidence_is_posted()
+
+        result = self.start_final_review(
+            ScriptedResult("committed"), ScriptedResult("no_changes"), run_target=STANDALONE
+        )
+
+        self.assertEqual(result.exit_code, 0, result.stderr)
+        self.assertEqual(self.roles(), ["implementation", "final review"])
+        (evidence,) = self.final_review_evidence(STANDALONE)
+        self.assertEqual(final_review_evidence_head(evidence), self.repository.head())
+        self.assertEqual(self.drafts_at_evidence, [True])
+        self.assertFalse(self.github.pull_request().is_draft)
+        self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone"})
+        self.assertIn("standalone issue is its own only child", self.sessions.prompts[-1])
 
 
 class HandoffPublicationTests(VerificationTestCase):

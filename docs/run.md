@@ -32,6 +32,47 @@ A reviewed run says at startup which review mode it uses. In either mode it
 requires `models.review`. `--no-review` starts a standard run whatever the
 review mode.
 
+### The final review stage
+
+In final review, once every child of the run target is implemented (closed, or
+labelled `implemented`), the run starts one **final review session** before it
+finishes. A run that stops first (a child handed to human review, a dependency
+deadlock, an exhausted child session limit, an interruption) starts none.
+
+The final review session runs on the review model profile, belongs to the run
+rather than to any child, and counts toward no child's child session limit; it
+counts in the run's agent sessions. Its prompt, assembled by Python, names the run
+target, every child (closed ones and those implemented in earlier runs included)
+with its latest trusted implementation evidence, and the exact commit range from
+the run branch's merge base with the base branch to the head. It checks the whole
+work against the run target and all its children, fixes what it can and commits,
+and reports as findings only the gaps that remain.
+
+When the final review session commits, the enabled local gates run on its head.
+Then, whenever CI is enabled in any form, the run waits for CI on the final head:
+with `ci_checks = true` after a final review that committed, and always with an
+active `final_ci_check`. Red CI is repaired by final CI corrections under their
+limit of three (see [the final CI check](verification.md#final-ci-check)). The
+final review always comes before that CI wait.
+
+A clean result (`committed` or `no_changes`) pushes the reviewed head and leaves
+**final review evidence** on the run target: a trusted comment with a hidden
+`macatia-final-review-evidence` marker recording the reviewed head, the reviewed
+commit range and the session's summary. Only then, once the CI wait passes, does
+parent completion happen as in a standard run and the cumulative draft PR is
+marked ready. The parent completion comment and the terminal summary name the
+reviewed head, and the terminal summary's agent sessions include the final
+review session; `run.json` records its result under `final_review`. A run in
+final review keeps the standard run's parent completion and terminal summary
+markers (see [ADR 0004](adr/0004-a-run-in-final-review-keeps-the-standard-run-markers.md)).
+
+Any other result (`needs_correction`, `blocked`, `failed`), a session Macatia
+rejects, or a local gate that fails on the final review's commits hands the run
+target to human review with a handoff comment listing the remaining findings or
+the diagnostic. Its commits are pushed, the children stay `implemented` with their
+implementation evidence, the cumulative draft PR stays a draft, and the run ends
+stopped, not completed.
+
 A run starts on a run target: an issue that is not a sub-issue of another
 issue, as GitHub's native sub-issue relationship records it. A run target with
 sub-issues is a parent issue, and its sub-issues are the children the run works
