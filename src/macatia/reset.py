@@ -23,6 +23,7 @@ from .github import GitHub
 from .loop_core import (
     CHILD_BASE_MARKER_PREFIX,
     DEFAULT_CONFIG_PATH,
+    FINAL_REVIEW_EVIDENCE_PREFIX,
     HANDOFF_MARKER,
     ORIGINAL_EVIDENCE_PREFIX,
     RESET_MARKER_PREFIX,
@@ -52,6 +53,8 @@ MACATIA_MARKERS = (
     ORIGINAL_EVIDENCE_PREFIX,
     STANDARD_RUN.implementation_evidence_prefix,
     CHILD_BASE_MARKER_PREFIX,
+    FINAL_REVIEW_EVIDENCE_PREFIX,
+    # Final review handoff comments carry it too.
     HANDOFF_MARKER,
     *(marker for mode in (STANDARD_RUN, REVIEWED_RUN)
       for marker in (mode.parent_completion_marker, mode.terminal_summary_marker)),

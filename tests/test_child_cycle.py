@@ -362,7 +362,7 @@ class HumanReviewTests(unittest.TestCase):
         self.assert_handed_off(
             tools, result,
             "child session limit exhausted before review",
-            "Macatia stopped before review because the child session limit of 1 (reviewed run) "
+            "Macatia stopped before review because the child session limit of 1 (child review) "
             "was exhausted. This child remains open for human review.",
             cause=HandoffCause.CHILD_SESSION_LIMIT,
         )
@@ -377,7 +377,7 @@ class HumanReviewTests(unittest.TestCase):
 
         self.assert_handed_off(
             tools, result, "child session limit exhausted before CI correction", "lint failed",
-            "child session limit of 1 (standard run)",
+            "child session limit of 1 (standard run or final review)",
             cause=HandoffCause.CHILD_SESSION_LIMIT,
         )
 

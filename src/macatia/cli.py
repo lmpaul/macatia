@@ -20,9 +20,10 @@ USAGE = """usage: macatia <command> [options]
 commands:
   run [--review | --no-review] [--caffeinate | --no-caffeinate] [--tmux] [--worktree] [--config PATH] [ISSUE]
       Standard run: implement the children of a parent ISSUE, or a standalone ISSUE,
-      giving each child at most 5 agent sessions (9 in a reviewed run).
+      giving each child at most 5 agent sessions (9 in a reviewed run in child review).
       Without ISSUE, at a terminal, offers the startable run targets to choose from.
-      --review starts a reviewed run, which adds an independent review session per child.
+      --review starts a reviewed run in the configured review_mode: "child" (the default) adds an
+      independent review session per child; "final" reviews the run target's whole work once.
       --no-review starts a standard run, even when review_by_default = true in the configuration.
       --caffeinate keeps the machine from idle-sleeping until the run ends.
       --no-caffeinate lets the machine sleep, even when caffeinate_by_default = true in the configuration.
@@ -44,8 +45,8 @@ commands:
   configure [--config PATH]
       Change sections of an existing configuration (default ./macatia.toml) from a menu; saves only what changed.
   update-config [--config PATH]
-      Add each defaulted setting the configuration leaves out (review_by_default, caffeinate_by_default,
-      label roles), with its default value and init's comment, keeping the rest of the file;
+      Add each defaulted setting the configuration leaves out (review_by_default, review_mode,
+      caffeinate_by_default, label roles), with its default value and init's comment, keeping the rest of the file;
       then offer to create the labels missing on GitHub.
   close [--yes | --force] [--config PATH] [ISSUE]
       Closure: once every open child of a parent ISSUE is implemented and ISSUE is in human review,

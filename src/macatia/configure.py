@@ -13,7 +13,9 @@ from typing import NamedTuple
 
 from .config import (
     BACKUP_MODEL_KEY,
+    CHILD_REVIEW,
     DEFAULT_CHILD_SESSION_LIMITS,
+    FINAL_REVIEW,
     MODEL_ROLES,
     AgentProfile,
     MacatiaConfig,
@@ -121,6 +123,7 @@ SECTIONS: dict[str, tuple[Callable[[MacatiaConfig], str], Callable[[str], bool]]
         lambda key: key in {"repository", "base_branch", "remote"},
     ),
     "Reviewed runs by default": (lambda config: _on(config.review_by_default), lambda key: key == "review_by_default"),
+    "Review mode": (lambda config: f"{config.review_mode} review", lambda key: key == "review_mode"),
     "Keep the machine awake by default": (
         lambda config: _on(config.caffeinate_by_default),
         lambda key: key == "caffeinate_by_default",
@@ -141,6 +144,7 @@ def _toml_values(config: MacatiaConfig, root: pathlib.Path) -> dict[str, str]:
         "remote": config.remote,
         "trusted_authors": ", ".join(sorted(config.trusted_authors)),
         "review_by_default": str(config.review_by_default).lower(),
+        "review_mode": config.review_mode,
         "caffeinate_by_default": str(config.caffeinate_by_default).lower(),
         **{f"labels.{key}": value for key, value in config.labels.items()},
         **{
@@ -380,6 +384,16 @@ def _edit_verification(prompter: Prompter, config: MacatiaConfig, state: EditSta
             prompter.say(f"  ⚠ {names} missing: `macatia check` will fail until {'they exist' if len(missing) > 1 else 'it exists'}.")
 
 
+def _with_review_profile(prompter: Prompter, config: MacatiaConfig, state: EditState, reason: str) -> MacatiaConfig:
+    """config with a review profile, asked after saying reason when there is none."""
+    if "review" in config.models:
+        return config
+    prompter.say(f"  {reason}")
+    profile = _ask_role_profile(prompter, config, state, "review")
+    prompter.say(f"  ✓ review: {_profile_summary(profile)}")
+    return dataclasses.replace(config, models={**config.models, "review": profile})
+
+
 def _edit_review_by_default(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     enabled = config.review_by_default
     answer = prompter.choice(
@@ -393,13 +407,32 @@ def _edit_review_by_default(prompter: Prompter, config: MacatiaConfig, state: Ed
     )
     if answer == BACK:
         return config
-    if not enabled and "review" not in config.models:
-        prompter.say("  Reviewed runs need a model profile for review.")
-        profile = _ask_role_profile(prompter, config, state, "review")
-        config = dataclasses.replace(config, models={**config.models, "review": profile})
-        prompter.say(f"  ✓ review: {_profile_summary(profile)}")
+    if not enabled:
+        config = _with_review_profile(prompter, config, state, "Reviewed runs need a model profile for review.")
     prompter.say(f"  Reviewed runs by default {_on(not enabled)}")  # Turning it off keeps the review profile.
     return dataclasses.replace(config, review_by_default=not enabled)
+
+
+# Each review mode by the answer that chooses it, with what it does.
+REVIEW_MODE_CHOICES = {
+    "Child review": (CHILD_REVIEW, "a review session for each child"),
+    "Final review": (FINAL_REVIEW, "one final review session of the whole run target once every child is implemented"),
+}
+
+
+def _edit_review_mode(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
+    current = config.review_mode
+    answer = prompter.choice(
+        f"Review mode: {current} review — how should a reviewed run review its work?",
+        [*((name, description) for name, (_, description) in REVIEW_MODE_CHOICES.items()), (BACK, "")],
+        BACK,
+    )
+    if answer == BACK or (mode := REVIEW_MODE_CHOICES[answer][0]) == current:
+        return config
+    if mode == FINAL_REVIEW:
+        config = _with_review_profile(prompter, config, state, "Final review needs a model profile for review.")
+    prompter.say(f"  Review mode: {mode} review")
+    return dataclasses.replace(config, review_mode=mode)
 
 
 def _edit_caffeinate_by_default(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
@@ -540,6 +573,7 @@ EDITORS: dict[str, Callable[[Prompter, MacatiaConfig, EditState], MacatiaConfig]
     "Verification": _edit_verification,
     "Git": _edit_git,
     "Reviewed runs by default": _edit_review_by_default,
+    "Review mode": _edit_review_mode,
     "Keep the machine awake by default": _edit_caffeinate_by_default,
     "Child session limits": _edit_child_session_limits,
     "Run worktree setup": _edit_worktree_setup,

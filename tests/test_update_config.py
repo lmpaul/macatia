@@ -27,11 +27,15 @@ REVIEW = """\
 # true makes every run a reviewed run; macatia run --no-review overrides it.
 review_by_default = false
 """
+REVIEW_MODE = """\
+# How a reviewed run reviews its work: "child" (a review session per child) or "final" (one review of the whole run target).
+review_mode = "child"
+"""
 CAFFEINATE = """\
 # true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.
 caffeinate_by_default = false
 """
-TOP_LEVEL = REVIEW + CAFFEINATE
+TOP_LEVEL = REVIEW + REVIEW_MODE + CAFFEINATE
 LIMITS_COMMENT = """\
 # The most agent sessions one child may receive in a run. The correction limit (three corrections)
 # bounds a child at 4 sessions in a standard run and 8 in a reviewed run, so higher values have no effect.
@@ -167,9 +171,10 @@ class UpdateConfigTests(unittest.TestCase):
     def test_missing_top_level_settings_are_added_before_the_first_table_with_their_comments(self):
         declared = self.config.read_text()
         for kept, completed, added in (
-            ("", TOP_LEVEL, ["review_by_default", "caffeinate_by_default"]),
-            (REVIEW, TOP_LEVEL, ["caffeinate_by_default"]),
-            (CAFFEINATE, CAFFEINATE + REVIEW, ["review_by_default"]),
+            ("", TOP_LEVEL, ["review_by_default = false", 'review_mode = "child"', "caffeinate_by_default = false"]),
+            (REVIEW + REVIEW_MODE, TOP_LEVEL, ["caffeinate_by_default = false"]),
+            (REVIEW + CAFFEINATE, REVIEW + CAFFEINATE + REVIEW_MODE, ['review_mode = "child"']),
+            (REVIEW_MODE + CAFFEINATE, REVIEW_MODE + CAFFEINATE + REVIEW, ["review_by_default = false"]),
         ):
             with self.subTest(added=added):
                 self.config.write_text(declared.replace(TOP_LEVEL, kept))
@@ -180,10 +185,33 @@ class UpdateConfigTests(unittest.TestCase):
                 self.assertEqual(self.config.read_text(), declared.replace(TOP_LEVEL, completed))
                 self.assertEqual(
                     [line for line in output.splitlines() if "added" in line],
-                    [f"✓ macatia.toml: added {key} = false" for key in added],
+                    [f"✓ macatia.toml: added {setting}" for setting in added],
                 )
                 self.assertIn("✓ all 10 labels present on lmpaul/buyr", output)
                 self.assertIn("Commit macatia.toml", output)
+
+    def test_a_missing_review_mode_is_added_with_its_comment_keeping_a_declared_one(self):
+        declared = self.config.read_text()
+        text = declared.replace(REVIEW_MODE, "").replace("[labels]\n", "# Our names.\n[labels]\n")
+        self.config.write_text(text)
+        self.assertIn("review_mode", config.load_config(self.config, self.root).defaulted_settings)
+
+        code, output = self.run_update()
+
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.config.read_text(), text.replace(CAFFEINATE, CAFFEINATE + REVIEW_MODE))
+        self.assertEqual(
+            [line for line in output.splitlines() if "added" in line],
+            ['✓ macatia.toml: added review_mode = "child"'],
+        )
+        self.assertNotIn("review_mode", config.load_config(self.config, self.root).defaulted_settings)
+
+        final = declared.replace('review_mode = "child"', 'review_mode = "final"')
+        self.config.write_text(final)
+        code, output = self.run_update()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(self.config.read_text(), final)
+        self.assertIn("nothing to add", output)
 
     def test_a_file_init_wrote_gets_back_the_lines_init_writes(self):
         rendered = init.render(config.load_config(self.config, self.root, require_review=False), self.root)
@@ -232,7 +260,7 @@ class UpdateConfigTests(unittest.TestCase):
         code, output = self.run_update()
 
         self.assertEqual(code, 1)
-        self.assertIn("cannot add review_by_default, caffeinate_by_default to this file's layout: add them by hand", output)
+        self.assertIn("cannot add review_by_default, review_mode, caffeinate_by_default to this file's layout: add them by hand", output)
         self.assertEqual(self.config.read_text(), text)
 
     def test_top_level_settings_and_label_roles_are_added_together(self):
@@ -249,6 +277,7 @@ class UpdateConfigTests(unittest.TestCase):
         )
         self.assertIn(
             "✓ macatia.toml: added review_by_default = false\n"
+            '✓ macatia.toml: added review_mode = "child"\n'
             "✓ macatia.toml: added caffeinate_by_default = false\n"
             '✓ macatia.toml: added standalone = "standalone"\n',
             output,

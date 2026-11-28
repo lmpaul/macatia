@@ -33,6 +33,9 @@ class SessionRequest:
     diagnostic: str = ""
     base_sha: str = ""
     head_sha: str = ""
+    # The summary of the session whose findings a final review correction, or the final review
+    # session after it, receives.
+    summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -215,10 +218,11 @@ def run_child_cycle(
         return _ChildCycle(child, base_sha, session_limit, adapters, review, gate_base).run()
     except ChildSessionLimitExhausted as error:
         cause = HandoffCause.CHILD_SESSION_LIMIT
-        mode = "reviewed" if review else "standard"
+        # Runs in final review use the standard run's limit, and their children are not reviewed.
+        mode = "child review" if review else "standard run or final review"
         body = (
             f"Macatia stopped before {error.role} because the child session limit of "
-            f"{session_limit.maximum} ({mode} run) was exhausted. "
+            f"{session_limit.maximum} ({mode}) was exhausted. "
             f"This child remains open for human review.{_diagnostic_detail(error.diagnostic)}"
         )
         reason = str(error)

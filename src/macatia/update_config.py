@@ -34,6 +34,7 @@ from .init import (
     TOP_LEVEL_COMMENTS,
     child_session_limit_table,
     final_ci_check_setting,
+    toml_scalar,
     top_level_setting,
 )
 
@@ -188,7 +189,7 @@ def completed_text(path: pathlib.Path) -> tuple[str, dict[str, str]]:
         raise UpdateError(f"cannot add {', '.join(limit_values)} to this file's layout: add them by hand")
     if missing_final_ci_check and completed.get(VERIFICATION_TABLE, {}).get(FINAL_CI_CHECK) is not False:
         raise UpdateError(f"cannot add {', '.join(verification_values)} to this file's layout: add it by hand")
-    added = {key: str(DEFAULTS[key]).lower() for key in keys}
+    added = {key: toml_scalar(DEFAULTS[key]) for key in keys}
     roles_values = {role: json.dumps(name, ensure_ascii=False) for role, name in roles.items()}
     return text, added | roles_values | limit_values | verification_values
 

@@ -493,13 +493,22 @@ def _string(value: str) -> str:
 # The comment init writes above each top-level setting a configuration may leave out, in the file's order.
 TOP_LEVEL_COMMENTS = {
     "review_by_default": "# true makes every run a reviewed run; macatia run --no-review overrides it.",
+    "review_mode": (
+        '# How a reviewed run reviews its work: "child" (a review session per child) or "final"'
+        " (one review of the whole run target)."
+    ),
     "caffeinate_by_default": "# true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.",
 }
 
 
-def top_level_setting(key: str, value: bool) -> list[str]:
+def toml_scalar(value: bool | str) -> str:
+    """A boolean or string setting's value as TOML writes it."""
+    return str(value).lower() if isinstance(value, bool) else _string(value)
+
+
+def top_level_setting(key: str, value: bool | str) -> list[str]:
     """The lines init writes for a top-level setting a configuration may leave out: its comment, then key = value."""
-    return [TOP_LEVEL_COMMENTS[key], f"{key} = {str(value).lower()}"]
+    return [TOP_LEVEL_COMMENTS[key], f"{key} = {toml_scalar(value)}"]
 
 
 def final_ci_check_setting(value: bool) -> list[str]:

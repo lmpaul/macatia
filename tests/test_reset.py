@@ -999,6 +999,10 @@ class ResetTests(unittest.TestCase):
                 for mode in (loop_core.STANDARD_RUN, loop_core.REVIEWED_RUN)
                 for marker in (mode.parent_completion_marker, mode.terminal_summary_marker)
             ),
+            trusted(
+                f'{loop_core.FINAL_REVIEW_EVIDENCE_PREFIX}{{"final_review_head":"{sha("reviewed")}"}} -->\n'
+                "Macatia's final review session left no finding."
+            ),
             reset_marker(),
         ]
 

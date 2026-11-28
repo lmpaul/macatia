@@ -387,7 +387,7 @@ class ReadinessTests(unittest.TestCase):
     def declare_every_defaulted_setting(self):
         text = self.config.read_text().replace(
             "\n[labels]",
-            "review_by_default = false\ncaffeinate_by_default = false\n\n[labels]",
+            'review_by_default = false\nreview_mode = "child"\ncaffeinate_by_default = false\n\n[labels]',
         )
         text = text.replace("ci_checks = true\n", "ci_checks = true\nfinal_ci_check = false\n")
         self.config.write_text(text + "\n[child_session_limit]\nstandard = 5\nreviewed = 9\n")
@@ -399,7 +399,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn(
             "ℹ Defaulted settings macatia.toml leaves out caffeinate_by_default,"
             " child_session_limit.reviewed, child_session_limit.standard, review_by_default,"
-            " verification.final_ci_check, so their default values are used",
+            " review_mode, verification.final_ci_check, so their default values are used",
             output,
         )
         self.assertIn("→ macatia update-config writes them", output)
@@ -643,6 +643,39 @@ class ReadinessTests(unittest.TestCase):
         self.assertEqual(code, 1)
         self.assertIn("configuration.models is missing keys: review", output)
         self.assertEqual(self.commands, [])
+
+    def test_review_role_is_checked_in_final_review_as_in_child_review(self):
+        for mode in ("child", "final"):
+            for setting, with_review, checked in (
+                (None, False, False),
+                ("true", False, True),
+                (None, True, True),
+            ):
+                with self.subTest(mode=mode, setting=setting, with_review=with_review):
+                    self.setUp()
+                    self.use_review_profile("claude")
+                    self.config.write_text(f'review_mode = "{mode}"\n' + self.config.read_text())
+                    if setting is not None:
+                        self.set_review_by_default(setting)
+                    code, output = self.run_check(with_review=with_review)
+                    self.assertEqual(code, 0, output)
+                    expected = [("claude", "--help"), ("codex", "exec", "--help")] if checked else [("codex", "exec", "--help")]
+                    self.assertEqual(self.help_requests(), expected)
+
+    def test_final_review_by_default_without_review_profile_is_reported(self):
+        text = self.config.read_text()
+        start = text.index("[models.review]")
+        self.config.write_text('review_mode = "final"\n' + text[:start] + text[text.index("[models.correction]"):])
+        self.set_review_by_default("true")
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn("configuration.models is missing keys: review", output)
+
+    def test_invalid_review_mode_is_reported(self):
+        self.config.write_text('review_mode = "both"\n' + self.config.read_text())
+        code, output = self.run_check()
+        self.assertEqual(code, 1)
+        self.assertIn('configuration.review_mode must be "child" or "final"', output)
 
     def test_check_has_no_no_review_flag(self):
         with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit) as raised:

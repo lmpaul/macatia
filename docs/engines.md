@@ -56,7 +56,9 @@ a valid `committed` result is accepted. Agent outcomes (`failed`, `blocked`,
 `needs_correction`, `no_changes`), rejected Git effects, and interruptions are
 not engine failures.
 
-Without `models.backup`, an engine failure stops the run safely. With one, Macatia
+Without `models.backup`, an engine failure stops the run safely; during the final
+review, it or an engine failure of the backup also hands the run target to human
+review (see [The final review stage](run.md#the-final-review-stage)). With one, Macatia
 drops the failed session's commits and uncommitted files, so they are never
 pushed, and replays the same session with the backup from the head the failed
 session started from. The backup then runs every later session of the run,

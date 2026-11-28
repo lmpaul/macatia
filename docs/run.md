@@ -3,7 +3,7 @@
 ```sh
 macatia run                  # at a terminal, pick among the startable run targets
 macatia run 123              # standard run: implement the children of parent issue #123
-macatia run --review 123     # reviewed run: adds an independent review session per child
+macatia run --review 123     # reviewed run, in the configured review mode
 macatia run --no-review 123  # standard run, even when review_by_default = true
 macatia run --caffeinate 123 # keep the machine awake until the run ends
 macatia run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
@@ -14,9 +14,105 @@ macatia run --worktree 123   # run in a run worktree, away from your own checkou
 Each run executes the loop over the runnable children of its run target: a
 parent issue's sub-issues, or a standalone issue itself.
 `macatia run` starts a standard run, with no review session.
-`macatia run --review` starts a reviewed run: the same loop, plus a review
-session for each child once its local gates pass, repeated after every
-correction session that follows a review (issue, local gate, or CI).
+`macatia run --review` starts a reviewed run: the same loop, with review
+sessions added in the repository's **review mode**, set by `review_mode` in
+`macatia.toml` (see [repository settings](configuration.md#repository-settings)).
+There is no flag for it: a review mode is chosen for the repository, not per run.
+
+- **Child review** (`review_mode = "child"`, the default when the key is
+  absent): a review session for each child once its local gates pass, repeated
+  after every correction session that follows a review (issue, local gate, or CI).
+- **Final review** (`review_mode = "final"`): children go through the loop
+  exactly as in a standard run, with no review session, the standard run's child
+  session limit, and its implementation evidence; the run target's whole work
+  is reviewed once every child is implemented, by a final review session that
+  checks the work is complete and done well, which a green CI says nothing of.
+
+A reviewed run says at startup which review mode it uses. In either mode it
+requires `models.review`. `--no-review` starts a standard run whatever the
+review mode.
+
+### The final review stage
+
+In final review, once every child of the run target is implemented (closed, or
+labelled `implemented`), the run starts one **final review session** before it
+finishes. A run that stops first (a child handed to human review, a dependency
+deadlock, an exhausted child session limit, an interruption) starts none.
+
+The final review session runs on the review model profile, belongs to the run
+rather than to any child, and counts toward no child's child session limit; it
+counts in the run's agent sessions. Its prompt, assembled by Python, names the run
+target, every child (closed ones and those implemented in earlier runs included)
+with its latest trusted implementation evidence, and the exact commit range from
+the run branch's merge base with the base branch to the head. It checks the whole
+work against the run target and all its children, fixes what it can and commits,
+and reports as findings only the gaps that remain.
+
+A `needs_correction` result starts a **final review correction** on the
+correction model profile. It receives the findings and summary the final review
+session left, and the shared context points at that session's full result. It
+belongs to the run, counts toward no child's child session limit, and counts in
+the run's agent sessions. Another final review session follows it, receiving the
+previous findings and summary to check they were addressed. A run starts at most
+three final review corrections, counted separately from its final CI corrections;
+each run gets a fresh count.
+
+When a final review session or final review correction commits, the enabled local
+gates run on its head.
+Then, whenever CI is enabled in any form, the run waits for CI on the final head:
+with `ci_checks = true` after a final review that committed (a final review
+correction always does), and always with an
+active `final_ci_check`. Red CI is repaired by final CI corrections under their
+limit of three (see [the final CI check](verification.md#final-ci-check)). The
+final review always comes before that CI wait.
+
+After a clean result (`committed` or `no_changes`) and the CI wait that follows
+it, the run pushes its head and leaves **final review evidence** on the run
+target: a trusted comment with a hidden `macatia-final-review-evidence` marker
+recording the reviewed head (the head the final review session left, under any
+final CI correction), the reviewed commit range and the session's summary. Only
+then does parent completion happen as in a standard run and the cumulative draft
+PR is marked ready. The parent completion comment and the terminal summary name the
+reviewed head, and the terminal summary's agent sessions include the final
+review sessions and final review corrections, which the terminal summary also
+counts on its final review line; `run.json` records each final review session's
+result under `final_review` and each final review correction under
+`final_review_corrections`. A run in
+final review keeps the standard run's parent completion and terminal summary
+markers (see [ADR 0004](adr/0004-a-run-in-final-review-keeps-the-standard-run-markers.md)).
+
+A `blocked` or `failed` result from a final review session or final review
+correction, a `needs_correction` result once the three final review corrections are
+used, a final review correction without a new commit, a session Macatia rejects,
+or a local gate that fails on the final review's commits hands the run target to
+human review with a handoff comment listing the remaining findings or the
+diagnostic. The terminal summary reports the failure and the final review sessions
+and final review corrections it used. Its commits are pushed, the children stay
+`implemented` with their implementation evidence, the cumulative draft PR stays a
+draft, and the run ends stopped, not completed.
+
+An engine failure in a final review session or final review correction is
+handled as elsewhere in a run (see
+[Engine failures and the backup](engines.md#engine-failures-and-the-backup)):
+with `models.backup`, the backup replays that session from the head it started
+from, and the replay counts as one more agent session but toward no final review
+correction. Without a backup, or when the backup fails too, Macatia drops what the
+failed session left and hands the run target to human review with a handoff
+comment naming the engine failure, the PR left in draft and the run stopped.
+
+Final review evidence holds only for the head it names. A run in final review that
+finds every child implemented reads the run target's trusted final review evidence
+newer than its latest trusted reset marker; evidence from an untrusted author, or
+older than a reset marker, is ignored. When none names the current head, the run
+starts the final review directly, with a fresh count of final review corrections:
+a retry after a failed final review or after fixing things by hand, a run target
+whose children were implemented under child review, or children added after an
+earlier clean final review. When evidence names the current head, there is nothing
+left to review: the run starts no session and ends as a standard run would. The
+evidence names the reviewed head, so commits a final CI correction made on top of
+it get a final review on the next run. A standalone issue behaves the same: in
+final review, an implemented standalone issue with no triage label other than
+`ready-for-agent` may be run again, though the picker does not offer it.
 
 A run starts on a run target: an issue that is not a sub-issue of another
 issue, as GitHub's native sub-issue relationship records it. A run target with
@@ -31,7 +127,7 @@ that lookup stops the run as an error.
 
 A run target without sub-issues is a standalone issue: the run's only child is
 the issue itself, and it goes through the same loop as any child (child cycle,
-corrections, review session in a reviewed run, implementation evidence,
+corrections, review session in a run in child review, implementation evidence,
 cumulative draft PR). At startup, before the run branch is offered and before
 anything is written on GitHub, a standalone issue must be authored by a trusted
 author, open, and a ready child: its only triage label and only lifecycle label
@@ -44,7 +140,7 @@ branch. Otherwise the run is refused with the reason, such as
 `standalone issue #42 waits on #41, neither closed nor implemented on this branch`.
 A run on the base branch offers `macatia/issue-<N>` as for a parent, and the
 issue, as its run's only child, gets the child session limit (by default five
-sessions in a standard run, nine in a reviewed run). The draft PR is titled
+sessions in a standard run or a run in final review, nine in a run in child review). The draft PR is titled
 `Implement Macatia issue #N`, still requires a human merge and carries no closing keyword. Once
 the issue is implemented, it carries only the `implemented` lifecycle label and
 its implementation evidence, the PR is marked ready, and the terminal summary is
@@ -134,11 +230,11 @@ The loop of a standard run is:
    only a human merges.
 
 The **child session limit** bounds the agent sessions one child may receive in
-a run: by default 5 in a standard run and 9 in a reviewed run, a child's worst
+a run: by default 5 in a standard run or a run in final review and 9 in a run in child review, a child's worst
 case under the correction limit, plus one; `[child_session_limit]` in
 `macatia.toml` sets each value (see [repository settings](configuration.md#repository-settings)).
 That worst case is four sessions in a standard run (one implementation session
-and three correction sessions) and eight in a reviewed run (the same, with a review session after each of them); the plus
+and three correction sessions) and eight in a run in child review (the same, with a review session after each of them); the plus
 one leaves room for a backup replay, so at these values the correction limit
 always binds first. A lower value stops a child earlier; a value above the
 worst case has no effect beyond that room for a backup replay. Implementation,
@@ -150,7 +246,7 @@ resumed from `agent-working` included, so relabelling a handed-off child
 `ready-for-agent` and rerunning gives it the full limit again. The limit counts
 sessions, not tokens or time. A child that exhausts its limit is handed to
 human review and stops the run, with a handoff comment such as "Macatia stopped
-before review because the child session limit of 9 (reviewed run) was
+before review because the child session limit of 9 (child review) was
 exhausted.", followed by the last diagnostic or remaining findings; the next
 action is to relabel it `ready-for-agent`, then rerun. The run summary and the
 parent completion still report the total number of agent sessions the run used.
@@ -168,10 +264,11 @@ With `review_by_default = true` in `macatia.toml`, `macatia run` starts a
 reviewed run without `--review`, and says so once at startup;
 `macatia run --no-review` starts a standard run instead. `--no-review` is
 also accepted when the setting is off. `--review` together with `--no-review`
-is a usage error. A run made reviewed by the setting requires `models.review`
-and gets a reviewed run's child session limit; `--no-review` gives it a standard
-run's. With the setting on,
-`macatia check` also checks the review role, as `check --review` does.
+is a usage error. A run made reviewed by the setting runs in the configured
+review mode, requires `models.review`, and gets that mode's child session
+limit; `--no-review` gives it a standard run's. With the setting on, whatever
+the review mode, `macatia check` also checks the review role, as
+`check --review` does.
 
 An implementation or correction that returns `needs_correction` must still pass
 its outstanding findings to an issue correction before publication. The
@@ -209,7 +306,8 @@ list `.macatia/`.
 A standard run's implementation evidence uses separate markers (named
 `macatia-experimental-*`, a name older than the standard run being the default) and records the
 verified head rather than claiming independent review. Each kind of run only
-recovers its own interrupted publication markers: a child that is
+recovers its own interrupted publication markers, a run in final review those
+of a standard run: a child that is
 `ready-for-agent` or `agent-working`, whose latest update is that run kind's
 trusted implementation evidence with commits on the current branch, is marked
 `implemented` without another session. Existing `implemented` labels
