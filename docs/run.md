@@ -48,9 +48,20 @@ the run branch's merge base with the base branch to the head. It checks the whol
 work against the run target and all its children, fixes what it can and commits,
 and reports as findings only the gaps that remain.
 
-When the final review session commits, the enabled local gates run on its head.
+A `needs_correction` result starts a **final review correction** on the
+correction model profile. It receives the findings and summary the final review
+session left, and the shared context points at that session's full result. It
+belongs to the run, counts toward no child's child session limit, and counts in
+the run's agent sessions. Another final review session follows it, receiving the
+previous findings and summary to check they were addressed. A run starts at most
+three final review corrections, counted separately from its final CI corrections;
+each run gets a fresh count.
+
+When a final review session or final review correction commits, the enabled local
+gates run on its head.
 Then, whenever CI is enabled in any form, the run waits for CI on the final head:
-with `ci_checks = true` after a final review that committed, and always with an
+with `ci_checks = true` after a final review that committed (a final review
+correction always does), and always with an
 active `final_ci_check`. Red CI is repaired by final CI corrections under their
 limit of three (see [the final CI check](verification.md#final-ci-check)). The
 final review always comes before that CI wait.
@@ -63,14 +74,20 @@ final CI correction), the reviewed commit range and the session's summary. Only
 then does parent completion happen as in a standard run and the cumulative draft
 PR is marked ready. The parent completion comment and the terminal summary name the
 reviewed head, and the terminal summary's agent sessions include the final
-review session; `run.json` records its result under `final_review`. A run in
+review sessions and final review corrections, which the terminal summary also
+counts on its final review line; `run.json` records each final review session's
+result under `final_review` and each final review correction under
+`final_review_corrections`. A run in
 final review keeps the standard run's parent completion and terminal summary
 markers (see [ADR 0004](adr/0004-a-run-in-final-review-keeps-the-standard-run-markers.md)).
 
-Any other result (`needs_correction`, `blocked`, `failed`), a session Macatia
-rejects, or a local gate that fails on the final review's commits hands the run
-target to human review with a handoff comment listing the remaining findings or
-the diagnostic. Its commits are pushed, the children stay `implemented` with their
+A `blocked` or `failed` result from a final review session or final review
+correction, a `needs_correction` result once the three final review corrections are
+used, a final review correction without a new commit, a session Macatia rejects,
+or a local gate that fails on the final review's commits hands the run target to
+human review with a handoff comment listing the remaining findings or the
+diagnostic. The terminal summary reports the failure and the final review sessions
+and final review corrections it used. Its commits are pushed, the children stay `implemented` with their
 implementation evidence, the cumulative draft PR stays a draft, and the run ends
 stopped, not completed.
 

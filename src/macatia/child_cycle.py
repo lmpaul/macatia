@@ -33,6 +33,9 @@ class SessionRequest:
     diagnostic: str = ""
     base_sha: str = ""
     head_sha: str = ""
+    # The summary of the session whose findings a final review correction, or the final review
+    # session after it, receives.
+    summary: str = ""
 
 
 @dataclass(frozen=True)
