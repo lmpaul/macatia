@@ -4624,6 +4624,11 @@ class FinalReviewRerunTests(FinalReviewTestCase):
     """A run in final review that finds every child implemented reviews the run target's work
     again unless trusted final review evidence covers the current head."""
 
+    def add_run_target_comments(self, *comments):
+        self.github.issues[PARENT]["comments"].extend(
+            {"id": self.github._comment_id(), **comment} for comment in comments
+        )
+
     def implemented_by_an_earlier_run(self, *, comments=()):
         """A run target whose children an earlier run implemented on the run branch, with
         `comments` on the run target."""
@@ -4634,9 +4639,7 @@ class FinalReviewRerunTests(FinalReviewTestCase):
                 child, parent=PARENT, labels=("implemented",),
                 comments=[implementation_evidence(loop_core.STANDARD_RUN, head)],
             )
-        self.github.issues[PARENT]["comments"].extend(
-            {"id": self.github._comment_id(), **comment} for comment in comments
-        )
+        self.add_run_target_comments(*comments)
         return self.repository.head()
 
     # The retry of each test below would start a final review session, so the absence of one
@@ -4655,9 +4658,7 @@ class FinalReviewRerunTests(FinalReviewTestCase):
 
     def test_evidence_for_the_current_head_leaves_nothing_to_do(self):
         head = self.implemented_by_an_earlier_run(comments=[final_review_evidence_comment("f" * 40)])
-        self.github.issues[PARENT]["comments"].append(
-            {"id": self.github._comment_id(), **final_review_evidence_comment(head)}
-        )
+        self.add_run_target_comments(final_review_evidence_comment(head))
 
         result = self.start_final_review()
 
@@ -4684,9 +4685,7 @@ class FinalReviewRerunTests(FinalReviewTestCase):
 
     def test_evidence_for_an_older_head_starts_the_final_review_again(self):
         older = self.implemented_by_an_earlier_run()
-        self.github.issues[PARENT]["comments"].append(
-            {"id": self.github._comment_id(), **final_review_evidence_comment(older)}
-        )
+        self.add_run_target_comments(final_review_evidence_comment(older))
         head = self.commit_file("by-hand.txt", "Fix something by hand")
         git(self.repository.path, "push", "origin", BRANCH)
 
@@ -4733,9 +4732,7 @@ class FinalReviewRerunTests(FinalReviewTestCase):
 
     def test_untrusted_evidence_is_ignored(self):
         head = self.implemented_by_an_earlier_run()
-        self.github.issues[PARENT]["comments"].append(
-            {"id": self.github._comment_id(), **final_review_evidence_comment(head, author="someone")}
-        )
+        self.add_run_target_comments(final_review_evidence_comment(head, author="someone"))
 
         result = self.start_final_review(ScriptedResult("no_changes"))
 
@@ -4744,10 +4741,7 @@ class FinalReviewRerunTests(FinalReviewTestCase):
 
     def test_evidence_older_than_a_reset_marker_is_ignored(self):
         head = self.implemented_by_an_earlier_run()
-        self.github.issues[PARENT]["comments"].extend(
-            {"id": self.github._comment_id(), **comment}
-            for comment in (final_review_evidence_comment(head), reset_marker())
-        )
+        self.add_run_target_comments(final_review_evidence_comment(head), reset_marker())
 
         result = self.start_final_review(ScriptedResult("no_changes"))
 
@@ -4757,9 +4751,7 @@ class FinalReviewRerunTests(FinalReviewTestCase):
     def test_malformed_evidence_is_ignored(self):
         head = self.implemented_by_an_earlier_run()
         body = f'{FINAL_REVIEW_EVIDENCE_PREFIX}{{"final_review_head":"{head[:7]}"}} -->'
-        self.github.issues[PARENT]["comments"].append(
-            {"id": self.github._comment_id(), "author": {"login": TRUSTED_LOGIN}, "body": body}
-        )
+        self.add_run_target_comments({"author": {"login": TRUSTED_LOGIN}, "body": body})
 
         result = self.start_final_review(ScriptedResult("no_changes"))
 

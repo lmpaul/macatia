@@ -2616,11 +2616,11 @@ def require_run_target(state: RunState, issue_number: int) -> None:
 
 
 def standalone_refusal(
-    state: RunState, issue: dict[str, Any], *, implemented: bool = False
+    state: RunState, issue: dict[str, Any], *, allow_implemented: bool = False
 ) -> str | None:
     """Why a run would not start on the standalone issue: it must be trusted, open, ready for
     an agent or left agent working by an earlier run, and wait on no unsatisfied blocker, as
-    its child cycle would require. With `implemented`, an implemented standalone issue
+    its child cycle would require. With `allow_implemented`, an implemented standalone issue
     carrying no triage label but ready-for-agent may also start: a run in final review
     reviews it as it reviews a parent whose children are all implemented. A failed lookup
     raises."""
@@ -2630,7 +2630,7 @@ def standalone_refusal(
     if str(issue.get("state", "")).upper() != "OPEN":
         return f"standalone issue #{number} is closed"
     ready_label = configured_label(state, "ready_for_agent")
-    if implemented and configured_label(state, "implemented") in labels(issue):
+    if allow_implemented and configured_label(state, "implemented") in labels(issue):
         if blocking := labels(issue) & (state.config.triage_labels - {ready_label}):
             return f"standalone issue #{number} is held back by triage: " + ", ".join(
                 sorted(blocking)
@@ -2661,7 +2661,7 @@ def standalone_refusal(
 def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None:
     # The picker leaves implemented standalone issues out, as it does parents with no
     # remaining child.
-    if refusal := standalone_refusal(state, issue, implemented=state.mode.final_review):
+    if refusal := standalone_refusal(state, issue, allow_implemented=state.mode.final_review):
         raise MacatiaError(refusal)
 
 
@@ -4301,9 +4301,10 @@ def final_review_evidence_head(body: str) -> str | None:
     return head if isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}", head) else None
 
 
-def final_review_covers_head(state: RunState, run_target: int) -> bool:
+def adopt_final_review_evidence(state: RunState, run_target: int) -> bool:
     """Whether trusted final review evidence on the run target, newer than its latest reset
-    marker, names the current head: the run target's work then needs no final review."""
+    marker, names the current head: the run target's work then needs no final review, and
+    the run adopts that head as its reviewed head and says so."""
     head = current_head(state)
     records = macatia_records(issue_details(state, run_target), state.config.trusted_authors)
     if not any(final_review_evidence_head(str(c.get("body", ""))) == head for c in records):
@@ -4753,7 +4754,7 @@ def run_children(
         if selected_child is None:
             review = (
                 run_final_review(context, adapters)
-                if state.mode.final_review and not final_review_covers_head(state, parent_issue)
+                if state.mode.final_review and not adopt_final_review_evidence(state, parent_issue)
                 else None
             )
             verification = state.config.verification
