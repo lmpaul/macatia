@@ -87,9 +87,9 @@ used, a final review correction without a new commit, a session Macatia rejects,
 or a local gate that fails on the final review's commits hands the run target to
 human review with a handoff comment listing the remaining findings or the
 diagnostic. The terminal summary reports the failure and the final review sessions
-and final review corrections it used. Its commits are pushed, the children stay `implemented` with their
-implementation evidence, the cumulative draft PR stays a draft, and the run ends
-stopped, not completed.
+and final review corrections it used. Its commits are pushed, the children stay
+`implemented` with their implementation evidence, the cumulative draft PR stays a
+draft, and the run ends stopped, not completed.
 
 A run starts on a run target: an issue that is not a sub-issue of another
 issue, as GitHub's native sub-issue relationship records it. A run target with

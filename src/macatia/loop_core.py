@@ -653,7 +653,7 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         f"correction{'' if state.final_ci_corrections == 1 else 's'}\n"
         if state.final_ci_green_head is not None else ""
     )
-    final_review_sessions = (
+    final_review_cost = (
         f" ({state.final_review_sessions} final review "
         f"session{'' if state.final_review_sessions == 1 else 's'}, "
         f"{state.final_review_corrections} final review "
@@ -662,11 +662,11 @@ def terminal_summary(state: RunState, outcome: str) -> str:
     if state.final_review_head is not None:
         final_review_line = (
             f"- final review: no finding left for reviewed head `{state.final_review_head}`"
-            f"{final_review_sessions}\n"
+            f"{final_review_cost}\n"
         )
     elif state.final_review_stop_cause is not None:
         final_review_line = (
-            f"- final review: {state.final_review_stop_cause}{final_review_sessions}\n"
+            f"- final review: {state.final_review_stop_cause}{final_review_cost}\n"
         )
     else:
         final_review_line = ""
@@ -4207,15 +4207,11 @@ def final_ci_correction(
             f"Macatia stopped because {error}.",
         ) from error
     if result.outcome in {"blocked", "failed", "needs_correction"}:
-        findings = (
-            f"\n\nRemaining findings:\n{format_findings(result.findings)}"
-            if result.findings else ""
-        )
         raise _FinalCIStop(
             f"{FINAL_CI_CORRECTION} stopped with {result.outcome}: {result.summary}",
             f"its final CI correction reported {result.outcome}",
             f"Macatia stopped because the {FINAL_CI_CORRECTION} reported {result.outcome}: "
-            f"{result.summary}{findings}",
+            f"{result.summary}{findings_detail(result.findings)}",
         )
     if not result.commits:
         raise _FinalCIStop(
@@ -4281,6 +4277,7 @@ def run_final_review(
 
 
 def findings_detail(findings: list[str]) -> str:
+    """The remaining findings as a handoff comment lists them, or nothing without any."""
     return f"\n\nRemaining findings:\n{format_findings(findings)}" if findings else ""
 
 
@@ -4316,8 +4313,7 @@ def final_review_session(
         )
     if result.commits and result.outcome in {"committed", "no_changes", "needs_correction"}:
         pass_final_review_local_gates(
-            context, adapters, base_sha, result.head, "its final review session",
-            "the final review session",
+            context, adapters, base_sha, result.head, FINAL_REVIEW_SESSION
         )
     return result
 
@@ -4370,19 +4366,17 @@ def final_review_correction(
             context,
             f"its final review correction reported {result.outcome}",
             f"Macatia stopped because the {FINAL_REVIEW_CORRECTION} reported {result.outcome}: "
-            f"{result.summary}{findings_detail(result.findings or review.findings)}",
+            f"{result.summary}{findings}",
         )
     if not result.commits:
         stop_final_review(
             context,
             "its final review correction did not create a new commit",
             f"Macatia stopped because the {FINAL_REVIEW_CORRECTION} did not create a new "
-            f"commit; a correction session must commit its repair."
-            f"{findings_detail(result.findings or review.findings)}",
+            f"commit; a correction session must commit its repair.{findings}",
         )
     pass_final_review_local_gates(
-        context, adapters, base_sha, result.head, "its final review correction",
-        "the final review correction",
+        context, adapters, base_sha, result.head, FINAL_REVIEW_CORRECTION
     )
 
 
@@ -4391,18 +4385,18 @@ def pass_final_review_local_gates(
     adapters: ChildCycleAdapters,
     base_sha: str,
     head_sha: str,
-    session: str,
-    session_name: str,
+    role: str,
 ) -> None:
     """Run the local gates on the commits of a final review session or final review
-    correction; a failure hands the run target to human review."""
+    correction, as `role` names it; a failure hands the run target to human review."""
+    session = f"{role} session" if role == FINAL_REVIEW_SESSION else role
     failure = adapters.run_local_gates(context.parent_issue, base_sha, head_sha)
     if failure is not None:
         stop_final_review(
             context,
-            f"the {failure.description} local gate failed after {session}",
+            f"the {failure.description} local gate failed after its {session}",
             f"Macatia stopped because the {failure.description} local gate failed on the "
-            f"commits of {session_name}, for exact head `{head_sha}`.\n\n"
+            f"commits of the {session}, for exact head `{head_sha}`.\n\n"
             f"Last diagnostic:\n```text\n{failure.diagnostic}\n```",
         )
 
