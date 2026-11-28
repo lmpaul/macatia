@@ -4137,7 +4137,7 @@ def final_review_evidence_head(body):
     return json.loads(match.group(1))["final_review_head"] if match else None
 
 
-class FinalReviewTests(VerificationTestCase):
+class FinalReviewTestCase(VerificationTestCase):
     """A reviewed run in final review: one final review session once every child is implemented."""
 
     def new_final_review_run(self, *, children=(CHILD, SECOND_CHILD), **options):
@@ -4174,6 +4174,7 @@ class FinalReviewTests(VerificationTestCase):
             body for body in self.github.comments(number) if FINAL_REVIEW_EVIDENCE_PREFIX in body
         ]
 
+class FinalReviewTests(FinalReviewTestCase):
     def test_clean_final_review_posts_evidence_for_the_reviewed_head_then_marks_the_pr_ready(self):
         self.observe_pull_request_when_evidence_is_posted()
 
@@ -4610,6 +4611,181 @@ class FinalReviewTests(VerificationTestCase):
         self.assertFalse(self.github.pull_request().is_draft)
         self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone"})
         self.assertIn("standalone issue is its own only child", self.sessions.prompts[-1])
+
+
+def final_review_evidence_comment(reviewed_head, author=TRUSTED_LOGIN):
+    """Final review evidence for `reviewed_head`, as a clean final review leaves it."""
+    marker = json.dumps({"final_review_head": reviewed_head}, separators=(",", ":"))
+    body = f"{FINAL_REVIEW_EVIDENCE_PREFIX}{marker} -->\nMacatia's final review left no finding."
+    return {"author": {"login": author}, "body": body}
+
+
+class FinalReviewRerunTests(FinalReviewTestCase):
+    """A run in final review that finds every child implemented reviews the run target's work
+    again unless trusted final review evidence covers the current head."""
+
+    def implemented_by_an_earlier_run(self, *, comments=()):
+        """A run target whose children an earlier run implemented on the run branch, with
+        `comments` on the run target."""
+        self.new_final_review_run(children=())
+        for child in (CHILD, SECOND_CHILD):
+            head = self.commit_file(f"child-{child}.txt", f"Implement child {child}")
+            self.github.add_issue(
+                child, parent=PARENT, labels=("implemented",),
+                comments=[implementation_evidence(loop_core.STANDARD_RUN, head)],
+            )
+        self.github.issues[PARENT]["comments"].extend(
+            {"id": self.github._comment_id(), **comment} for comment in comments
+        )
+        return self.repository.head()
+
+    # The retry of each test below would start a final review session, so the absence of one
+    # is checked by giving it no scripted result.
+
+    def test_every_child_implemented_without_evidence_starts_the_final_review(self):
+        head = self.implemented_by_an_earlier_run()
+
+        result = self.start_final_review(ScriptedResult("no_changes", CLEAN_FINAL_REVIEW))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.roles(), ["final review"])
+        (evidence,) = self.final_review_evidence()
+        self.assertEqual(final_review_evidence_head(evidence), head)
+        self.assertFalse(self.github.pull_request().is_draft)
+
+    def test_evidence_for_the_current_head_leaves_nothing_to_do(self):
+        head = self.implemented_by_an_earlier_run(comments=[final_review_evidence_comment("f" * 40)])
+        self.github.issues[PARENT]["comments"].append(
+            {"id": self.github._comment_id(), **final_review_evidence_comment(head)}
+        )
+
+        result = self.start_final_review()
+
+        self.assert_completed(result, sessions=0)
+        self.assertEqual(self.sessions.requests, [])
+        self.assertEqual(len(self.final_review_evidence()), 2)
+        self.assertNotIn("Starting the final review", result.stdout)
+        self.assertIn(
+            f"Final review evidence on #{PARENT} already covers head {head[:7]}", result.stdout
+        )
+        self.assertIn("- final outcome: completed", self.github.comments(PARENT)[-1])
+        self.assertIn(f"- final review: no finding left for reviewed head `{head}`", result.stdout)
+
+    def test_a_clean_final_review_is_not_repeated_by_the_next_run(self):
+        first = self.start_final_review(
+            ScriptedResult("committed"), ScriptedResult("committed"), ScriptedResult("no_changes"),
+        )
+        self.assert_completed(first, sessions=3)
+
+        second = self.start_final_review()
+
+        self.assert_completed(second, sessions=0)
+        self.assertEqual(len(self.final_review_evidence()), 1)
+
+    def test_evidence_for_an_older_head_starts_the_final_review_again(self):
+        older = self.implemented_by_an_earlier_run()
+        self.github.issues[PARENT]["comments"].append(
+            {"id": self.github._comment_id(), **final_review_evidence_comment(older)}
+        )
+        head = self.commit_file("by-hand.txt", "Fix something by hand")
+        git(self.repository.path, "push", "origin", BRANCH)
+
+        result = self.start_final_review(ScriptedResult("no_changes", CLEAN_FINAL_REVIEW))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.roles(), ["final review"])
+        self.assertEqual(final_review_evidence_head(self.final_review_evidence()[-1]), head)
+
+    def test_children_added_after_a_clean_final_review_get_another_one(self):
+        self.new_final_review_run(children=(CHILD,))
+        first = self.start_final_review(ScriptedResult("committed"), ScriptedResult("no_changes"))
+        self.assert_completed(first, sessions=2)
+        self.github.add_issue(SECOND_CHILD, parent=PARENT)
+
+        second = self.start_final_review(ScriptedResult("committed"), ScriptedResult("no_changes"))
+
+        self.assert_completed(second, sessions=2)
+        self.assertEqual(self.roles(), ["implementation", "final review"])
+        reviewed = [final_review_evidence_head(body) for body in self.final_review_evidence()]
+        self.assertEqual(len(reviewed), 2)
+        self.assertEqual(reviewed[-1], self.repository.head())
+
+    def test_retry_after_a_failed_final_review_gets_a_fresh_correction_count(self):
+        gap = ScriptedResult("needs_correction", findings=("Handle refunds.",))
+        fix = ScriptedResult("committed")
+        failed = self.start_final_review(
+            ScriptedResult("committed"), ScriptedResult("committed"),
+            gap, fix, gap, fix, gap, fix, gap,
+        )
+        self.assertEqual(failed.exit_code, 1)
+        self.assertEqual(self.github.labels(PARENT), {"human-review"})
+
+        retry = self.start_final_review(gap, fix, ScriptedResult("no_changes", CLEAN_FINAL_REVIEW))
+
+        self.assertEqual(retry.exit_code, 0, retry.stderr)
+        self.assertEqual(
+            self.roles(), ["final review", "final review correction", "final review"]
+        )
+        self.assertIn("Starting final review correction 1/3", retry.stdout)
+        (evidence,) = self.final_review_evidence()
+        self.assertEqual(final_review_evidence_head(evidence), self.repository.head())
+        self.assertFalse(self.github.pull_request().is_draft)
+
+    def test_untrusted_evidence_is_ignored(self):
+        head = self.implemented_by_an_earlier_run()
+        self.github.issues[PARENT]["comments"].append(
+            {"id": self.github._comment_id(), **final_review_evidence_comment(head, author="someone")}
+        )
+
+        result = self.start_final_review(ScriptedResult("no_changes"))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.roles(), ["final review"])
+
+    def test_evidence_older_than_a_reset_marker_is_ignored(self):
+        head = self.implemented_by_an_earlier_run()
+        self.github.issues[PARENT]["comments"].extend(
+            {"id": self.github._comment_id(), **comment}
+            for comment in (final_review_evidence_comment(head), reset_marker())
+        )
+
+        result = self.start_final_review(ScriptedResult("no_changes"))
+
+        self.assert_completed(result, sessions=1)
+        self.assertEqual(self.roles(), ["final review"])
+
+    def test_malformed_evidence_is_ignored(self):
+        head = self.implemented_by_an_earlier_run()
+        body = f'{FINAL_REVIEW_EVIDENCE_PREFIX}{{"final_review_head":"{head[:7]}"}} -->'
+        self.github.issues[PARENT]["comments"].append(
+            {"id": self.github._comment_id(), "author": {"login": TRUSTED_LOGIN}, "body": body}
+        )
+
+        result = self.start_final_review(ScriptedResult("no_changes"))
+
+        self.assert_completed(result, sessions=1)
+
+    def test_retry_of_a_standalone_issue_after_a_failed_final_review(self):
+        self.new_final_review_run(children=())
+        self.github.add_issue(STANDALONE)
+        failed = self.start_final_review(
+            ScriptedResult("committed"), ScriptedResult("blocked", "One gap remains."),
+            run_target=STANDALONE,
+        )
+        self.assertEqual(failed.exit_code, 1)
+        self.assertEqual(self.github.labels(STANDALONE), {"implemented", "standalone", "human-review"})
+
+        retry = self.start_final_review(ScriptedResult("no_changes"), run_target=STANDALONE)
+
+        self.assertEqual(retry.exit_code, 0, retry.stderr)
+        self.assertEqual(self.roles(), ["final review"])
+        (evidence,) = self.final_review_evidence(STANDALONE)
+        self.assertEqual(final_review_evidence_head(evidence), self.repository.head())
+
+        again = self.start_final_review(run_target=STANDALONE)
+
+        self.assertEqual(again.exit_code, 0, again.stderr)
+        self.assertEqual(self.sessions.requests, [])
 
 
 class HandoffPublicationTests(VerificationTestCase):

@@ -87,8 +87,9 @@ branch head.
 leaving reset markers, so later agent sessions, which read the issues
 themselves, no longer see them. Where a reset posts a reset marker it deletes
 every trusted comment carrying a Macatia marker: implementation evidence in every
-format, child base markers, handoff markers, parent completion, terminal
-summary, closure and reset markers. It touches the run target and each child
+format, child base markers, handoff markers (final review handoff comments
+among them), final review evidence, parent completion, terminal summary, closure
+and reset markers. It touches the run target and each child
 still open that is `agent-working`, `implemented` or `human-review`, or
 `ready-for-agent` and carrying such a comment, as an earlier reset left it; labels change, in the same order, as for a reset, and it leaves no
 reset marker. Untrusted comments, trusted comments without a Macatia marker

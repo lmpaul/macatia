@@ -91,6 +91,20 @@ and final review corrections it used. Its commits are pushed, the children stay
 `implemented` with their implementation evidence, the cumulative draft PR stays a
 draft, and the run ends stopped, not completed.
 
+Final review evidence holds only for the head it names. A run in final review that
+finds every child implemented reads the run target's trusted final review evidence
+newer than its latest trusted reset marker; evidence from an untrusted author, or
+older than a reset marker, is ignored. When none names the current head, the run
+starts the final review directly, with a fresh count of final review corrections:
+a retry after a failed final review or after fixing things by hand, a run target
+whose children were implemented under child review, or children added after an
+earlier clean final review. When evidence names the current head, there is nothing
+left to review: the run starts no session and ends as a standard run would. The
+evidence names the reviewed head, so commits a final CI correction made on top of
+it get a final review on the next run. A standalone issue behaves the same: in
+final review, an implemented standalone issue with no triage label other than
+`ready-for-agent` may be run again, though the picker does not offer it.
+
 A run starts on a run target: an issue that is not a sub-issue of another
 issue, as GitHub's native sub-issue relationship records it. A run target with
 sub-issues is a parent issue, and its sub-issues are the children the run works

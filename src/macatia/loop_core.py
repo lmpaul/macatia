@@ -2615,17 +2615,27 @@ def require_run_target(state: RunState, issue_number: int) -> None:
         raise MacatiaError(refusal)
 
 
-def standalone_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
+def standalone_refusal(
+    state: RunState, issue: dict[str, Any], *, implemented: bool = False
+) -> str | None:
     """Why a run would not start on the standalone issue: it must be trusted, open, ready for
     an agent or left agent working by an earlier run, and wait on no unsatisfied blocker, as
-    its child cycle would require. A failed lookup raises."""
+    its child cycle would require. With `implemented`, an implemented standalone issue
+    carrying no triage label but ready-for-agent may also start: a run in final review
+    reviews it as it reviews a parent whose children are all implemented. A failed lookup
+    raises."""
     if refusal := trusted_issue_refusal(state, issue):
         return refusal
     number = int(issue["number"])
     if str(issue.get("state", "")).upper() != "OPEN":
         return f"standalone issue #{number} is closed"
-    if not (child_is_ready(state, issue) or child_is_agent_working(state, issue)):
-        ready_label = configured_label(state, "ready_for_agent")
+    ready_label = configured_label(state, "ready_for_agent")
+    if implemented and configured_label(state, "implemented") in labels(issue):
+        if blocking := labels(issue) & (state.config.triage_labels - {ready_label}):
+            return f"standalone issue #{number} is held back by triage: " + ", ".join(
+                sorted(blocking)
+            )
+    elif not (child_is_ready(state, issue) or child_is_agent_working(state, issue)):
         other_labels = sorted(
             labels(issue) & (state.config.triage_labels | state.config.lifecycle_labels)
             - {ready_label}
@@ -2649,7 +2659,9 @@ def standalone_refusal(state: RunState, issue: dict[str, Any]) -> str | None:
 
 
 def require_startable_standalone(state: RunState, issue: dict[str, Any]) -> None:
-    if refusal := standalone_refusal(state, issue):
+    # The picker leaves implemented standalone issues out, as it does parents with no
+    # remaining child.
+    if refusal := standalone_refusal(state, issue, implemented=state.mode.final_review):
         raise MacatiaError(refusal)
 
 
@@ -4276,6 +4288,35 @@ def run_final_review(
     return CleanFinalReview(base_sha, reviewed_head, result.summary, committed)
 
 
+def final_review_evidence_head(body: str) -> str | None:
+    """The reviewed head final review evidence records, or None for any other comment."""
+    match = re.search(re.escape(FINAL_REVIEW_EVIDENCE_PREFIX) + r"(\{.*?\}) -->", body)
+    if match is None:
+        return None
+    try:
+        evidence = json.loads(match.group(1))
+    except json.JSONDecodeError:
+        return None
+    head = evidence.get("final_review_head") if isinstance(evidence, dict) else None
+    return head if isinstance(head, str) and re.fullmatch(r"[0-9a-f]{40}", head) else None
+
+
+def final_review_covers_head(state: RunState, run_target: int) -> bool:
+    """Whether trusted final review evidence on the run target, newer than its latest reset
+    marker, names the current head: the run target's work then needs no final review."""
+    head = current_head(state)
+    records = macatia_records(issue_details(state, run_target), state.config.trusted_authors)
+    if not any(final_review_evidence_head(str(c.get("body", ""))) == head for c in records):
+        return False
+    state.final_review_head = head
+    print(
+        f"🟢 Final review evidence on #{run_target} already covers head {head[:7]}; "
+        "no final review is needed.",
+        flush=True,
+    )
+    return True
+
+
 def findings_detail(findings: list[str]) -> str:
     """The remaining findings as a handoff comment lists them, or nothing without any."""
     return f"\n\nRemaining findings:\n{format_findings(findings)}" if findings else ""
@@ -4710,7 +4751,11 @@ def run_children(
                 stop_children_for_dependency_deadlock(state, error.children)
                 raise
         if selected_child is None:
-            review = run_final_review(context, adapters) if state.mode.final_review else None
+            review = (
+                run_final_review(context, adapters)
+                if state.mode.final_review and not final_review_covers_head(state, parent_issue)
+                else None
+            )
             verification = state.config.verification
             # Commits of the final review get the CI wait every child got before them.
             if verification.final_ci_check_active or (
