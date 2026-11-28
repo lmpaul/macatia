@@ -649,6 +649,23 @@ class ConfigureTests(unittest.TestCase):
         self.assertEqual(self.read(), DEFAULT_CONFIGURATION)
         self.assertIn("review", load_config(self.root / "macatia.toml", self.root).models)
 
+    def test_saving_keeps_final_review(self):
+        final_review = DEFAULT_CONFIGURATION.replace(
+            "review_by_default = false\n",
+            "review_by_default = false\n"
+            '# How a reviewed run reviews its work: "child" (a review session for each child) or "final".\n'
+            'review_mode = "final"\n',
+        )
+        self.write(final_review)
+        self.assertTrue(self.run_configure(answers=["6", "1", "10"]))
+        output = self.output.getvalue()
+        self.assertNotIn("comments that macatia does not write", output)
+        self.assertIn("Changes:\n  review_by_default: false → true\n\n", output)
+        self.assertEqual(
+            self.read(), final_review.replace("review_by_default = false\n", "review_by_default = true\n")
+        )
+        self.assertEqual(load_config(self.root / "macatia.toml", self.root).review_mode, "final")
+
     def test_going_back_from_reviewed_runs_by_default_changes_nothing(self):
         self.assertFalse(self.run_configure(answers=["6", "2", "10"]))
         self.assertIn("No changes: nothing written.", self.output.getvalue())

@@ -3,7 +3,7 @@
 ```sh
 macatia run                  # at a terminal, pick among the startable run targets
 macatia run 123              # standard run: implement the children of parent issue #123
-macatia run --review 123     # reviewed run: adds an independent review session per child
+macatia run --review 123     # reviewed run, in the configured review mode
 macatia run --no-review 123  # standard run, even when review_by_default = true
 macatia run --caffeinate 123 # keep the machine awake until the run ends
 macatia run --no-caffeinate 123 # let it sleep, even when caffeinate_by_default = true
@@ -14,9 +14,23 @@ macatia run --worktree 123   # run in a run worktree, away from your own checkou
 Each run executes the loop over the runnable children of its run target: a
 parent issue's sub-issues, or a standalone issue itself.
 `macatia run` starts a standard run, with no review session.
-`macatia run --review` starts a reviewed run: the same loop, plus a review
-session for each child once its local gates pass, repeated after every
-correction session that follows a review (issue, local gate, or CI).
+`macatia run --review` starts a reviewed run: the same loop, with review
+sessions added in the repository's **review mode**, set by `review_mode` in
+`macatia.toml` (see [repository settings](configuration.md#repository-settings)).
+There is no flag for it: a review mode is chosen for the repository, not per run.
+
+- **Child review** (`review_mode = "child"`, the default when the key is
+  absent): a review session for each child once its local gates pass, repeated
+  after every correction session that follows a review (issue, local gate, or CI).
+- **Final review** (`review_mode = "final"`): children go through the loop
+  exactly as in a standard run, with no review session, the standard run's child
+  session limit, and its implementation evidence; the run target's whole work
+  is reviewed once every child is implemented, by a final review session that
+  checks the work is complete and done well, which a green CI says nothing of.
+
+A reviewed run says at startup which review mode it uses. In either mode it
+requires `models.review`. `--no-review` starts a standard run whatever the
+review mode.
 
 A run starts on a run target: an issue that is not a sub-issue of another
 issue, as GitHub's native sub-issue relationship records it. A run target with
@@ -134,11 +148,11 @@ The loop of a standard run is:
    only a human merges.
 
 The **child session limit** bounds the agent sessions one child may receive in
-a run: by default 5 in a standard run and 9 in a reviewed run, a child's worst
+a run: by default 5 in a standard run or a run in final review and 9 in a run in child review, a child's worst
 case under the correction limit, plus one; `[child_session_limit]` in
 `macatia.toml` sets each value (see [repository settings](configuration.md#repository-settings)).
 That worst case is four sessions in a standard run (one implementation session
-and three correction sessions) and eight in a reviewed run (the same, with a review session after each of them); the plus
+and three correction sessions) and eight in a run in child review (the same, with a review session after each of them); the plus
 one leaves room for a backup replay, so at these values the correction limit
 always binds first. A lower value stops a child earlier; a value above the
 worst case has no effect beyond that room for a backup replay. Implementation,
@@ -168,10 +182,11 @@ With `review_by_default = true` in `macatia.toml`, `macatia run` starts a
 reviewed run without `--review`, and says so once at startup;
 `macatia run --no-review` starts a standard run instead. `--no-review` is
 also accepted when the setting is off. `--review` together with `--no-review`
-is a usage error. A run made reviewed by the setting requires `models.review`
-and gets a reviewed run's child session limit; `--no-review` gives it a standard
-run's. With the setting on,
-`macatia check` also checks the review role, as `check --review` does.
+is a usage error. A run made reviewed by the setting runs in the configured
+review mode, requires `models.review`, and gets that mode's child session
+limit; `--no-review` gives it a standard run's. With the setting on, whatever
+the review mode, `macatia check` also checks the review role, as
+`check --review` does.
 
 An implementation or correction that returns `needs_correction` must still pass
 its outstanding findings to an issue correction before publication. The
@@ -209,7 +224,8 @@ list `.macatia/`.
 A standard run's implementation evidence uses separate markers (named
 `macatia-experimental-*`, a name older than the standard run being the default) and records the
 verified head rather than claiming independent review. Each kind of run only
-recovers its own interrupted publication markers: a child that is
+recovers its own interrupted publication markers, a run in final review those
+of a standard run: a child that is
 `ready-for-agent` or `agent-working`, whose latest update is that run kind's
 trusted implementation evidence with commits on the current branch, is marked
 `implemented` without another session. Existing `implemented` labels

@@ -13,6 +13,7 @@ from typing import NamedTuple
 
 from .config import (
     BACKUP_MODEL_KEY,
+    CHILD_REVIEW,
     DEFAULT_CHILD_SESSION_LIMITS,
     MODEL_ROLES,
     AgentProfile,
@@ -148,6 +149,8 @@ def _toml_values(config: MacatiaConfig, root: pathlib.Path) -> dict[str, str]:
             for key in DEFAULT_CHILD_SESSION_LIMITS
         },
     }
+    if config.review_mode != CHILD_REVIEW:
+        keys["review_mode"] = config.review_mode
     if config.worktree_setup is not None:
         keys["worktree_setup"] = config.worktree_setup
     for role, profile in {**config.models, BACKUP_MODEL_KEY: config.backup}.items():

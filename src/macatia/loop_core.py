@@ -45,7 +45,9 @@ from .child_cycle import (
 )
 from .commands import MacatiaError, command as run_command
 from .config import (
+    CHILD_REVIEW,
     DIAGNOSTICS_DIRECTORY,
+    FINAL_REVIEW,
     LOCAL_GATES_RECOMMENDATION,
     RUN_BRANCH_PREFIX,
     AgentProfile,
@@ -73,12 +75,13 @@ from .sanitize import (
 
 @dataclass(frozen=True)
 class RunMode:
-    """What differs between the standard run and the reviewed run.
+    """What differs between the standard run and the reviewed run in each review mode.
 
     Markers and evidence keys are persisted in GitHub comments, so their
     values must never change.
     """
 
+    # Whether each child gets a review session: a reviewed run in child review.
     review: bool
     description: str
     diagnostics_label: str
@@ -90,6 +93,8 @@ class RunMode:
     follow_up_commits: str
     gate_correction_scope: str
     unverified_warning: str
+    # A reviewed run in final review: its children go through the standard run's loop.
+    final_review: bool = False
 
 
 DEFAULT_CONFIG_PATH = pathlib.Path("macatia.toml")
@@ -171,10 +176,31 @@ REVIEWED_RUN = RunMode(
 )
 
 
-REVIEW_BY_DEFAULT_NOTICE = (
-    "ℹ️ review_by_default is on in macatia.toml: this is a reviewed run, with a review "
-    "session per child. Use --no-review for a standard run."
+# Reviewed run in final review (`macatia run --review` with review_mode = "final"): each
+# child gets exactly the standard run's loop, its child session limit, and its evidence.
+FINAL_REVIEW_RUN = dataclasses.replace(
+    STANDARD_RUN,
+    final_review=True,
+    description=(
+        "Implement a parent issue's runnable children, or a standalone issue, "
+        "then review the run target's whole work once every child is implemented."
+    ),
+    diagnostics_label="run --review",
 )
+
+
+REVIEW_BY_DEFAULT_NOTICE = (
+    "ℹ️ review_by_default is on in macatia.toml: this is a reviewed run. "
+    "Use --no-review for a standard run."
+)
+# The startup line that names the review mode of a reviewed run.
+REVIEW_MODE_NOTICES = {
+    CHILD_REVIEW: "🔎 This reviewed run uses child review: a review session for each child.",
+    FINAL_REVIEW: (
+        "🔎 This reviewed run uses final review: children go through the loop as in a standard run, "
+        "then the run target's whole work is reviewed once every child is implemented."
+    ),
+}
 CAFFEINATE_BY_DEFAULT_NOTICE = (
     "ℹ️ caffeinate_by_default is on in macatia.toml: this run holds a sleep lock until it "
     "ends. Use --no-caffeinate to let the machine sleep."
@@ -4053,11 +4079,18 @@ def main(
     )
     if arguments.caffeinate or caffeinated_by_setting:
         state.held_until_the_end.enter_context(state.adapters.keep_awake())
-    mode = state.loaded_mode = (
-        REVIEWED_RUN if arguments.review or reviewed_by_setting else STANDARD_RUN
-    )
+    reviewed = arguments.review or reviewed_by_setting
+    if not reviewed:
+        mode = STANDARD_RUN
+    elif configuration.review_mode == FINAL_REVIEW:
+        mode = FINAL_REVIEW_RUN
+    else:
+        mode = REVIEWED_RUN
+    state.loaded_mode = mode
     if reviewed_by_setting:
         print(REVIEW_BY_DEFAULT_NOTICE, flush=True)
+    if reviewed:
+        print(REVIEW_MODE_NOTICES[configuration.review_mode], flush=True)
     if caffeinated_by_setting:
         print(CAFFEINATE_BY_DEFAULT_NOTICE, flush=True)
     state.loaded_config = configuration

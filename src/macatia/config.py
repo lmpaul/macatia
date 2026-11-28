@@ -31,6 +31,10 @@ LATER_LABEL_DEFAULTS = {key: DEFAULT_LABELS[key] for key in ("work_started", "st
 UPGRADE_COMMAND = "uv tool upgrade macatia --reinstall"
 MODEL_ROLES = ("implementation", "review", "correction")
 MODEL_KEYS = set(MODEL_ROLES)
+# The review modes of a reviewed run, chosen once for the repository; child review by default.
+CHILD_REVIEW = "child"
+FINAL_REVIEW = "final"
+REVIEW_MODES = (CHILD_REVIEW, FINAL_REVIEW)
 # The optional profile that takes over every session role after an engine failure.
 BACKUP_MODEL_KEY = "backup"
 # Each child session limit key with its default: a child's worst case under the correction
@@ -146,6 +150,8 @@ class MacatiaConfig:
     backup: AgentProfile | None = None
     # Makes a run without --review or --no-review a reviewed run.
     review_by_default: bool = False
+    # How a reviewed run reviews its work: CHILD_REVIEW or FINAL_REVIEW.
+    review_mode: str = CHILD_REVIEW
     # Makes a run without --caffeinate or --no-caffeinate hold the sleep lock.
     caffeinate_by_default: bool = False
     child_session_limits: ChildSessionLimits = ChildSessionLimits()
@@ -305,7 +311,13 @@ def load_config(
             "models",
             "verification",
         },
-        {"review_by_default", "caffeinate_by_default", "child_session_limit", "worktree_setup"},
+        {
+            "review_by_default",
+            "review_mode",
+            "caffeinate_by_default",
+            "child_session_limit",
+            "worktree_setup",
+        },
     )
     if values["version"] != 1:
         raise MacatiaConfigError("configuration.version must be 1")
@@ -333,6 +345,11 @@ def load_config(
     review_by_default = values.get("review_by_default", False)
     if not isinstance(review_by_default, bool):
         raise MacatiaConfigError("configuration.review_by_default must be a boolean")
+    review_mode = values.get("review_mode", CHILD_REVIEW)
+    if review_mode not in REVIEW_MODES:
+        raise MacatiaConfigError(
+            'configuration.review_mode must be "child" or "final"'
+        )
     caffeinate_by_default = values.get("caffeinate_by_default", False)
     if not isinstance(caffeinate_by_default, bool):
         raise MacatiaConfigError("configuration.caffeinate_by_default must be a boolean")
@@ -425,6 +442,7 @@ def load_config(
         models=models,
         backup=backup,
         review_by_default=review_by_default,
+        review_mode=review_mode,
         caffeinate_by_default=caffeinate_by_default,
         child_session_limits=child_session_limits,
         worktree_setup=worktree_setup,

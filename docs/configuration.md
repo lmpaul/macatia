@@ -148,8 +148,19 @@ macatia check --config review.toml
   issues and children. Include the GitHub account Macatia runs as so a restarted
   run can trust its own implementation evidence.
 - `review_by_default` is optional (`false` when missing). `true` makes every
-  run a reviewed run, which requires `models.review`; `macatia run
-  --no-review` overrides it for one run.
+  run a reviewed run, in the configured `review_mode`, which requires
+  `models.review`; `macatia run --no-review` overrides it for one run.
+- `review_mode` is optional (`"child"` when missing): the review mode of every
+  reviewed run, `"child"` for child review or `"final"` for final review; any
+  other value is a configuration error. Child review adds a review session for
+  each child; final review leaves children unreviewed, as in a standard run, and
+  reviews the run target's whole work once every child is implemented (see
+  [the loop](run.md)). It changes nothing for a standard run. `init` and
+  `update-config` never write it, and `configure` keeps it as it is: set it by hand.
+
+  ```toml
+  review_mode = "final"
+  ```
 - `caffeinate_by_default` is optional (`false` when missing). `true` makes every
   run hold a sleep lock until it ends; `macatia run --no-caffeinate` overrides
   it for one run.
@@ -169,10 +180,11 @@ macatia check --config review.toml
 - `[child_session_limit]` is an optional table with two optional integer keys:
   `standard` (5 when missing, at least 1) and `reviewed` (9 when missing, at
   least 2, so a reviewed run can always reach its review session), the child
-  session limit of a standard and a reviewed run. A run uses the value of its
-  mode: `reviewed` with `--review` or `review_by_default = true`, `standard`
-  with `--no-review` or otherwise. The correction limit already bounds a child
-  at 4 sessions in a standard run and 8 in a reviewed run, so a value above
+  session limit of a standard run and of a reviewed run in child review. A run
+  uses the value of its mode: `reviewed` with `--review` or
+  `review_by_default = true` in child review, `standard` with `--no-review`, in
+  final review, or otherwise. The correction limit already bounds a child
+  at 4 sessions in a standard run and 8 in a run in child review, so a value above
   that has no effect beyond room for a backup replay (see
   [the loop](run.md)); a lower value stops a child
   earlier. `macatia update-config` writes the table, or the limit it leaves out:

@@ -973,6 +973,13 @@ class RunResult:
     persistent_terminal: FakePersistentTerminal
 
 
+def set_review_mode(repository, value='"final"'):
+    """Set `review_mode` in `repository`'s macatia.toml to the TOML `value`."""
+    repository.edit_configuration(
+        'trusted_authors = ["lmpaul"]\n', f'trusted_authors = ["lmpaul"]\nreview_mode = {value}\n'
+    )
+
+
 def start_mode_run(mode, repository, github, sessions, *arguments, **options):
     """`start_run` for the standard or reviewed run `mode`: adds `--review` for a reviewed run."""
     review = ["--review"] if mode.review else []

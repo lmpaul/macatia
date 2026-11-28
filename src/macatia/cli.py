@@ -20,9 +20,10 @@ USAGE = """usage: macatia <command> [options]
 commands:
   run [--review | --no-review] [--caffeinate | --no-caffeinate] [--tmux] [--worktree] [--config PATH] [ISSUE]
       Standard run: implement the children of a parent ISSUE, or a standalone ISSUE,
-      giving each child at most 5 agent sessions (9 in a reviewed run).
+      giving each child at most 5 agent sessions (9 in a reviewed run in child review).
       Without ISSUE, at a terminal, offers the startable run targets to choose from.
-      --review starts a reviewed run, which adds an independent review session per child.
+      --review starts a reviewed run in the configured review_mode: "child" (the default) adds an
+      independent review session per child; "final" reviews the run target's whole work once.
       --no-review starts a standard run, even when review_by_default = true in the configuration.
       --caffeinate keeps the machine from idle-sleeping until the run ends.
       --no-caffeinate lets the machine sleep, even when caffeinate_by_default = true in the configuration.

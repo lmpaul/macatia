@@ -44,6 +44,7 @@ from run_support import (
     is_child_cycle_start,
     legacy_implementation_evidence,
     reset_marker,
+    set_review_mode,
     start_mode_run,
     start_run,
 )
@@ -2586,8 +2587,13 @@ class ConfigurationRejectionTests(StartupRejectionTestCase):
 
 
 REVIEW_BY_DEFAULT_NOTICE = (
-    "ℹ️ review_by_default is on in macatia.toml: this is a reviewed run, with a review "
-    "session per child. Use --no-review for a standard run."
+    "ℹ️ review_by_default is on in macatia.toml: this is a reviewed run. "
+    "Use --no-review for a standard run."
+)
+CHILD_REVIEW_NOTICE = "🔎 This reviewed run uses child review: a review session for each child."
+FINAL_REVIEW_NOTICE = (
+    "🔎 This reviewed run uses final review: children go through the loop as in a standard run, "
+    "then the run target's whole work is reviewed once every child is implemented."
 )
 
 
@@ -2697,6 +2703,180 @@ class ReviewByDefaultTests(StartupRejectionTestCase):
 
                     self.assert_rejected_at_startup(
                         result, "configuration.review_by_default must be a boolean"
+                    )
+
+
+class ReviewModeTests(StartupRejectionTestCase):
+    """`review_mode` picks how a reviewed run reviews its work: child review or final review."""
+
+    def start_with(self, flags, *results):
+        """Start a run with the command-line `flags` before the parent."""
+        self.sessions = ScriptedSessions(self.repository, *results)
+        return start_run(self.repository, self.github, self.sessions, *flags, PARENT)
+
+    def remove_review_profile(self):
+        configuration = (self.repository.path / "macatia.toml").read_text(encoding="utf-8")
+        review_profile = re.search(r"\[models\.review\]\n.*?\n\n", configuration, flags=re.S).group(0)
+        self.repository.edit_configuration(review_profile, "")
+
+    def assert_completed_as_a_standard_run(self, result):
+        """Every child got exactly the standard run's loop: one session, standard evidence."""
+        self.assert_completed(result, sessions=1)
+        self.assertNotIn("Review the exact", self.sessions.prompts[0])
+        self.assertIn(
+            loop_core.STANDARD_RUN.implementation_evidence_prefix, self.github.comments(CHILD)[-1]
+        )
+        self.assertIn("No separate Macatia review session was run.", self.github.comments(CHILD)[-1])
+        self.assertIn(loop_core.STANDARD_RUN.parent_completion_marker, self.github.comments(PARENT)[-2])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_final_review_children_get_no_review_session_and_standard_evidence(self):
+        for flags, by_setting in ((("--review",), False), ((), True)):
+            with self.subTest(flags=flags):
+                self.setUp()
+                set_review_mode(self.repository)
+                if by_setting:
+                    set_review_by_default(self.repository)
+
+                result = self.start_with(flags, *passing_child_results(loop_core.STANDARD_RUN))
+
+                self.assert_completed_as_a_standard_run(result)
+                self.assertEqual(result.stdout.count(FINAL_REVIEW_NOTICE), 1)
+                self.assertNotIn(CHILD_REVIEW_NOTICE, result.stdout)
+                self.assertLess(result.stdout.index(FINAL_REVIEW_NOTICE), result.stdout.index("▶️"))
+                self.assertEqual(result.stdout.count(REVIEW_BY_DEFAULT_NOTICE), int(by_setting))
+
+    def test_final_review_children_get_the_standard_child_session_limit(self):
+        set_review_mode(self.repository)
+        set_child_session_limit(self.repository, standard=1, reviewed=9)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",), commit=True)
+
+        result = self.start_with(("--review",), findings)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Stop reason: child session limit exhausted before issue correction", result.stderr)
+        self.assertEqual(len(self.sessions.requests), 1)
+        self.assertEqual(self.github.labels(CHILD), {"human-review"})
+
+    def test_final_review_children_get_the_standard_corrections(self):
+        set_review_mode(self.repository)
+        worst_case = worst_case_child_results(loop_core.STANDARD_RUN)
+
+        result = self.start_with(("--review",), *worst_case)
+
+        self.assert_completed(result, sessions=len(worst_case))
+        self.assertEqual(
+            [request.role for request in self.sessions.requests],
+            ["implementation", "issue correction", "issue correction", "issue correction"],
+        )
+        self.assertIn(
+            loop_core.STANDARD_RUN.implementation_evidence_prefix, self.github.comments(CHILD)[-1]
+        )
+
+    def test_final_review_recovers_a_published_child_from_its_standard_evidence(self):
+        set_review_mode(self.repository)
+        self.github.interrupt_after_comment_on = CHILD
+        self.github.interrupt_after_comment_containing = (
+            loop_core.STANDARD_RUN.implementation_evidence_prefix
+        )
+        with self.assertRaises(RunInterrupted):
+            self.start_with(("--review",), *passing_child_results(loop_core.STANDARD_RUN))
+        self.assertEqual(self.github.labels(CHILD), {"agent-working"})
+        confirm = ScriptedConfirm(STOP)
+        self.sessions = ScriptedSessions(self.repository)
+
+        result = start_run(
+            self.repository, self.github, self.sessions, "--review", PARENT, confirm=confirm
+        )
+
+        self.assert_completed(result, sessions=0)
+        self.assertEqual(confirm.questions, [])
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+
+    def test_child_review_is_unchanged_with_review_mode_absent_or_child(self):
+        for value in (None, '"child"'):
+            for flags, by_setting in ((("--review",), False), ((), True)):
+                with self.subTest(value=value, flags=flags):
+                    self.setUp()
+                    if value is not None:
+                        set_review_mode(self.repository, value)
+                    if by_setting:
+                        set_review_by_default(self.repository)
+
+                    result = self.start_with(flags, *passing_child_results(loop_core.REVIEWED_RUN))
+
+                    self.assert_completed(result, sessions=2)
+                    self.assertIn("Review the exact", self.sessions.prompts[1])
+                    self.assertIn(
+                        loop_core.REVIEWED_RUN.implementation_evidence_prefix,
+                        self.github.comments(CHILD)[-1],
+                    )
+                    self.assertIn(
+                        loop_core.REVIEWED_RUN.parent_completion_marker,
+                        self.github.comments(PARENT)[-2],
+                    )
+                    self.assertEqual(result.stdout.count(CHILD_REVIEW_NOTICE), 1)
+                    self.assertNotIn(FINAL_REVIEW_NOTICE, result.stdout)
+
+    def test_child_review_keeps_the_reviewed_child_session_limit(self):
+        set_review_mode(self.repository, '"child"')
+        set_child_session_limit(self.repository, standard=1, reviewed=2)
+        findings = ScriptedResult("needs_correction", findings=("Handle empty carts.",))
+
+        result = self.start_with(("--review",), ScriptedResult("committed"), findings)
+
+        self.assertEqual(result.exit_code, 1)
+        self.assertIn("Stop reason: child session limit exhausted before issue correction", result.stderr)
+        self.assertEqual(len(self.sessions.requests), 2)
+
+    def test_no_review_starts_a_standard_run_in_either_mode(self):
+        for value in ('"child"', '"final"'):
+            for setting in (None, "true"):
+                with self.subTest(value=value, setting=setting):
+                    self.setUp()
+                    set_review_mode(self.repository, value)
+                    if setting is not None:
+                        set_review_by_default(self.repository, setting)
+                    self.remove_review_profile()
+
+                    result = self.start_with(("--no-review",), *passing_child_results(loop_core.STANDARD_RUN))
+
+                    self.assert_completed_as_a_standard_run(result)
+                    self.assertNotIn("This reviewed run uses", result.stdout)
+
+    def test_standard_run_names_no_review_mode(self):
+        set_review_mode(self.repository)
+
+        result = self.start_with((), *passing_child_results(loop_core.STANDARD_RUN))
+
+        self.assert_completed_as_a_standard_run(result)
+        self.assertNotIn("This reviewed run uses", result.stdout)
+
+    def test_reviewed_run_in_final_review_requires_the_review_profile(self):
+        for flags, by_setting in ((("--review",), False), ((), True)):
+            with self.subTest(flags=flags):
+                self.setUp()
+                set_review_mode(self.repository)
+                if by_setting:
+                    set_review_by_default(self.repository)
+                self.remove_review_profile()
+
+                result = self.start_with(flags, *passing_child_results(loop_core.STANDARD_RUN))
+
+                self.assert_rejected_at_startup(result, "configuration.models is missing keys: review")
+                self.assertNotIn(FINAL_REVIEW_NOTICE, result.stdout)
+
+    def test_invalid_review_mode_is_rejected_at_startup(self):
+        for value in ('"both"', '"Final"', '""', "true", "1"):
+            for flags in ((), ("--review",), ("--no-review",)):
+                with self.subTest(value=value, flags=flags):
+                    self.setUp()
+                    set_review_mode(self.repository, value)
+
+                    result = self.start_with(flags)
+
+                    self.assert_rejected_at_startup(
+                        result, 'configuration.review_mode must be "child" or "final"'
                     )
 
 
