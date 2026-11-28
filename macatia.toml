@@ -55,7 +55,7 @@ quality_module = ".github/scripts/quality.py"
 quality_manifest = ".github/quality-gates.json"
 # With ci_checks = false, true checks CI once on the run's final head, before the PR is marked ready;
 # ci_checks = true already checks CI after each child, so this setting then has no effect.
-final_ci_check = true
+final_ci_check = false
 
 [child_session_limit]
 # The most agent sessions one child may receive in a run. The correction limit (three corrections)
