@@ -114,7 +114,7 @@ settings the file leaves out other than label roles (`review_by_default`,
 `review_mode`, `caffeinate_by_default`, each `child_session_limit` key, `verification.final_ci_check`) as information that
 does not fail the check, and warns about defaulted label roles.
 `macatia update-config [--config PATH]` writes each defaulted setting the file
-leaves out, with its default value and the comment `init` writes next to it: `review_by_default`, `review_mode = "child"` and `caffeinate_by_default`
+leaves out, with its default value and the comment `init` writes next to it: `review_by_default`, `review_mode` and `caffeinate_by_default`
 after the last top-level setting, before the first table, each label role at
 the end of `[labels]` with its default name, and a `[child_session_limit]` table
 with `standard` and `reviewed` at the end of the file, or the limit a partial

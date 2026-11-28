@@ -384,6 +384,16 @@ def _edit_verification(prompter: Prompter, config: MacatiaConfig, state: EditSta
             prompter.say(f"  ⚠ {names} missing: `macatia check` will fail until {'they exist' if len(missing) > 1 else 'it exists'}.")
 
 
+def _with_review_profile(prompter: Prompter, config: MacatiaConfig, state: EditState, reason: str) -> MacatiaConfig:
+    """config with a review profile, asked after saying reason when there is none."""
+    if "review" in config.models:
+        return config
+    prompter.say(f"  {reason}")
+    profile = _ask_role_profile(prompter, config, state, "review")
+    prompter.say(f"  ✓ review: {_profile_summary(profile)}")
+    return dataclasses.replace(config, models={**config.models, "review": profile})
+
+
 def _edit_review_by_default(prompter: Prompter, config: MacatiaConfig, state: EditState) -> MacatiaConfig:
     enabled = config.review_by_default
     answer = prompter.choice(
@@ -397,11 +407,8 @@ def _edit_review_by_default(prompter: Prompter, config: MacatiaConfig, state: Ed
     )
     if answer == BACK:
         return config
-    if not enabled and "review" not in config.models:
-        prompter.say("  Reviewed runs need a model profile for review.")
-        profile = _ask_role_profile(prompter, config, state, "review")
-        config = dataclasses.replace(config, models={**config.models, "review": profile})
-        prompter.say(f"  ✓ review: {_profile_summary(profile)}")
+    if not enabled:
+        config = _with_review_profile(prompter, config, state, "Reviewed runs need a model profile for review.")
     prompter.say(f"  Reviewed runs by default {_on(not enabled)}")  # Turning it off keeps the review profile.
     return dataclasses.replace(config, review_by_default=not enabled)
 
@@ -422,11 +429,8 @@ def _edit_review_mode(prompter: Prompter, config: MacatiaConfig, state: EditStat
     )
     if answer == BACK or (mode := REVIEW_MODE_CHOICES[answer][0]) == current:
         return config
-    if mode == FINAL_REVIEW and "review" not in config.models:
-        prompter.say("  Final review needs a model profile for review.")
-        profile = _ask_role_profile(prompter, config, state, "review")
-        config = dataclasses.replace(config, models={**config.models, "review": profile})
-        prompter.say(f"  ✓ review: {_profile_summary(profile)}")
+    if mode == FINAL_REVIEW:
+        config = _with_review_profile(prompter, config, state, "Final review needs a model profile for review.")
     prompter.say(f"  Review mode: {mode} review")
     return dataclasses.replace(config, review_mode=mode)
 
