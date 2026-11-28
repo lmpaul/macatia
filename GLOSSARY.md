@@ -84,8 +84,20 @@ A run whose loop has no review session.
 _Avoid_: Implementation-only loop, experimental loop
 
 **Reviewed run**:
-A run whose loop adds a review session for each child, once its work passes the local gates and again after every correction session that follows a review.
+A run whose loop adds review sessions, in one of two review modes: child review or final review.
 _Avoid_: Original loop, review loop (there is only one loop)
+
+**Review mode**:
+How a reviewed run reviews its work, chosen in the repository's settings rather than per run: child review or final review, never both.
+_Avoid_: Review type, review kind
+
+**Child review**:
+The review mode that adds a review session for each child, once its work passes the local gates and again after every correction session that follows a review.
+_Avoid_: Per-ticket review, per-child review
+
+**Final review**:
+The review mode that leaves children unreviewed, as in a standard run, and reviews the run target's whole work once every child is implemented, checking that the work is complete and done well; a green CI says nothing of either.
+_Avoid_: End-of-run review, issue review, final CI check (a different thing)
 
 **Sleep lock**:
 The hold a run keeps on the machine so it does not idle-sleep until the run ends; when the machine cannot provide one, the run continues without it.
@@ -96,18 +108,22 @@ The terminal a run continues in after the person's own terminal disconnects; a r
 _Avoid_: tmux session, session (alone), detached run
 
 **Agent session**:
-One fresh, non-interactive invocation of a coding agent with a single role: an implementation session, a review session, or a correction session.
+One fresh, non-interactive invocation of a coding agent with a single role: an implementation session, a review session, a final review session, or a correction session.
 _Avoid_: Iteration, agent run
 
 **Implementation session**:
 The agent session that first implements a child.
 
 **Review session**:
-An agent session that independently checks a child's work against its whole issue, fixes what it can and commits, and reports as findings only the gaps that remain. Only reviewed runs start one.
+An agent session that independently checks a child's work against its whole issue, fixes what it can and commits, and reports as findings only the gaps that remain. Only reviewed runs in child review start one.
 _Avoid_: Review (alone), code review
 
+**Final review session**:
+An agent session that independently checks the whole work of a run target, every child's commits on the run branch, against the run target and all its children, fixes what it can and commits, and reports as findings only the gaps that remain. It belongs to the run, not to any child; only reviewed runs in final review start one.
+_Avoid_: Review (alone), final check, end-of-run review
+
 **Correction session**:
-An agent session that repairs a child's work, or a run's work after its final CI check fails, and must produce a new commit: an issue correction, a local gate correction, a CI correction, or a final CI correction. A correction session without a new commit sends the child, or for a final CI correction the run target, to human review.
+An agent session that repairs a child's work, or a run's work after its final review or final CI check fails, and must produce a new commit: an issue correction, a local gate correction, a CI correction, a final review correction, or a final CI correction. A correction session without a new commit sends the child, or for a final review or final CI correction the run target, to human review.
 _Avoid_: Fix session, retry
 
 **Issue correction**:
@@ -119,6 +135,10 @@ A correction session that repairs a failed local gate.
 **CI correction**:
 A correction session that repairs a CI check that failed on a child's work.
 
+**Final review correction**:
+A correction session that addresses the findings a final review session left; it belongs to the run, not to any child, and another final review session follows it.
+_Avoid_: Issue correction (that one belongs to a child), run correction
+
 **Final CI correction**:
 A correction session that repairs a CI check that failed in a final CI check; it belongs to the run, not to any child.
 _Avoid_: Run correction, CI correction (for this one)
@@ -126,11 +146,11 @@ _Avoid_: Run correction, CI correction (for this one)
 ## Limits
 
 **Child session limit**:
-The maximum number of agent sessions one child may receive in a run, with one value for standard runs and one for reviewed runs; counted in sessions, never tokens or time. Each run gives a child a fresh count.
+The maximum number of agent sessions one child may receive in a run, with one value for standard runs and runs in final review, and one for runs in child review; counted in sessions, never tokens or time. Each run gives a child a fresh count.
 _Avoid_: Run budget, ticket budget, session budget, iteration limit, token budget
 
 **Correction limit**:
-The maximum number of correction sessions one child may receive (three), counting issue, local gate, and CI corrections together. A run's final CI corrections have their own limit of three, counted toward no child.
+The maximum number of correction sessions one child may receive (three), counting issue, local gate, and CI corrections together. A run's final review corrections and its final CI corrections each have their own limit of three, counted toward no child.
 _Avoid_: Attempts, retry limit, issue-correction limit
 
 **Infrastructure retry**:
@@ -204,6 +224,10 @@ _Avoid_: PR per child
 **Implementation evidence**:
 The trusted comment on a child recording which commits implemented and verified it.
 _Avoid_: Success comment, marker
+
+**Final review evidence**:
+The trusted comment on a run target recording the head that a final review session found complete with no finding left; it holds only for that head, so a run that finds a different head reviews again.
+_Avoid_: Review comment, final review marker, approval
 
 **Verified head**:
 The commit on which verification passed and which was published.
