@@ -4157,12 +4157,15 @@ class FinalReviewTests(VerificationTestCase):
         return start_run(self.repository, self.github, self.sessions, "--review", run_target)
 
     def observe_pull_request_when_evidence_is_posted(self):
-        """Record whether the PR was a draft when the final review evidence was posted."""
+        """Record whether the PR was a draft, and the heads CI had checked, when the final
+        review evidence was posted."""
         self.drafts_at_evidence = []
+        self.checked_at_evidence = []
 
         def observe(number, body):
             if FINAL_REVIEW_EVIDENCE_PREFIX in body:
                 self.drafts_at_evidence.append(self.github.pull_request().is_draft)
+                self.checked_at_evidence.append(list(self.github.checked_heads))
 
         self.github.after_comment = observe
 
@@ -4263,6 +4266,7 @@ class FinalReviewTests(VerificationTestCase):
         ):
             with self.subTest(name):
                 self.new_final_review_run(**options)
+                self.observe_pull_request_when_evidence_is_posted()
 
                 result = self.start_final_review(
                     ScriptedResult("committed"), ScriptedResult("committed"),
@@ -4283,6 +4287,9 @@ class FinalReviewTests(VerificationTestCase):
                     result.stdout.index("Starting the final CI check"),
                 )
                 self.assertIn(final_ci_green(head), result.stdout)
+                # The evidence follows the CI wait on the head it names.
+                self.assertEqual(self.checked_at_evidence[-1][-1:], [head])
+                self.assertEqual(self.drafts_at_evidence, [True])
                 self.assertFalse(self.github.pull_request().is_draft)
 
     def test_red_ci_after_final_review_commits_is_repaired_by_a_final_ci_correction(self):
@@ -4298,6 +4305,13 @@ class FinalReviewTests(VerificationTestCase):
         self.assert_completed(result, sessions=4)
         self.assertEqual(self.roles()[2:], ["final review", "final CI correction"])
         self.assertIn(final_ci_green(self.repository.head(), corrections=1), result.stdout)
+        reviewed_head, green_head = self.repository.commits_since(self.repository.base_sha)[-2:]
+        self.assertEqual(self.github.checked_heads[-1], green_head)
+        self.assertIn(reviewed_head, self.github.checked_heads)
+        (evidence,) = self.final_review_evidence()
+        # The evidence names the head the final review left, under the final CI correction.
+        self.assertEqual(final_review_evidence_head(evidence), reviewed_head)
+        self.assertEqual(self.repository.pushed_head(), green_head)
 
     def test_final_review_without_commits_waits_for_no_more_ci_after_per_child_ci(self):
         result = self.start_final_review(

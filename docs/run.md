@@ -55,12 +55,13 @@ active `final_ci_check`. Red CI is repaired by final CI corrections under their
 limit of three (see [the final CI check](verification.md#final-ci-check)). The
 final review always comes before that CI wait.
 
-A clean result (`committed` or `no_changes`) pushes the reviewed head and leaves
-**final review evidence** on the run target: a trusted comment with a hidden
-`macatia-final-review-evidence` marker recording the reviewed head, the reviewed
-commit range and the session's summary. Only then, once the CI wait passes, does
-parent completion happen as in a standard run and the cumulative draft PR is
-marked ready. The parent completion comment and the terminal summary name the
+After a clean result (`committed` or `no_changes`) and the CI wait that follows
+it, the run pushes its head and leaves **final review evidence** on the run
+target: a trusted comment with a hidden `macatia-final-review-evidence` marker
+recording the reviewed head (the head the final review session left, under any
+final CI correction), the reviewed commit range and the session's summary. Only
+then does parent completion happen as in a standard run and the cumulative draft
+PR is marked ready. The parent completion comment and the terminal summary name the
 reviewed head, and the terminal summary's agent sessions include the final
 review session; `run.json` records its result under `final_review`. A run in
 final review keeps the standard run's parent completion and terminal summary

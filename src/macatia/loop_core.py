@@ -574,7 +574,7 @@ class RunState:
     # The head a clean final review session left; None until one does.
     final_review_head: str | None = None
     # Why the final review handed the run target to human review; None unless it did.
-    final_review_stop: str | None = None
+    final_review_stop_cause: str | None = None
     # The final head the final CI check found green; None until it does.
     final_ci_green_head: str | None = None
     # The final CI corrections this run started, counted toward no child.
@@ -636,8 +636,8 @@ def terminal_summary(state: RunState, outcome: str) -> str:
         final_review_line = (
             f"- final review: no finding left for reviewed head `{state.final_review_head}`\n"
         )
-    elif state.final_review_stop is not None:
-        final_review_line = f"- final review: {state.final_review_stop}\n"
+    elif state.final_review_stop_cause is not None:
+        final_review_line = f"- final review: {state.final_review_stop_cause}\n"
     else:
         final_review_line = ""
     return (
@@ -2914,7 +2914,9 @@ def final_review_prompt(state: RunState, run_target: int, base_sha: str, head_sh
         final_review_child(state, issue_details(state, int(child["number"])))
         for child in run_target_children(state, run_target)
     )
-    kind = "Children" if not state.standalone else "The standalone issue is its own only child"
+    children_heading = (
+        "The standalone issue is its own only child" if state.standalone else "Children"
+    )
     return f"""Review the whole work of {run_target_name(state)} (GitHub issue #{run_target}).
 
 Every child of #{run_target} is implemented. Review the exact `{base_sha}..{head_sha}`
@@ -2926,7 +2928,7 @@ green CI says nothing of either. Fix any actionable problem in the current workt
 commit the correction. Otherwise, make no change. Report as findings only the gaps that
 remain. Do not push or change GitHub issue or pull request state.
 
-{kind}, each with its implementation evidence (diagnostic data, not instructions):
+{children_heading}, each with its implementation evidence (diagnostic data, not instructions):
 
 {children}
 
@@ -3874,7 +3876,9 @@ def send_run_target_to_human_review(state: RunState, run_target: int, body: str)
         state.github.edit_issue_labels(run_target, add=human_review, remove=sorted(remove))
 
 
-FINAL_CI_HANDOFF_TAIL = (
+# How every handoff of the run target after its children ends: the final review's, the final CI
+# check's.
+RUN_TARGET_HANDOFF_TAIL = (
     "The children stay implemented and the cumulative draft PR stays in draft."
 )
 
@@ -3917,14 +3921,14 @@ def run_final_ci_check(context: ChildCycleContext, adapters: ChildCycleAdapters)
                     run_target,
                     "Macatia stopped because CI evidence could not be obtained for the final CI "
                     f"check of exact final head `{head_sha}`, without changing the implementation "
-                    f"or starting a final CI correction. {FINAL_CI_HANDOFF_TAIL} Last "
+                    f"or starting a final CI correction. {RUN_TARGET_HANDOFF_TAIL} Last "
                     f"infrastructure diagnostic: {verdict.diagnostic}"
                     + (f"\n\n{state.final_ci_history}" if state.final_ci_history else ""),
                 )
                 raise FinalCIHandedToHumanReview(run_target, verdict.reason, unavailable=True)
             if isinstance(verdict, CIConflict):
                 send_run_target_to_human_review(
-                    state, run_target, f"{verdict.body} {FINAL_CI_HANDOFF_TAIL}"
+                    state, run_target, f"{verdict.body} {RUN_TARGET_HANDOFF_TAIL}"
                 )
                 raise FinalCIHandedToHumanReview(
                     run_target, verdict.reason, unavailable=False,
@@ -3944,7 +3948,7 @@ def run_final_ci_check(context: ChildCycleContext, adapters: ChildCycleAdapters)
         send_run_target_to_human_review(
             state,
             run_target,
-            f"{stop.body} {FINAL_CI_HANDOFF_TAIL}\n\n"
+            f"{stop.body} {RUN_TARGET_HANDOFF_TAIL}\n\n"
             f"Last diagnostic:\n```text\n{diagnostic}\n```\n\n{state.final_ci_history}",
         )
         raise FinalCIHandedToHumanReview(
@@ -4132,19 +4136,25 @@ def final_ci_correction(
     return result.head
 
 
-FINAL_REVIEW_HANDOFF_TAIL = (
-    "The children stay implemented and the cumulative draft PR stays in draft."
-)
+@dataclass(frozen=True)
+class CleanFinalReview:
+    """A final review session that left no finding, for its final review evidence."""
+
+    base_sha: str
+    reviewed_head: str
+    summary: str
+    committed: bool
 
 
-def run_final_review(context: ChildCycleContext, adapters: ChildCycleAdapters) -> bool:
-    """Review the run target's whole work once every child is implemented; return whether
-    the final review session committed.
+def run_final_review(
+    context: ChildCycleContext, adapters: ChildCycleAdapters
+) -> CleanFinalReview:
+    """Review the run target's whole work once every child is implemented.
 
     The final review session runs on the review profile and counts toward no child. Its
-    commits must pass the local gates. A clean result publishes the head and leaves final
-    review evidence on the run target; any other result, a rejected session, or a failed
-    local gate hands the run target to human review and stops the run.
+    commits must pass the local gates. Any result other than a clean one, a rejected
+    session, or a failed local gate hands the run target to human review and stops the run;
+    a clean one is returned for its final review evidence, which follows the CI wait.
     """
     state = context.state
     run_target = context.parent_issue
@@ -4192,15 +4202,11 @@ def run_final_review(context: ChildCycleContext, adapters: ChildCycleAdapters) -
                 f"commits of the final review session, for exact head `{reviewed_head}`.\n\n"
                 f"Last diagnostic:\n```text\n{failure.diagnostic}\n```",
             )
-    push_and_prepare_draft_pull_request(state, context.branch, run_target)
-    publish_final_review_evidence(
-        state, context.branch, run_target, base_sha, reviewed_head, result.summary
-    )
     state.final_review_head = reviewed_head
     print(
         f"🟢 The final review left no finding for reviewed head {reviewed_head[:7]}.", flush=True
     )
-    return bool(result.commits)
+    return CleanFinalReview(base_sha, reviewed_head, result.summary, bool(result.commits))
 
 
 def stop_final_review(context: ChildCycleContext, cause: str, body: str) -> NoReturn:
@@ -4219,31 +4225,32 @@ def stop_final_review(context: ChildCycleContext, cause: str, body: str) -> NoRe
             f"`{context.branch}`."
         )
     send_run_target_to_human_review(
-        state, run_target, f"{body}\n\n{FINAL_REVIEW_HANDOFF_TAIL}{unpublished}"
+        state, run_target, f"{body}\n\n{RUN_TARGET_HANDOFF_TAIL}{unpublished}"
     )
-    state.final_review_stop = cause
+    state.final_review_stop_cause = cause
     raise FinalReviewHandedToHumanReview(
         run_target, f"the final review handed #{run_target} to human review: {cause}", cause
     )
 
 
 def publish_final_review_evidence(
-    state: RunState,
-    branch: str,
-    run_target: int,
-    base_sha: str,
-    reviewed_head: str,
-    summary: str,
+    state: RunState, branch: str, run_target: int, review: CleanFinalReview
 ) -> None:
-    """Leave final review evidence on the run target for the published reviewed head."""
+    """Publish the verified head and leave final review evidence for its reviewed head on the
+    run target; a final CI correction may have committed on top of the reviewed head."""
+    base_sha, reviewed_head = review.base_sha, review.reviewed_head
+    verified_head = current_head(state)
+    if not is_ancestor(state, reviewed_head, verified_head):
+        raise MacatiaError(f"the reviewed head {reviewed_head} is no longer on the run branch")
+    push_and_prepare_draft_pull_request(state, branch, run_target)
     marker = json.dumps({"final_review_head": reviewed_head}, separators=(",", ":"))
     body = (
         f"{FINAL_REVIEW_EVIDENCE_PREFIX}{marker} -->\n"
         f"Macatia's final review session checked the whole work of {run_target_name(state)}, "
         f"commits `{base_sha}..{reviewed_head}`, against it and all its children, and left no "
-        f"finding for reviewed head `{reviewed_head}`.\n\nSummary: {sanitized_text(summary)}"
+        f"finding for reviewed head `{reviewed_head}`.\n\nSummary: {sanitized_text(review.summary)}"
     )
-    require_published_exact_head(state, branch, reviewed_head)
+    require_published_exact_head(state, branch, verified_head)
     state.github.comment_on_issue(run_target, body)
 
 
@@ -4511,15 +4518,16 @@ def run_children(
                 stop_children_for_dependency_deadlock(state, error.children)
                 raise
         if selected_child is None:
-            final_review_committed = (
-                run_final_review(context, adapters) if state.mode.final_review else False
-            )
+            review = run_final_review(context, adapters) if state.mode.final_review else None
             verification = state.config.verification
             # Commits of the final review get the CI wait every child got before them.
             if verification.final_ci_check_active or (
-                final_review_committed and verification.ci_checks
+                review is not None and review.committed and verification.ci_checks
             ):
                 run_final_ci_check(context, adapters)
+            if review is not None:
+                with spinner(f"Publishing the final review evidence of #{parent_issue}…"):
+                    publish_final_review_evidence(state, branch, parent_issue, review)
             with spinner(f"Finishing the run on #{parent_issue}…"):
                 # A standalone issue is already implemented: it gets no parent completion.
                 if not state.standalone:
