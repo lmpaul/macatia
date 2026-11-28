@@ -83,6 +83,9 @@ manifest is accepted with a warning that `macatia check` fails until they exist.
 Reviewed runs by default turns `review_by_default` on or off. Turning it on without a
 review profile first asks for one, as Model profiles does for review; turning it off keeps
 the review profile.
+Review mode switches `review_mode` between child review and final review. Choosing final
+review without a review profile first asks for one, as turning on reviewed runs by default
+does; going back to child review keeps the review profile.
 Keep the machine awake by default turns `caffeinate_by_default` on or off; it asks
 for nothing else.
 Child session limits changes `standard` or `reviewed` in `[child_session_limit]`, with
@@ -108,10 +111,10 @@ committed from another machine): the error suggests `uv tool upgrade macatia --r
 
 A newer macatia can add a setting. `macatia check` lists the defaulted
 settings the file leaves out other than label roles (`review_by_default`,
-`caffeinate_by_default`, each `child_session_limit` key, `verification.final_ci_check`) as information that
+`review_mode`, `caffeinate_by_default`, each `child_session_limit` key, `verification.final_ci_check`) as information that
 does not fail the check, and warns about defaulted label roles.
 `macatia update-config [--config PATH]` writes each defaulted setting the file
-leaves out, with its default value and the comment `init` writes next to it: `review_by_default` and `caffeinate_by_default`
+leaves out, with its default value and the comment `init` writes next to it: `review_by_default`, `review_mode = "child"` and `caffeinate_by_default`
 after the last top-level setting, before the first table, each label role at
 the end of `[labels]` with its default name, and a `[child_session_limit]` table
 with `standard` and `reviewed` at the end of the file, or the limit a partial
@@ -155,8 +158,9 @@ macatia check --config review.toml
   other value is a configuration error. Child review adds a review session for
   each child; final review leaves children unreviewed, as in a standard run, and
   reviews the run target's whole work once every child is implemented (see
-  [the loop](run.md)). It changes nothing for a standard run. `init` and
-  `update-config` never write it, and `configure` keeps it as it is: set it by hand.
+  [the loop](run.md)). It changes nothing for a standard run. `init` writes
+  `review_mode = "child"` with a comment, `configure` switches it, and
+  `update-config` adds it to a file that leaves it out.
 
   ```toml
   review_mode = "final"

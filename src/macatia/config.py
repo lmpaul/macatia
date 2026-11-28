@@ -378,7 +378,7 @@ def load_config(
     )
     child_session_limit_values = values.get("child_session_limit", {})
     defaulted_settings = frozenset(
-        {"review_by_default", "caffeinate_by_default"} - set(values)
+        {"review_by_default", "review_mode", "caffeinate_by_default"} - set(values)
         | {
             f"child_session_limit.{key}"
             for key in DEFAULT_CHILD_SESSION_LIMITS

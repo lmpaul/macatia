@@ -387,7 +387,7 @@ class ReadinessTests(unittest.TestCase):
     def declare_every_defaulted_setting(self):
         text = self.config.read_text().replace(
             "\n[labels]",
-            "review_by_default = false\ncaffeinate_by_default = false\n\n[labels]",
+            'review_by_default = false\nreview_mode = "child"\ncaffeinate_by_default = false\n\n[labels]',
         )
         text = text.replace("ci_checks = true\n", "ci_checks = true\nfinal_ci_check = false\n")
         self.config.write_text(text + "\n[child_session_limit]\nstandard = 5\nreviewed = 9\n")
@@ -399,7 +399,7 @@ class ReadinessTests(unittest.TestCase):
         self.assertIn(
             "ℹ Defaulted settings macatia.toml leaves out caffeinate_by_default,"
             " child_session_limit.reviewed, child_session_limit.standard, review_by_default,"
-            " verification.final_ci_check, so their default values are used",
+            " review_mode, verification.final_ci_check, so their default values are used",
             output,
         )
         self.assertIn("→ macatia update-config writes them", output)

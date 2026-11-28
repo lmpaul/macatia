@@ -16,7 +16,6 @@ from typing import Any, TextIO
 from .check import AGENT_CLIS as ENGINES, create_labels, missing_labels, prerequisites
 from .config import (
     BACKUP_MODEL_KEY,
-    CHILD_REVIEW,
     CLAUDE_REASONING_EFFORTS,
     DEFAULT_CHILD_SESSION_LIMITS,
     DEFAULT_LABELS,
@@ -494,23 +493,22 @@ def _string(value: str) -> str:
 # The comment init writes above each top-level setting a configuration may leave out, in the file's order.
 TOP_LEVEL_COMMENTS = {
     "review_by_default": "# true makes every run a reviewed run; macatia run --no-review overrides it.",
+    "review_mode": (
+        '# How a reviewed run reviews its work: "child" (a review session per child) or "final"'
+        " (one review of the whole run target)."
+    ),
     "caffeinate_by_default": "# true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.",
 }
 
 
-def top_level_setting(key: str, value: bool) -> list[str]:
+def toml_scalar(value: bool | str) -> str:
+    """A boolean or string setting's value as TOML writes it."""
+    return str(value).lower() if isinstance(value, bool) else _string(value)
+
+
+def top_level_setting(key: str, value: bool | str) -> list[str]:
     """The lines init writes for a top-level setting a configuration may leave out: its comment, then key = value."""
-    return [TOP_LEVEL_COMMENTS[key], f"{key} = {str(value).lower()}"]
-
-
-def review_mode_setting(review_mode: str) -> list[str]:
-    """The lines init writes for review_mode: none for child review, the default; else its comment, then key = value."""
-    if review_mode == CHILD_REVIEW:
-        return []
-    return [
-        '# How a reviewed run reviews its work: "child" (a review session for each child) or "final".',
-        f"review_mode = {_string(review_mode)}",
-    ]
+    return [TOP_LEVEL_COMMENTS[key], f"{key} = {toml_scalar(value)}"]
 
 
 def final_ci_check_setting(value: bool) -> list[str]:
@@ -567,15 +565,7 @@ def render(config: MacatiaConfig, root: pathlib.Path) -> str:
         f"remote = {_string(config.remote)}",
         # A set has no order of its own; sorting keeps the file stable from one save to the next.
         f"trusted_authors = [{', '.join(_string(author) for author in sorted(config.trusted_authors))}]",
-        *(
-            line
-            for key in TOP_LEVEL_COMMENTS
-            for line in [
-                *top_level_setting(key, getattr(config, key)),
-                # Written only when not the default, so child review keeps the file as it was.
-                *(review_mode_setting(config.review_mode) if key == "review_by_default" else []),
-            ]
-        ),
+        *(line for key in TOP_LEVEL_COMMENTS for line in top_level_setting(key, getattr(config, key))),
         *(
             [
                 "# Prepares a run worktree: macatia run --worktree runs it through the shell inside the run worktree.",

@@ -27,6 +27,8 @@ remote = "origin"
 trusted_authors = ["octocat"]
 # true makes every run a reviewed run; macatia run --no-review overrides it.
 review_by_default = false
+# How a reviewed run reviews its work: "child" (a review session per child) or "final" (one review of the whole run target).
+review_mode = "child"
 # true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.
 caffeinate_by_default = false
 
@@ -94,6 +96,8 @@ remote = "upstream"
 trusted_authors = ["alice", "bob", "octocat"]
 # true makes every run a reviewed run; macatia run --no-review overrides it.
 review_by_default = false
+# How a reviewed run reviews its work: "child" (a review session per child) or "final" (one review of the whole run target).
+review_mode = "child"
 # true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.
 caffeinate_by_default = false
 
@@ -228,7 +232,9 @@ class InitTests(unittest.TestCase):
         self.assertFalse(config.verification.local_checks or config.verification.ci_checks)
         self.assertFalse(config.verification.final_ci_check)
         self.assertFalse(config.review_by_default)
+        self.assertEqual(config.review_mode, "child")
         self.assertFalse(config.caffeinate_by_default)
+        self.assertEqual(config.defaulted_settings, frozenset())
 
     def test_a_terminal_sees_gh_and_git_at_work_never_during_a_question(self):
         shown = []
