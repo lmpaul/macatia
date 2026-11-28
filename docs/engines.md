@@ -57,8 +57,8 @@ a valid `committed` result is accepted. Agent outcomes (`failed`, `blocked`,
 not engine failures.
 
 Without `models.backup`, an engine failure stops the run safely; during the final
-review it also hands the run target to human review (see
-[The final review stage](run.md#the-final-review-stage)). With one, Macatia
+review, it or an engine failure of the backup also hands the run target to human
+review (see [The final review stage](run.md#the-final-review-stage)). With one, Macatia
 drops the failed session's commits and uncommitted files, so they are never
 pushed, and replays the same session with the backup from the head the failed
 session started from. The backup then runs every later session of the run,
@@ -75,8 +75,7 @@ limit allowed, no switch happens: the console and the run summary report the
 engine failure alone, such as `- engine failure: Codex in the review session
 for child #12`, and the child goes to human review as for any exhausted child
 session limit. A failed correction and its replay count as one
-correction. An engine failure of the backup stops the run, naming both failures (during the
-final review, in a handoff comment on the run target);
+correction. An engine failure of the backup stops the run, naming both failures;
 there is no second backup and no switch back. The next run starts on the regular
 profiles again.
 

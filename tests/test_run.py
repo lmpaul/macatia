@@ -4879,18 +4879,22 @@ class FinalReviewEngineFailureTests(FinalReviewTestCase):
         self.assertIn(f"#{PARENT} was handed to human review because {cause}", summary)
 
     def test_engine_failure_without_a_backup_hands_the_run_target_to_human_review(self):
-        for role, results in (
-            ("final review session", (
+        gap = EngineResult("needs_correction", findings=("Handle refunds.",))
+        for name, role, results in (
+            ("final review session", "final review session", (
                 EngineResult("committed"),
                 EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
             )),
-            ("final review correction", (
-                EngineResult("committed"),
-                EngineResult("needs_correction", findings=("Handle refunds.",)),
+            ("final review correction", "final review correction", (
+                EngineResult("committed"), gap,
+                EngineResult(writes_result=False, commit=False, dirty=True),
+            )),
+            ("final review session after a correction", "final review session", (
+                EngineResult("committed"), gap, EngineResult("committed"),
                 EngineResult(writes_result=False, commit=False, dirty=True),
             )),
         ):
-            with self.subTest(role):
+            with self.subTest(name):
                 self.setUp()
 
                 result = self.start_engine(*results)
@@ -4905,8 +4909,11 @@ class FinalReviewEngineFailureTests(FinalReviewTestCase):
                     f"codex session {len(results)}",
                     git(self.repository.origin, "log", "--all", "--format=%s"),
                 )
-                if role == "final review correction":
+                # The handoff lists the findings the last final review left.
+                if gap in results:
                     self.assertIn("- Handle refunds.", self.github.comments(PARENT)[-2])
+                else:
+                    self.assertNotIn("Remaining findings", self.github.comments(PARENT)[-2])
 
     def test_engine_failure_of_the_backup_hands_the_run_target_to_human_review(self):
         self.add_backup()

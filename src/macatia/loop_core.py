@@ -3808,9 +3808,7 @@ def switch_to_backup(
 
     Without a session left for the replay, the run reports the engine failure alone.
     """
-    git(state, "reset", "--hard", start_head)
-    # Ignored files, Macatia's diagnostics among them, stay.
-    git(state, "clean", "-fd")
+    drop_session_leftovers(state, start_head)
     session_limit = state.child_session_limit
     backup = state.config.backup
     assert backup is not None and state.diagnostics is not None
@@ -3838,6 +3836,13 @@ def switch_to_backup(
         f"({profile_label(backup)}).",
         flush=True,
     )
+
+
+def drop_session_leftovers(state: RunState, start_head: str) -> None:
+    """Drop the commits and uncommitted files a session left after start_head."""
+    git(state, "reset", "--hard", start_head)
+    # Ignored files, Macatia's diagnostics among them, stay.
+    git(state, "clean", "-fd")
 
 
 def session_request_prompt(state: RunState, request: SessionRequest) -> str:
@@ -4349,7 +4354,8 @@ def final_review_session(
         findings=tuple(previous.findings) if previous else (),
         summary=previous.summary if previous else "",
     )
-    result = run_final_review_request(context, adapters, request)
+    previous_findings = findings_detail(previous.findings) if previous else ""
+    result = run_final_review_request(context, adapters, request, previous_findings)
     if state.diagnostics is not None:
         state.diagnostics.record_final_review(
             run_target, result.outcome, result.head, result.summary
@@ -4423,7 +4429,8 @@ def run_final_review_request(
     findings: str = "",
 ) -> SessionResult:
     """Run a final review session or final review correction; a rejected session, or an
-    engine failure no backup replayed, hands the run target to human review with `findings`.
+    engine failure no backup replayed, hands the run target to human review with `findings`,
+    the remaining findings as findings_detail lists them.
 
     What a session that ended in an engine failure left is dropped first, as before a replay.
     """
@@ -4444,9 +4451,7 @@ def run_final_review_request(
     except BackupEngineFailure as failure:
         failed = f"an engine failure of the backup ({engine_name(failure.engine)})"
         detail = failure.detail
-    git(state, "reset", "--hard", start_head)
-    # Ignored files, Macatia's diagnostics among them, stay.
-    git(state, "clean", "-fd")
+    drop_session_leftovers(state, start_head)
     stop_final_review(
         context,
         f"its {session} ended in {failed}",

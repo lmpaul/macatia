@@ -245,7 +245,7 @@ The lifecycle state of a child or parent handed to a human: either because Macat
 _Avoid_: Escalation, stuck
 
 **Handoff comment**:
-The trusted comment Macatia posts on a child when it sends the child to human review, saying why it stopped. Since resets exist, each one carries a hidden marker so a purge can find it; earlier ones carry none.
+The trusted comment Macatia posts on a child, or on the run target, when it sends it to human review, saying why it stopped. Since resets exist, each one carries a hidden marker so a purge can find it; earlier ones carry none.
 _Avoid_: Stop comment, failure comment
 
 **Work started**:
