@@ -4780,6 +4780,159 @@ class FinalReviewRerunTests(FinalReviewTestCase):
         self.assertEqual(self.sessions.requests, [])
 
 
+class FinalReviewEngineFailureTests(FinalReviewTestCase):
+    """An engine failure during the final review is handled as elsewhere in a run."""
+
+    def setUp(self):
+        self.new_final_review_run(children=(CHILD,))
+
+    def add_backup(self):
+        self.repository.edit_configuration(
+            "\n[verification]", f"\n[models.backup]\n{BACKUP_PROFILE}\n\n[verification]"
+        )
+
+    def start_engine(self, *results):
+        self.engine = ScriptedEngine(self.repository, *results)
+        return start_run(self.repository, self.github, self.engine, "--review", PARENT)
+
+    def assert_backup_replayed(self, failed, replay):
+        self.assertEqual(failed.engine, "codex")
+        self.assertEqual(replay.engine, "claude")
+        self.assertEqual((replay.option("--model"), replay.option("--effort")), ("opus", "high"))
+        self.assertEqual(replay.prompt, failed.prompt)
+
+    def test_engine_failure_in_a_final_review_session_is_replayed_without_consuming_the_limit(self):
+        self.add_backup()
+        gap = EngineResult("needs_correction", "A gap remains.", findings=("Handle refunds.",))
+        fix = EngineResult("committed")
+
+        result = self.start_engine(
+            EngineResult("committed"),
+            EngineResult(writes_result=False, commit=False),
+            gap, fix, gap, fix, gap, fix,
+            EngineResult("no_changes", CLEAN_FINAL_REVIEW),
+        )
+
+        self.assert_completed(result, sessions=9)
+        self.assert_backup_replayed(*self.engine.calls[1:3])
+        self.assertIn(
+            f"⚠️ Codex engine failure in the final review session for run target #{PARENT}",
+            result.stdout,
+        )
+        self.assertIn("(4 final review sessions, 3 final review corrections)", result.stdout)
+        self.assertIn(
+            f"(final review session, run target #{PARENT})", self.github.comments(PARENT)[-1]
+        )
+        (evidence,) = self.final_review_evidence()
+        self.assertEqual(final_review_evidence_head(evidence), self.repository.head())
+        self.assertFalse(self.github.pull_request().is_draft)
+
+    def test_engine_failure_in_a_final_review_correction_is_replayed_without_consuming_the_limit(self):
+        self.add_backup()
+        gap = EngineResult("needs_correction", "A gap remains.", findings=("Handle refunds.",))
+        fix = EngineResult("committed")
+
+        result = self.start_engine(
+            EngineResult("committed"),
+            gap, EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True), fix,
+            gap, fix, gap, fix,
+            EngineResult("no_changes", CLEAN_FINAL_REVIEW),
+        )
+
+        self.assert_completed(result, sessions=9)
+        self.assert_backup_replayed(*self.engine.calls[2:4])
+        self.assertIn("Final review correction 1/3", self.engine.calls[3].prompt)
+        self.assertIn("Final review correction 3/3", self.engine.calls[7].prompt)
+        self.assertIn(
+            f"⚠️ Codex engine failure in the final review correction session for run target "
+            f"#{PARENT}",
+            result.stdout,
+        )
+        self.assertIn("(4 final review sessions, 3 final review corrections)", result.stdout)
+        # The replay starts from the head the failed correction started from.
+        self.assertNotIn(
+            "codex session 3", git(self.repository.origin, "log", "--all", "--format=%s")
+        )
+        self.assertFalse((self.repository.path / "uncommitted-agent-output.txt").exists())
+        (evidence,) = self.final_review_evidence()
+        self.assertEqual(final_review_evidence_head(evidence), self.repository.head())
+
+    def assert_handed_to_human_review(self, result, cause, failure):
+        self.assertEqual(result.exit_code, 1)
+        self.assertEqual(self.github.labels(PARENT), {"human-review"})
+        self.assertEqual(self.github.labels(CHILD), {"implemented"})
+        pull = self.github.pull_request()
+        self.assertTrue(pull.is_draft)
+        self.assertEqual(self.final_review_evidence(), [])
+        # What the failed session left is dropped; the reviewed work is published.
+        self.assertTrue(self.repository.is_clean())
+        self.assertEqual(self.repository.pushed_head(), self.repository.head())
+        parent_comments = self.github.comments(PARENT)
+        handoff = parent_comments[-2]
+        self.assertTrue(handoff.startswith(f"{HANDOFF_MARKER}\nMacatia stopped"), handoff)
+        self.assertIn(failure, handoff)
+        self.assertIn("children stay implemented", handoff)
+        self.assertFalse(any("parent-completion" in body for body in parent_comments))
+        summary = parent_comments[-1]
+        self.assertIn(f"- final review: {cause} (", summary)
+        self.assertIn("- final outcome: stopped safely", summary)
+        self.assertIn(f"#{PARENT} was handed to human review because {cause}", summary)
+
+    def test_engine_failure_without_a_backup_hands_the_run_target_to_human_review(self):
+        for role, results in (
+            ("final review session", (
+                EngineResult("committed"),
+                EngineResult("blocked", "Usage limit.", returncode=1, commit=True, dirty=True),
+            )),
+            ("final review correction", (
+                EngineResult("committed"),
+                EngineResult("needs_correction", findings=("Handle refunds.",)),
+                EngineResult(writes_result=False, commit=False, dirty=True),
+            )),
+        ):
+            with self.subTest(role):
+                self.setUp()
+
+                result = self.start_engine(*results)
+
+                self.assert_handed_to_human_review(
+                    result,
+                    f"its {role} ended in a Codex engine failure",
+                    f"Macatia stopped because the {role} ended in a Codex engine failure",
+                )
+                self.assertEqual(len(self.engine.calls), len(results))
+                self.assertNotIn(
+                    f"codex session {len(results)}",
+                    git(self.repository.origin, "log", "--all", "--format=%s"),
+                )
+                if role == "final review correction":
+                    self.assertIn("- Handle refunds.", self.github.comments(PARENT)[-2])
+
+    def test_engine_failure_of_the_backup_hands_the_run_target_to_human_review(self):
+        self.add_backup()
+
+        result = self.start_engine(
+            EngineResult("committed"),
+            EngineResult(writes_result=False, commit=False),
+            EngineResult(is_error=True, commit=False, dirty=True),
+        )
+
+        cause = "its final review session ended in an engine failure of the backup (Claude Code)"
+        self.assert_handed_to_human_review(
+            result, cause,
+            "Macatia stopped because the final review session ended in an engine failure of the "
+            "backup (Claude Code)",
+        )
+        self.assertEqual(self.engine.engines(), ["codex", "codex", "claude"])
+        handoff = self.github.comments(PARENT)[-2]
+        self.assertIn("after the Codex engine failure", handoff)
+        self.assertIn(
+            f"- backup: Claude Code Opus - High took over after a Codex engine failure "
+            f"(final review session, run target #{PARENT})",
+            self.github.comments(PARENT)[-1],
+        )
+
+
 class HandoffPublicationTests(VerificationTestCase):
     """A child handed to human review before its work was published gets it pushed in a draft PR."""
 

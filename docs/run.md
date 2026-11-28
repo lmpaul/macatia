@@ -91,6 +91,15 @@ and final review corrections it used. Its commits are pushed, the children stay
 `implemented` with their implementation evidence, the cumulative draft PR stays a
 draft, and the run ends stopped, not completed.
 
+An engine failure in a final review session or final review correction is
+handled as elsewhere in a run (see
+[Engine failures and the backup](engines.md#engine-failures-and-the-backup)):
+with `models.backup`, the backup replays that session from the head it started
+from, and the replay counts as one more agent session but toward no final review
+correction. Without a backup, or when the backup fails too, Macatia drops what the
+failed session left and hands the run target to human review with a handoff
+comment naming the engine failure, the PR left in draft and the run stopped.
+
 Final review evidence holds only for the head it names. A run in final review that
 finds every child implemented reads the run target's trusted final review evidence
 newer than its latest trusted reset marker; evidence from an untrusted author, or

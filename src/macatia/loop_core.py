@@ -1117,6 +1117,18 @@ class EngineFailure(MacatiaError):
         self.exit = engine_exit(name, completed)
 
 
+class BackupEngineFailure(MacatiaError):
+    """An engine failure of the backup, after the regular profile's engine failure."""
+
+    def __init__(self, failure: EngineFailure, regular_failure: EngineFailure):
+        self.engine = failure.engine
+        self.detail = (
+            f"{failure}; after the {engine_name(regular_failure.engine)} engine failure: "
+            f"{regular_failure}"
+        )
+        super().__init__(f"engine failure of the backup ({engine_name(failure.engine)}): {self.detail}")
+
+
 @dataclass(frozen=True)
 class BackupSwitch:
     """The engine failure of a regular profile that called the backup, and the session it ended."""
@@ -3778,11 +3790,7 @@ def run_session(state: RunState, request: SessionRequest) -> SessionResult:
         if backup is None:
             raise
         if state.backup_switch is not None:
-            regular_failure = state.backup_switch.failure
-            raise MacatiaError(
-                f"engine failure of the backup ({engine_name(backup.engine)}): {failure}; after "
-                f"the {engine_name(regular_failure.engine)} engine failure: {regular_failure}"
-            ) from failure
+            raise BackupEngineFailure(failure, state.backup_switch.failure) from failure
         switch_to_backup(state, request, failure, start_head)
         replay = run_session(state, request)
         print("✅ The backup took over and runs every session for the rest of the run.", flush=True)
@@ -4341,14 +4349,7 @@ def final_review_session(
         findings=tuple(previous.findings) if previous else (),
         summary=previous.summary if previous else "",
     )
-    try:
-        result = adapters.run_session(request)
-    except ChildWorkRejected as error:
-        stop_final_review(
-            context,
-            f"its final review session was rejected: {error}",
-            f"Macatia stopped because {error}.",
-        )
+    result = run_final_review_request(context, adapters, request)
     if state.diagnostics is not None:
         state.diagnostics.record_final_review(
             run_target, result.outcome, result.head, result.summary
@@ -4395,14 +4396,7 @@ def final_review_correction(
         FINAL_REVIEW_CORRECTION, run_target, correction=attempt,
         findings=tuple(review.findings), summary=review.summary,
     )
-    try:
-        result = adapters.run_session(request)
-    except ChildWorkRejected as error:
-        stop_final_review(
-            context,
-            f"its final review correction was rejected: {error}",
-            f"Macatia stopped because {error}.{findings}",
-        )
+    result = run_final_review_request(context, adapters, request, findings)
     if result.outcome in {"blocked", "failed"}:
         stop_final_review(
             context,
@@ -4422,6 +4416,49 @@ def final_review_correction(
     )
 
 
+def run_final_review_request(
+    context: ChildCycleContext,
+    adapters: ChildCycleAdapters,
+    request: SessionRequest,
+    findings: str = "",
+) -> SessionResult:
+    """Run a final review session or final review correction; a rejected session, or an
+    engine failure no backup replayed, hands the run target to human review with `findings`.
+
+    What a session that ended in an engine failure left is dropped first, as before a replay.
+    """
+    state = context.state
+    session = final_review_session_name(request.role)
+    start_head = current_head(state)
+    try:
+        return adapters.run_session(request)
+    except ChildWorkRejected as error:
+        stop_final_review(
+            context,
+            f"its {session} was rejected: {error}",
+            f"Macatia stopped because {error}.{findings}",
+        )
+    except EngineFailure as failure:
+        failed = f"a {engine_name(failure.engine)} engine failure"
+        detail = str(failure)
+    except BackupEngineFailure as failure:
+        failed = f"an engine failure of the backup ({engine_name(failure.engine)})"
+        detail = failure.detail
+    git(state, "reset", "--hard", start_head)
+    # Ignored files, Macatia's diagnostics among them, stay.
+    git(state, "clean", "-fd")
+    stop_final_review(
+        context,
+        f"its {session} ended in {failed}",
+        f"Macatia stopped because the {session} ended in {failed}: {detail}{findings}",
+    )
+
+
+def final_review_session_name(role: str) -> str:
+    """How a handoff names the session of a final review role."""
+    return f"{role} session" if role == FINAL_REVIEW_SESSION else role
+
+
 def pass_final_review_local_gates(
     context: ChildCycleContext,
     adapters: ChildCycleAdapters,
@@ -4431,7 +4468,7 @@ def pass_final_review_local_gates(
 ) -> None:
     """Run the local gates on the commits of a final review session or final review
     correction, as `role` names it; a failure hands the run target to human review."""
-    session = f"{role} session" if role == FINAL_REVIEW_SESSION else role
+    session = final_review_session_name(role)
     failure = adapters.run_local_gates(context.parent_issue, base_sha, head_sha)
     if failure is not None:
         stop_final_review(
