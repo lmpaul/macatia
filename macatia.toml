@@ -5,7 +5,9 @@ base_branch = "main"
 remote = "origin"
 trusted_authors = ["lmpaul"]
 # true makes every run a reviewed run; macatia run --no-review overrides it.
-review_by_default = false
+review_by_default = true
+# How a reviewed run reviews its work: "child" (a review session per child) or "final" (one review of the whole run target).
+review_mode = "final"
 # true makes every run hold a sleep lock; macatia run --no-caffeinate overrides it.
 caffeinate_by_default = false
 
@@ -30,8 +32,8 @@ reasoning_effort = "medium"
 # Used by reviewed runs: macatia run --review, or every run when review_by_default = true.
 [models.review]
 engine = "claude"
-name = "opus"
-display_name = "opus"
+name = "fable"
+display_name = "fable"
 reasoning_effort = "high"
 
 [models.correction]
@@ -43,8 +45,8 @@ reasoning_effort = "medium"
 # Takes over every session for the rest of a run after an engine failure.
 [models.backup]
 engine = "codex"
-name = "gpt-6.1-sol"
-display_name = "gpt-6.1-sol"
+name = "gpt-6.2-sol"
+display_name = "gpt-6.2-sol"
 reasoning_effort = "medium"
 
 [verification]
